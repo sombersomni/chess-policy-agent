@@ -1,0 +1,74 @@
+"""Tests for Trainer: T08, T19."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import torch
+
+from chess_sim.training.trainer import Trainer
+from chess_sim.types import EncoderOutput, PredictionOutput
+from tests.utils import make_synthetic_batch
+
+
+class TestTrainerLossDecreases(unittest.TestCase):
+    """T08: Loss must decrease after one gradient update."""
+
+    def setUp(self) -> None:
+        self.trainer = Trainer(device="cpu")
+        torch.manual_seed(0)
+
+    def test_loss_decreases_after_one_step(self) -> None:
+        """T08: second forward pass after one train_step yields a lower loss."""
+        batch = make_synthetic_batch(batch_size=4, device="cpu")
+        loss_before = self.trainer.train_step(batch)
+        loss_after = self.trainer.train_step(batch)
+        self.assertLess(loss_after, loss_before,
+                        msg="Loss did not decrease after one gradient step")
+
+
+class TestTrainerCheckpoint(unittest.TestCase):
+    """T19: Checkpoint save/load round-trip preserves model outputs."""
+
+    def setUp(self) -> None:
+        self.trainer = Trainer(device="cpu")
+        torch.manual_seed(42)
+
+    def test_checkpoint_roundtrip_preserves_outputs(self) -> None:
+        """T19: Outputs are identical before saving and after reloading checkpoint."""
+        board_tokens = torch.randint(0, 8, (2, 65))
+        color_tokens = torch.randint(0, 3, (2, 65))
+
+        with torch.no_grad():
+            out_before: EncoderOutput = self.trainer.encoder.encode(
+                board_tokens, color_tokens
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = Path(tmpdir) / "test.pt"
+            self.trainer.save_checkpoint(ckpt_path)
+
+            # Create a fresh trainer and load the checkpoint.
+            fresh_trainer = Trainer(device="cpu")
+            fresh_trainer.load_checkpoint(ckpt_path)
+
+        with torch.no_grad():
+            out_after: EncoderOutput = fresh_trainer.encoder.encode(
+                board_tokens, color_tokens
+            )
+
+        self.assertTrue(
+            torch.allclose(out_before.cls_embedding, out_after.cls_embedding),
+            msg="cls_embedding differs after checkpoint reload",
+        )
+        self.assertTrue(
+            torch.allclose(out_before.square_embeddings, out_after.square_embeddings),
+            msg="square_embeddings differ after checkpoint reload",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

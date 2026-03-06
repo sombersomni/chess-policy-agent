@@ -43,5 +43,15 @@ class StreamingPGNReader:
             >>> len(games)
             3
         """
-        raise NotImplementedError("To be implemented")
-        return iter([])  # satisfies return type for type checkers
+        dctx = zstandard.ZstdDecompressor()
+        with open(path, 'rb') as fh:
+            with dctx.stream_reader(fh) as reader:
+                text_io = io.TextIOWrapper(
+                    reader, encoding='utf-8',
+                    errors='replace',
+                )
+                while True:
+                    game = chess.pgn.read_game(text_io)
+                    if game is None:
+                        break
+                    yield game

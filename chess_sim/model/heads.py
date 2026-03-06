@@ -56,7 +56,9 @@ class PredictionHeads(nn.Module):
             4
         """
         super().__init__()
-        raise NotImplementedError("To be implemented")
+        self.heads = nn.ModuleList(
+            [nn.Linear(D_MODEL, N_SQUARES) for _ in range(N_HEADS)]
+        )
 
     def predict(self, cls_embedding: Tensor) -> PredictionOutput:
         """Apply all four heads to the CLS embedding and return logit tensors.
@@ -73,10 +75,13 @@ class PredictionHeads(nn.Module):
             >>> preds.tgt_sq_logits.shape
             torch.Size([4, 64])
         """
-        raise NotImplementedError("To be implemented")
-        b = cls_embedding.size(0)
-        zeros = torch.zeros(b, N_SQUARES)
-        return PredictionOutput(zeros, zeros, zeros, zeros)
+        logits = [h(cls_embedding) for h in self.heads]
+        return PredictionOutput(
+            src_sq_logits=logits[0],
+            tgt_sq_logits=logits[1],
+            opp_src_sq_logits=logits[2],
+            opp_tgt_sq_logits=logits[3],
+        )
 
     def forward(self, cls_embedding: Tensor) -> PredictionOutput:
         """nn.Module forward — delegates to predict().

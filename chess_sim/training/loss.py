@@ -44,7 +44,10 @@ class LossComputer:
         Example:
             >>> lc = LossComputer()
         """
-        raise NotImplementedError("To be implemented")
+        self._player_ce = nn.CrossEntropyLoss()
+        self._opp_ce = nn.CrossEntropyLoss(
+            ignore_index=IGNORE_INDEX
+        )
 
     def compute(self, predictions: PredictionOutput, labels: LabelTensors) -> Tensor:
         """Compute and return the summed cross-entropy loss across all four heads.
@@ -64,5 +67,24 @@ class LossComputer:
             >>> loss = lc.compute(preds, labels)
             >>> loss.backward()
         """
-        raise NotImplementedError("To be implemented")
-        return torch.tensor(0.0, requires_grad=True)
+        player_loss = (
+            self._player_ce(
+                predictions.src_sq_logits, labels.src_sq
+            )
+            + self._player_ce(
+                predictions.tgt_sq_logits, labels.tgt_sq
+            )
+        )
+        opp_src_loss = self._opp_ce(
+            predictions.opp_src_sq_logits, labels.opp_src_sq
+        )
+        opp_tgt_loss = self._opp_ce(
+            predictions.opp_tgt_sq_logits, labels.opp_tgt_sq
+        )
+        # When all opp labels are ignored, CE returns nan.
+        # Replace nan with 0 so it doesn't pollute total.
+        if torch.isnan(opp_src_loss):
+            opp_src_loss = torch.zeros_like(opp_src_loss)
+        if torch.isnan(opp_tgt_loss):
+            opp_tgt_loss = torch.zeros_like(opp_tgt_loss)
+        return player_loss + opp_src_loss + opp_tgt_loss

@@ -42,6 +42,8 @@ class TestTrainerCheckpoint(unittest.TestCase):
         board_tokens = torch.randint(0, 8, (2, 65))
         color_tokens = torch.randint(0, 3, (2, 65))
 
+        # Eval mode disables dropout for deterministic output.
+        self.trainer.encoder.eval()
         with torch.no_grad():
             out_before: EncoderOutput = self.trainer.encoder.encode(
                 board_tokens, color_tokens
@@ -55,6 +57,8 @@ class TestTrainerCheckpoint(unittest.TestCase):
             fresh_trainer = Trainer(device="cpu")
             fresh_trainer.load_checkpoint(ckpt_path)
 
+        # Eval mode disables dropout for deterministic output.
+        fresh_trainer.encoder.eval()
         with torch.no_grad():
             out_after: EncoderOutput = fresh_trainer.encoder.encode(
                 board_tokens, color_tokens

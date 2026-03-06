@@ -52,7 +52,19 @@ class ChessEncoder(nn.Module):
             >>> enc = ChessEncoder()
         """
         super().__init__()
-        raise NotImplementedError("To be implemented")
+        self.embedding = EmbeddingLayer()
+        layer = nn.TransformerEncoderLayer(
+            d_model=D_MODEL,
+            nhead=N_HEADS,
+            dim_feedforward=DIM_FEEDFORWARD,
+            dropout=DROPOUT,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(
+            layer, num_layers=N_LAYERS,
+            enable_nested_tensor=False,
+        )
 
     def encode(self, board_tokens: Tensor, color_tokens: Tensor) -> EncoderOutput:
         """Encode a batch of board states into CLS and per-square embeddings.
@@ -72,11 +84,11 @@ class ChessEncoder(nn.Module):
             >>> out.square_embeddings.shape
             torch.Size([4, 64, 256])
         """
-        raise NotImplementedError("To be implemented")
-        b = board_tokens.size(0)
+        x = self.embedding(board_tokens, color_tokens)
+        encoded = self.transformer(x)
         return EncoderOutput(
-            cls_embedding=torch.zeros(b, D_MODEL),
-            square_embeddings=torch.zeros(b, 64, D_MODEL),
+            cls_embedding=encoded[:, 0, :],
+            square_embeddings=encoded[:, 1:, :],
         )
 
     def forward(self, board_tokens: Tensor, color_tokens: Tensor) -> EncoderOutput:

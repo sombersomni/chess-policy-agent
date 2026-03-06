@@ -113,10 +113,22 @@ def make_prediction_output(batch_size: int = 4, device: str = "cpu") -> Predicti
         PredictionOutput with four [B, 64] float tensors.
     """
     return PredictionOutput(
-        src_sq_logits=torch.randn(batch_size, N_SQUARES, device=device),
-        tgt_sq_logits=torch.randn(batch_size, N_SQUARES, device=device),
-        opp_src_sq_logits=torch.randn(batch_size, N_SQUARES, device=device),
-        opp_tgt_sq_logits=torch.randn(batch_size, N_SQUARES, device=device),
+        src_sq_logits=torch.randn(
+            batch_size, N_SQUARES, device=device,
+            requires_grad=True,
+        ),
+        tgt_sq_logits=torch.randn(
+            batch_size, N_SQUARES, device=device,
+            requires_grad=True,
+        ),
+        opp_src_sq_logits=torch.randn(
+            batch_size, N_SQUARES, device=device,
+            requires_grad=True,
+        ),
+        opp_tgt_sq_logits=torch.randn(
+            batch_size, N_SQUARES, device=device,
+            requires_grad=True,
+        ),
     )
 
 

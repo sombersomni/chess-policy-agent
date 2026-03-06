@@ -51,5 +51,13 @@ class ReservoirSampler:
             >>> len(result)
             2
         """
-        raise NotImplementedError("To be implemented")
-        return []
+        import random
+        reservoir: list[chess.pgn.Game] = []
+        for i, game in enumerate(stream):
+            if i < n:
+                reservoir.append(game)
+            else:
+                j = random.randint(0, i)
+                if j < n:
+                    reservoir[j] = game
+        return reservoir

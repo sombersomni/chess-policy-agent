@@ -60,7 +60,17 @@ def log_metrics(fn: F) -> F:
     """
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("To be implemented")
+        result = fn(*args, **kwargs)
+        self_arg = args[0]
+        lr = (
+            self_arg.scheduler.get_last_lr()[0]
+            if hasattr(self_arg, 'scheduler')
+            else 0.0
+        )
+        print(
+            f"[log_metrics] loss={result:.4f} lr={lr:.2e}"
+        )
+        return result
     return wrapper  # type: ignore[return-value]
 
 
@@ -83,7 +93,20 @@ def device_aware(fn: F) -> F:
     """
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("To be implemented")
+        self_arg = args[0]
+        device = next(self_arg.encoder.parameters()).device
+        if len(args) > 1 and hasattr(args[1], '_fields'):
+            batch = args[1]
+            moved = type(batch)(
+                *[
+                    t.to(device)
+                    if isinstance(t, torch.Tensor)
+                    else t
+                    for t in batch
+                ]
+            )
+            args = (self_arg, moved) + args[2:]
+        return fn(*args, **kwargs)
     return wrapper  # type: ignore[return-value]
 
 
@@ -105,7 +128,14 @@ def timed(fn: F) -> F:
     """
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError("To be implemented")
+        import time
+        start = time.perf_counter()
+        result = fn(*args, **kwargs)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        print(
+            f"[timed] {fn.__name__} took {elapsed_ms:.1f}ms"
+        )
+        return result
     return wrapper  # type: ignore[return-value]
 
 
@@ -142,7 +172,20 @@ class Trainer:
         Example:
             >>> trainer = Trainer(device='cpu')
         """
-        raise NotImplementedError("To be implemented")
+        self.device = device
+        self.encoder = ChessEncoder().to(device)
+        self.heads = PredictionHeads().to(device)
+        self.loss_fn = LossComputer()
+        params = (
+            list(self.encoder.parameters())
+            + list(self.heads.parameters())
+        )
+        self.optimizer = torch.optim.AdamW(
+            params, lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+        )
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=10
+        )
 
     @log_metrics
     @device_aware
@@ -163,8 +206,28 @@ class Trainer:
             >>> isinstance(loss, float)
             True
         """
-        raise NotImplementedError("To be implemented")
-        return 0.0
+        self.encoder.train()
+        self.heads.train()
+        output = self.encoder(
+            batch.board_tokens, batch.color_tokens
+        )
+        preds = self.heads(output.cls_embedding)
+        from chess_sim.types import LabelTensors
+        labels = LabelTensors(
+            batch.src_sq, batch.tgt_sq,
+            batch.opp_src_sq, batch.opp_tgt_sq,
+        )
+        loss = self.loss_fn.compute(preds, labels)
+        self.optimizer.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(
+            list(self.encoder.parameters())
+            + list(self.heads.parameters()),
+            GRADIENT_CLIP,
+        )
+        self.optimizer.step()
+        self.scheduler.step()
+        return float(loss)
 
     @log_metrics
     def train_epoch(self, loader: DataLoader) -> float:
@@ -179,8 +242,12 @@ class Trainer:
         Example:
             >>> avg = trainer.train_epoch(loader)
         """
-        raise NotImplementedError("To be implemented")
-        return 0.0
+        total = 0.0
+        count = 0
+        for batch in loader:
+            total += self.train_step(batch)
+            count += 1
+        return total / count if count > 0 else 0.0
 
     def save_checkpoint(self, path: Path) -> None:
         """Save encoder and heads state_dicts to a .pt checkpoint file.
@@ -191,7 +258,10 @@ class Trainer:
         Example:
             >>> trainer.save_checkpoint(Path("checkpoints/best.pt"))
         """
-        raise NotImplementedError("To be implemented")
+        torch.save({
+            'encoder': self.encoder.state_dict(),
+            'heads': self.heads.state_dict(),
+        }, path)
 
     def load_checkpoint(self, path: Path) -> None:
         """Load encoder and heads state_dicts from a .pt checkpoint file.
@@ -202,4 +272,6 @@ class Trainer:
         Example:
             >>> trainer.load_checkpoint(Path("checkpoints/best.pt"))
         """
-        raise NotImplementedError("To be implemented")
+        ckpt = torch.load(path, map_location=self.device)
+        self.encoder.load_state_dict(ckpt['encoder'])
+        self.heads.load_state_dict(ckpt['heads'])

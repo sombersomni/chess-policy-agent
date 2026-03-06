@@ -68,4 +68,17 @@ class BoardTokenizer:
             >>> result.board_tokens[0]  # CLS
             0
         """
-        raise NotImplementedError("To be implemented")
+        board_tokens: list[int] = [CLS_TOKEN]
+        color_tokens: list[int] = [COLOR_EMPTY]
+        for sq in range(64):
+            piece = board.piece_at(sq)
+            if piece is None:
+                board_tokens.append(EMPTY_TOKEN)
+                color_tokens.append(COLOR_EMPTY)
+            else:
+                board_tokens.append(_PIECE_TYPE_MAP[piece.piece_type])
+                if piece.color == turn:
+                    color_tokens.append(COLOR_PLAYER)
+                else:
+                    color_tokens.append(COLOR_OPPONENT)
+        return TokenizedBoard(board_tokens, color_tokens)

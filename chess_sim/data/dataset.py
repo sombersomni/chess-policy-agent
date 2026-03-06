@@ -47,7 +47,7 @@ class ChessDataset(Dataset):
             >>> len(ds)
             40000000
         """
-        raise NotImplementedError("To be implemented")
+        self.examples = examples
 
     def __len__(self) -> int:
         """Return the number of examples in this dataset split.
@@ -59,8 +59,7 @@ class ChessDataset(Dataset):
             >>> len(ChessDataset(examples))
             40000000
         """
-        raise NotImplementedError("To be implemented")
-        return 0
+        return len(self.examples)
 
     def __getitem__(self, idx: int) -> ChessBatch:
         """Return one training example as a ChessBatch of scalar/1D tensors.
@@ -79,7 +78,27 @@ class ChessDataset(Dataset):
             >>> item.board_tokens.dtype
             torch.int64
         """
-        raise NotImplementedError("To be implemented")
+        ex = self.examples[idx]
+        return ChessBatch(
+            board_tokens=torch.tensor(
+                ex.board_tokens, dtype=torch.long
+            ),
+            color_tokens=torch.tensor(
+                ex.color_tokens, dtype=torch.long
+            ),
+            src_sq=torch.tensor(
+                ex.src_sq, dtype=torch.long
+            ),
+            tgt_sq=torch.tensor(
+                ex.tgt_sq, dtype=torch.long
+            ),
+            opp_src_sq=torch.tensor(
+                ex.opp_src_sq, dtype=torch.long
+            ),
+            opp_tgt_sq=torch.tensor(
+                ex.opp_tgt_sq, dtype=torch.long
+            ),
+        )
 
     @staticmethod
     def from_disk(path: Path) -> "ChessDataset":
@@ -94,7 +113,8 @@ class ChessDataset(Dataset):
         Example:
             >>> ds = ChessDataset.from_disk(Path("data/train.pt"))
         """
-        raise NotImplementedError("To be implemented")
+        examples = torch.load(path)
+        return ChessDataset(examples)
 
     @staticmethod
     def split(
@@ -115,5 +135,8 @@ class ChessDataset(Dataset):
         Example:
             >>> train_ds, val_ds = ChessDataset.split(examples)
         """
-        raise NotImplementedError("To be implemented")
-        return ChessDataset([]), ChessDataset([])
+        split_idx = int(len(examples) * train_frac)
+        return (
+            ChessDataset(examples[:split_idx]),
+            ChessDataset(examples[split_idx:]),
+        )

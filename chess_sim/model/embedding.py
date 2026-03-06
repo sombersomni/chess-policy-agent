@@ -55,7 +55,11 @@ class EmbeddingLayer(nn.Module):
             >>> layer = EmbeddingLayer()
         """
         super().__init__()
-        raise NotImplementedError("To be implemented")
+        self.piece_emb = nn.Embedding(PIECE_VOCAB_SIZE, D_MODEL)
+        self.color_emb = nn.Embedding(COLOR_VOCAB_SIZE, D_MODEL)
+        self.square_emb = nn.Embedding(SQUARE_VOCAB_SIZE, D_MODEL)
+        self.layer_norm = nn.LayerNorm(D_MODEL)
+        self.dropout = nn.Dropout(DROPOUT)
 
     def embed(self, board_tokens: Tensor, color_tokens: Tensor) -> Tensor:
         """Compose three embedding streams into a single [B, 65, 256] tensor.
@@ -78,8 +82,16 @@ class EmbeddingLayer(nn.Module):
             >>> out.shape
             torch.Size([4, 65, 256])
         """
-        raise NotImplementedError("To be implemented")
-        return torch.zeros(board_tokens.size(0), 65, D_MODEL)
+        B, S = board_tokens.size()
+        sq_idx = torch.arange(
+            S, device=board_tokens.device
+        ).unsqueeze(0).expand(B, S)
+        x = (
+            self.piece_emb(board_tokens)
+            + self.color_emb(color_tokens)
+            + self.square_emb(sq_idx)
+        )
+        return self.dropout(self.layer_norm(x))
 
     def forward(self, board_tokens: Tensor, color_tokens: Tensor) -> Tensor:
         """nn.Module forward — delegates to embed().

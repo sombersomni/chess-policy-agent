@@ -56,12 +56,12 @@ flowchart TD
     LOSS -->|"backprop"| ENCODER
     LOSS -->|"backprop"| HEADS
 
-    CLS -.->|"Phase 2: downstream"| VN["Value Network"]
-    SQ -.->|"Phase 2: downstream"| PN["Policy Network"]
-    CLS -.->|"Phase 2: downstream"| MCTS["MCTS Evaluator"]
+    CLS -.->|"Phase 2a: CLS-only"| VN["Value Network"]
+    CLS -.->|"Phase 2a: CLS-only"| PN["Policy Network"]
+    EMB -.->|"Phase 2b: if CLS insufficient"| GNN["GNN Policy<br/>learned embeddings as node features"]
 ```
 
-*Caption: End-to-end data flow from raw PGN to trained encoder. Solid lines are Phase 1 (pretraining). Dashed lines are Phase 2 (downstream, out of scope).*
+*Caption: End-to-end data flow from raw PGN to trained encoder. Solid lines are Phase 1 (pretraining). Dashed lines are Phase 2 (downstream, out of scope). Phase 2a uses CLS sequences only. Phase 2b falls back to GNN with learned embedding table weights as node features if CLS-only is insufficient.*
 
 ---
 
@@ -290,7 +290,7 @@ flowchart TD
   ```
   where `TokenizedBoard` is a `NamedTuple(board_tokens: list[int], color_tokens: list[int])`.
 - **Color normalization:** The board is always encoded from the perspective of the player to move. The player's pieces receive color index 1, the opponent's pieces receive color index 2, empty squares receive color index 0.
-- **Square ordering:** a1=0, b1=1, ..., h8=63 (python-chess default). For Black's perspective, the board is flipped: square `i` maps to square `63 - i` so that "forward" is always toward higher ranks from the current player's viewpoint.
+- **Square ordering:** a1=0, b1=1, ..., h8=63 (python-chess default). No board flipping — the board is always encoded from the starting perspective regardless of whose turn it is. Square semantics are stable (e4 always means e4). The color embedding stream handles the player/opponent distinction.
 - **Testability:** Pure function, no side effects. Tested with known board positions.
 
 ### 2. `EmbeddingLayer` (nn.Module)
@@ -345,8 +345,8 @@ flowchart TD
   compute(predictions: PredictionOutput, labels: LabelTensors) -> Tensor
   ```
   where `LabelTensors` is a `NamedTuple(src_sq: Tensor[B], tgt_sq: Tensor[B], opp_src_sq: Tensor[B], opp_tgt_sq: Tensor[B])`.
-- **Loss formula:** `loss = CE(src_sq) + CE(tgt_sq) + CE(opp_src_sq) + CE(opp_tgt_sq)`
-- **Optional per-head weighting via `loss_weights: tuple[float, float, float, float]` parameter**, defaulting to `(1.0, 1.0, 1.0, 1.0)`. All heads share the same output dimensionality (64-way), so gradient balance is expected to be more uniform than the previous mixed 8-way/64-way design.
+- **Loss formula:** `loss = CE(src_sq) + CE(tgt_sq) + CE(opp_src_sq) + CE(opp_tgt_sq)` with equal weights (1.0 each). No per-head weighting — establish vanilla model first.
+- **Entropy-based loss for low-rated games:** For games flagged as low-rated, maximize entropy (push predictions toward uniform distribution) instead of minimizing CE. This teaches the model to move *away* from bad play patterns. Exact mechanism TBD (see Open Questions).
 - **Testability:** Verified with known logits and labels against hand-computed CE values.
 
 ### 6. `StreamingPGNReader`
@@ -472,7 +472,7 @@ LabelTensors = NamedTuple:
 | ID | Scenario | Input | Expected Outcome | Edge? |
 |----|----------|-------|------------------|-------|
 | T01 | Tokenize initial position as White | `chess.Board()`, turn=WHITE | board_tokens[0]=0 (CLS), board_tokens[1]=5 (ROOK at a1); color_tokens[1]=1 (PLAYER) | No |
-| T02 | Tokenize initial position as Black | `chess.Board()`, turn=BLACK | Board is flipped; board_tokens[1] encodes h8 (ROOK); color_tokens[1]=1 (PLAYER for Black's rook) | No |
+| T02 | Tokenize initial position as Black | `chess.Board()`, turn=BLACK | No flip; board_tokens[1] encodes a1 (WHITE ROOK); color_tokens[1]=2 (OPPONENT since Black is to move) | No |
 | T03 | Tokenize empty square | Board with empty e4 | board_tokens[e4_idx]=1 (EMPTY), color_tokens[e4_idx]=0 (EMPTY) | No |
 | T04 | Embedding output shape | batch of 4, seq_len=65 | Output tensor shape = (4, 65, 256) | No |
 | T05 | Encoder output shape | batch of 4 | cls_embedding: (4, 256), square_embeddings: (4, 64, 256) | No |
@@ -483,7 +483,7 @@ LabelTensors = NamedTuple:
 | T10 | Reservoir sampler uniformity | Stream of 10,000 items, sample 100, repeat 1,000 times | Each item appears with frequency ~100/10,000 (chi-squared p > 0.01) | No |
 | T11 | Reservoir sampler with N > stream length | Stream of 50 items, sample 100 | Returns all 50 items | Yes |
 | T12 | Streaming PGN reader yields valid games | Small test PGN with 3 games | Iterator yields exactly 3 `chess.pgn.Game` objects | No |
-| T13 | Color normalization consistency | Same position, tokenized as White then Black | Piece types match (after flip); color indices swap (1 <-> 2) | No |
+| T13 | Color normalization consistency | Same position, tokenized as White then Black | board_tokens identical (no flip); color indices swap (1 <-> 2) for all occupied squares | No |
 | T14 | Promotion handling | Board where pawn promotes to queen | src_sq = pawn's square, tgt_sq = promotion square; piece identity (PAWN) derived from board state at src_sq | Yes |
 | T15 | En passant tokenization | Board with en passant capture available | Target square is the en passant square (not the captured pawn's square) | Yes |
 | T16 | Castling tokenization | Board where king castles | src_sq = king's square (e1/e8), tgt_sq = king's destination (g1 or c1); piece identity (KING) derived from board state at src_sq | Yes |
@@ -525,24 +525,30 @@ The engineering team adheres to these standards for all modules in this design:
 
 ---
 
+## Resolved Decisions
+
+1. **Opponent label for the last move in a game:** Use `ignore_index=-1` in `nn.CrossEntropyLoss` so the opponent square heads skip terminal-move examples. No vocabulary change needed.
+
+2. **Board perspective:** No flipping. The board is always encoded from the starting perspective (a1=0, h8=63) regardless of whose turn it is. The color embedding stream distinguishes player vs opponent pieces. This keeps square semantics stable — e4 always means e4 — and lets the model learn color-conditioned spatial reasoning through the color embeddings rather than geometric transformation.
+
+3. **Per-head loss weighting:** Equal weights (1.0 each), no optional weighting. Establish that the vanilla model works first before introducing tuning knobs.
+
+4. **Preprocessing once vs. on-the-fly:** Preprocess once to disk. ~40M examples at ~200 bytes each is ~8GB on disk, acceptable.
+
+5. **Handling promotions:** No special handling. The model predicts src_sq and tgt_sq only. With sufficient training examples, the promotion relationship should be learned implicitly from board state context.
+
+6. **Rating filter on sampled games:** No filtering — train on all games regardless of rating. For low-rated games (blunders), maximize entropy instead of minimizing cross-entropy. This pushes the learned distribution away from bad play and toward good play, baked into the board state representation. Implementation: flag games by rating bracket and invert the CE loss sign (or use `1 - softmax` target) for low-rated examples.
+
+7. **Downstream fine-tuning strategy:** Per-square output embeddings are treated as noise and discarded downstream. The valuable learned representations are: (a) the CLS token embedding (global board state), (b) the learned square embeddings from the embedding table, and (c) the learned piece embeddings from the embedding table. Phase 2 plan: first attempt using only CLS token sequences. If insufficient, build a GNN using the learned embedding table weights as node features for policy training.
+
+8. **Mixed precision training:** Start with FP32 on RTX 4070 Super (12GB VRAM). At ~4.8M params and batch_size=512, memory should be comfortable. Monitor VRAM usage and switch to mixed precision only if needed.
+
+---
+
 ## Open Questions
 
-1. **Opponent label for the last move in a game:** The final move has no opponent response. Options: (a) exclude from training, (b) use ignore_index=-1 in CE loss so the opponent square heads skip this example, (c) use a special NONE label. Recommendation: option (b) using `ignore_index=-1` in `nn.CrossEntropyLoss` -- simplest and requires no vocabulary change.
+1. **Validation metric:** Beyond loss, track top-1 accuracy for each of the four heads. Also track top-5 accuracy as a secondary metric, since multiple moves may be reasonable in a given position.
 
-2. **Board flipping for Black's perspective:** The design specifies flipping square indices (`i -> 63-i`) when it is Black's turn. This makes "forward" always toward higher ranks. Confirm whether this also requires reversing file order within each rank, or only rank reversal.
+2. **Data versioning:** Lichess dumps are monthly snapshots. Pin the exact dump URL (e.g., `lichess_db_standard_rated_2024-01.pgn.zst`) in a config file to ensure reproducibility across training runs.
 
-3. **Per-head loss weighting:** The initial design uses equal weights (1.0 each). All four heads are now 64-way square classifiers with identical output dimensionality, so gradient balance should be more uniform. Weighting may still help if one task (player vs opponent) converges faster. Defer to empirical observation.
-
-4. **Preprocessing once vs. on-the-fly:** The current design preprocesses all 40M examples to disk, then loads via memory-mapped dataset. Alternative: generate examples on-the-fly during training (saves disk but increases CPU load). Recommendation: preprocess once -- 40M examples at ~200 bytes each is ~8GB on disk, acceptable.
-
-5. **Handling promotions:** When a pawn promotes, the source square contains a PAWN (derivable from board state) and the target square is the promotion square. The model learns src_sq and tgt_sq — promotion piece type (queen/rook/bishop/knight) is not explicitly predicted. If under-promotion prediction is needed downstream, a fifth head with a 4-way classifier could be added.
-
-6. **Rating filter on sampled games:** The draft does not filter by player rating. Low-rated games contain blunders that may degrade embedding quality. Consider filtering to games where both players are rated >= 1800. Trade-off: reduces available data but increases signal quality.
-
-7. **Sequence length for downstream fine-tuning:** The encoder produces 65 tokens. Downstream tasks (value, policy) may only need the CLS embedding. Confirm whether the full 64 square embeddings are needed for any Phase 2 task, as this affects whether the encoder should expose both or only CLS.
-
-8. **Mixed precision training:** At ~4.8M params and batch_size=512, the model fits in FP32 on most GPUs. FP16/BF16 mixed precision would roughly halve memory and increase throughput. Defer to engineering based on available hardware.
-
-9. **Validation metric:** Beyond loss, track top-1 accuracy for each of the four heads. For the 64-way square heads, also track top-5 accuracy as a secondary metric, since multiple moves may be reasonable.
-
-10. **Data versioning:** Lichess dumps are monthly snapshots. Pin the exact dump URL (e.g., `lichess_db_standard_rated_2024-01.pgn.zst`) in a config file to ensure reproducibility across training runs.
+3. **Entropy-based loss for low-rated games:** The exact mechanism for "maximize entropy on bad games" needs specification. Options: (a) negate the CE loss for low-rated games, (b) use a rating-based loss weight that flips sign below a threshold, (c) use a KL divergence target that pushes toward uniform distribution for bad games. Requires experimentation.

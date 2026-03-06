@@ -8,8 +8,8 @@ Vocabulary sizes:
   piece_emb:      8  (CLS=0, EMPTY=1, PAWN=2, KNIGHT=3, BISHOP=4, ROOK=5, QUEEN=6, KING=7)
   color_emb:      3  (EMPTY=0, PLAYER=1, OPPONENT=2)
   square_emb:     65 (index 0=CLS position, 1..64=squares a1..h8)
-  trajectory_emb: 5  (0=none, 1=player prev src, 2=player prev tgt,
-                      3=opp prev src, 4=opp prev tgt)
+  trajectory_emb: 5  (0=none, 1=player prev loc, 2=player curr loc,
+                      3=opp prev loc, 4=opp curr loc)
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ D_MODEL: int = 256
 PIECE_VOCAB_SIZE: int = 8
 COLOR_VOCAB_SIZE: int = 3
 SQUARE_VOCAB_SIZE: int = 65  # CLS + 64 squares
-TRAJECTORY_VOCAB_SIZE: int = 5  # 0=none, 1=pl_src, 2=pl_tgt, 3=opp_src, 4=opp_tgt
+TRAJECTORY_VOCAB_SIZE: int = 5  # 0=none, 1=pl_prev, 2=pl_curr, 3=opp_prev, 4=opp_curr
 DROPOUT: float = 0.1
 
 # Role features: [value, mobility, linearity, diagonality, can_jump, royalty, freq_prior]

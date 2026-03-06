@@ -33,8 +33,8 @@ class TrainingExample(NamedTuple):
         board_tokens:       Length-65 list. Piece-type indices including CLS at position 0.
         color_tokens:       Length-65 list. Color indices including CLS at position 0.
         trajectory_tokens:  Length-65 list. Trajectory roles 0-4, CLS always 0.
-                            0=none, 1=player prev src, 2=player prev tgt,
-                            3=opp prev src, 4=opp prev tgt.
+                            0=none, 1=player prev loc, 2=player curr loc,
+                            3=opp prev loc, 4=opp curr loc.
         src_sq:             0-63 index of the player's source square for this move.
         tgt_sq:             0-63 index of the player's target square for this move.
         opp_src_sq:         0-63 index of opponent's source square, or -1 if last move.
@@ -57,6 +57,8 @@ class ChessBatch(NamedTuple):
         board_tokens:       torch.long tensor [B, 65]. Piece-type indices.
         color_tokens:       torch.long tensor [B, 65]. Color indices.
         trajectory_tokens:  torch.long tensor [B, 65]. Trajectory roles 0-4.
+                            0=none, 1=player prev loc, 2=player curr loc,
+                            3=opp prev loc, 4=opp curr loc.
         src_sq:             torch.long tensor [B]. Player source square indices 0-63.
         tgt_sq:             torch.long tensor [B]. Player target square indices 0-63.
         opp_src_sq:         torch.long tensor [B]. Opponent source indices; -1 = ignore.

@@ -79,8 +79,8 @@ def _make_trajectory_tokens(move_history: list[chess.Move]) -> list[int]:
     """Return trajectory_tokens of length 65 from the last two half-moves.
 
     Index 0 is CLS (always 0). Indices 1-64 map to squares a1-h8.
-    Values: 0=none, 1=player prev src, 2=player prev tgt,
-            3=opp prev src, 4=opp prev tgt.
+    Values: 0=none, 1=player prev loc, 2=player curr loc,
+            3=opp prev loc, 4=opp curr loc.
 
     The most recent half-move (move_history[-1]) is the opponent's last move.
     The second most recent (move_history[-2]) is the player's last move.

@@ -251,6 +251,29 @@ python -m scripts.train_real --pgn data/games.pgn --winners-only --checkpoint ch
 python -m scripts.train_real --num-games 100 --epochs 5 --checkpoint checkpoints/synthetic_run.pt
 ```
 
+### Launch the GUI viewer
+
+Visually step through a game with a split-panel window: left = animated board, right = per-ply loss/accuracy/entropy stats and a PCA scatter of the model's learned piece embeddings.
+
+```bash
+source .venv/bin/activate
+
+python -m scripts.gui.viewer \
+    --pgn data/games.pgn \
+    --checkpoint checkpoints/winner_run_01.pt \
+    --game-index 0
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--pgn` | `data/games.pgn` | Path to `.pgn` or `.pgn.zst` file |
+| `--checkpoint` | `checkpoints/winner_run_01.pt` | Path to trained `.pt` checkpoint |
+| `--game-index` | `0` | Zero-based index of the game to view |
+
+**Controls:** use the `◀ Prev` / `Next ▶` buttons or drag the slider to navigate plies. The board highlights the actual move's source square (yellow border) and target square (orange border). The right panel updates automatically with per-head CE loss, top-1 accuracy (✓/✗/–), Shannon entropy, and a mean-entropy bar.
+
+---
+
 ### Evaluate a trained checkpoint
 
 ```bash
@@ -290,7 +313,14 @@ chess-sim/
 ├── scripts/
 │   ├── __init__.py
 │   ├── train_real.py         # CLI: end-to-end training from PGN or synthetic games
-│   └── evaluate.py           # CLI: per-move evaluation with GameEvaluator
+│   ├── evaluate.py           # CLI: per-move evaluation with GameEvaluator
+│   └── gui/
+│       ├── __init__.py       # Protocols: Renderable, Navigable, GameSource
+│       ├── formatters.py     # Pure helpers: _fmt_loss, _fmt_acc, _fmt_entropy
+│       ├── game_controller.py# GameController: tkinter-free GameSource implementation
+│       ├── board_panel.py    # BoardPanel(tk.Frame): animated board + ply navigation
+│       ├── stats_panel.py    # StatsPanel(tk.Frame): metrics table + embedding scatter
+│       └── viewer.py         # ChessViewer root window + main() CLI entry point
 ├── tests/
 │   ├── utils.py              # Shared test fixtures (make_synthetic_batch, make_training_examples, etc.)
 │   ├── test_*.py             # Unit tests T01–T20

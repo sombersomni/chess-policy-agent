@@ -142,12 +142,6 @@ def game_to_examples(
 
         tokenized = tokenizer.tokenize(board, board.turn)
         trajectory_tokens = _make_trajectory_tokens(move_history)
-        if i + 1 < len(moves):
-            opp = moves[i + 1]
-            opp_src_sq = opp.from_square
-            opp_tgt_sq = opp.to_square
-        else:
-            opp_src_sq, opp_tgt_sq = -1, -1
 
         examples.append(TrainingExample(
             board_tokens=tokenized.board_tokens,
@@ -155,8 +149,6 @@ def game_to_examples(
             trajectory_tokens=trajectory_tokens,
             src_sq=move.from_square,
             tgt_sq=move.to_square,
-            opp_src_sq=opp_src_sq,
-            opp_tgt_sq=opp_tgt_sq,
         ))
         move_history.append(move)
         board.push(move)
@@ -167,12 +159,14 @@ def game_to_examples(
 def build_examples_from_file(
     pgn_path: Path,
     winners_only: bool = False,
+    max_games: int = 0,
 ) -> list[TrainingExample]:
     """Build training examples from a PGN file.
 
     Args:
         pgn_path: Path to .pgn or .pgn.zst file.
         winners_only: If True, only include winning side positions.
+        max_games: Stop after this many games (0 = no limit).
 
     Returns:
         List of TrainingExample namedtuples.
@@ -180,6 +174,8 @@ def build_examples_from_file(
     tokenizer = BoardTokenizer()
     all_examples: list[TrainingExample] = []
     for i, game in enumerate(stream_pgn(pgn_path)):
+        if max_games and i >= max_games:
+            break
         all_examples.extend(
             game_to_examples(
                 game, tokenizer, winners_only=winners_only
@@ -222,6 +218,8 @@ def main() -> None:
                         help="Path to save final checkpoint (.pt)")
     parser.add_argument("--resume", type=str, default="",
                         help="Path to checkpoint to resume from (.pt)")
+    parser.add_argument("--max-games", type=int, default=0,
+                        help="Max games to read from PGN (0 = no limit)")
     parser.add_argument(
         "--winners-only",
         action="store_true",
@@ -240,7 +238,7 @@ def main() -> None:
         pgn_path = Path(args.pgn)
         print(f"\nLoading examples from {pgn_path} ...")
         examples = build_examples_from_file(
-            pgn_path, winners_only=args.winners_only
+            pgn_path, winners_only=args.winners_only, max_games=args.max_games
         )
     else:
         print(f"\nGenerating examples from {args.num_games} synthetic games...")

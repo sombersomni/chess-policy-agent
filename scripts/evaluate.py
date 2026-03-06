@@ -2,7 +2,9 @@
 
 Evaluates a trained chess encoder checkpoint on a held-out game,
 producing per-ply CE loss, top-1 accuracy, and Shannon entropy
-for each of the four prediction heads.
+for each of the two prediction heads (src, tgt).
+
+Each ply is evaluated from the side-to-move's perspective.
 
 Usage:
     python -m scripts.evaluate \
@@ -48,23 +50,17 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 
 class StepResult(NamedTuple):
-    """Per-ply evaluation metrics for all four heads."""
+    """Per-ply evaluation metrics for both heads."""
 
     ply: int
     move_uci: str
     loss_src: float
     loss_tgt: float
-    loss_opp_src: float
-    loss_opp_tgt: float
     total_loss: float
     acc_src: int
     acc_tgt: int
-    acc_opp_src: int
-    acc_opp_tgt: int
     entropy_src: float
     entropy_tgt: float
-    entropy_opp_src: float
-    entropy_opp_tgt: float
     mean_entropy: float
 
 
@@ -115,45 +111,38 @@ def shannon_entropy(logits: Tensor) -> float:
 
 
 def top1_accuracy(logits: Tensor, label: int) -> int:
-    """Return 1 if argmax matches label, 0 otherwise, -1 if skipped.
+    """Return 1 if argmax matches label, 0 otherwise.
 
     Args:
         logits: 1-D tensor of shape [64].
-        label: Ground-truth square index, or -1 to skip.
+        label: Ground-truth square index.
 
     Returns:
-        1 (correct), 0 (wrong), or -1 (label was -1).
+        1 (correct) or 0 (wrong).
     """
-    if label == -1:
-        return -1
     return int(torch.argmax(logits).item() == label)
 
 
 def per_head_ce(
     logits: Tensor,
     label: int,
-    ignore_index: int = -100,
 ) -> float:
     """Compute CE loss for a single example and head.
 
     Args:
         logits: 1-D tensor of shape [64].
         label: Ground-truth square index.
-        ignore_index: Index to ignore in CE.
 
     Returns:
-        CE loss as float, or 0.0 if result is NaN.
+        CE loss as float.
     """
-    ce = nn.CrossEntropyLoss(ignore_index=ignore_index)
+    ce = nn.CrossEntropyLoss()
     loss = ce(
         logits.unsqueeze(0),
         torch.tensor([label], dtype=torch.long,
                       device=logits.device),
     )
-    val = loss.item()
-    if math.isnan(val):
-        return 0.0
-    return val
+    return loss.item()
 
 
 # ------------------------------------------------------------------
@@ -200,49 +189,31 @@ def evaluate_step(
     # Squeeze batch dim: [1, 64] -> [64]
     src_logits = pred.src_sq_logits.squeeze(0)
     tgt_logits = pred.tgt_sq_logits.squeeze(0)
-    opp_src_logits = pred.opp_src_sq_logits.squeeze(0)
-    opp_tgt_logits = pred.opp_tgt_sq_logits.squeeze(0)
 
     # Per-head CE losses
     l_src = per_head_ce(src_logits, example.src_sq)
     l_tgt = per_head_ce(tgt_logits, example.tgt_sq)
-    l_opp_s = per_head_ce(
-        opp_src_logits, example.opp_src_sq, ignore_index=-1
-    )
-    l_opp_t = per_head_ce(
-        opp_tgt_logits, example.opp_tgt_sq, ignore_index=-1
-    )
-    total = l_src + l_tgt + l_opp_s + l_opp_t
+    total = l_src + l_tgt
 
     # Top-1 accuracy
     a_src = top1_accuracy(src_logits, example.src_sq)
     a_tgt = top1_accuracy(tgt_logits, example.tgt_sq)
-    a_opp_s = top1_accuracy(opp_src_logits, example.opp_src_sq)
-    a_opp_t = top1_accuracy(opp_tgt_logits, example.opp_tgt_sq)
 
     # Shannon entropy
     h_src = shannon_entropy(src_logits)
     h_tgt = shannon_entropy(tgt_logits)
-    h_opp_s = shannon_entropy(opp_src_logits)
-    h_opp_t = shannon_entropy(opp_tgt_logits)
-    mean_h = (h_src + h_tgt + h_opp_s + h_opp_t) / 4.0
+    mean_h = (h_src + h_tgt) / 2.0
 
     return StepResult(
         ply=ply,
         move_uci=move_uci,
         loss_src=l_src,
         loss_tgt=l_tgt,
-        loss_opp_src=l_opp_s,
-        loss_opp_tgt=l_opp_t,
         total_loss=total,
         acc_src=a_src,
         acc_tgt=a_tgt,
-        acc_opp_src=a_opp_s,
-        acc_opp_tgt=a_opp_t,
         entropy_src=h_src,
         entropy_tgt=h_tgt,
-        entropy_opp_src=h_opp_s,
-        entropy_opp_tgt=h_opp_t,
         mean_entropy=mean_h,
     )
 
@@ -326,12 +297,6 @@ class GameEvaluator:
             trajectory_tokens = _make_trajectory_tokens(
                 move_history
             )
-            if i + 1 < len(moves):
-                opp = moves[i + 1]
-                opp_src = opp.from_square
-                opp_tgt = opp.to_square
-            else:
-                opp_src, opp_tgt = -1, -1
 
             ex = TrainingExample(
                 board_tokens=tokenized.board_tokens,
@@ -339,8 +304,6 @@ class GameEvaluator:
                 trajectory_tokens=trajectory_tokens,
                 src_sq=move.from_square,
                 tgt_sq=move.to_square,
-                opp_src_sq=opp_src,
-                opp_tgt_sq=opp_tgt,
             )
 
             result = evaluate_step(
@@ -362,13 +325,6 @@ class GameEvaluator:
 # Output formatting
 # ------------------------------------------------------------------
 
-def _fmt_acc(val: int) -> str:
-    """Format accuracy value: -1 becomes '--'."""
-    if val == -1:
-        return "--"
-    return str(val)
-
-
 def print_table(results: list[StepResult]) -> None:
     """Print a fixed-width terminal table of per-ply results.
 
@@ -378,28 +334,20 @@ def print_table(results: list[StepResult]) -> None:
     header = (
         f"{'Ply':>3}  {'Move':<8} "
         f"{'L_src':>7} {'L_tgt':>7} "
-        f"{'L_opp_s':>7} {'L_opp_t':>7} "
         f"{'Total':>8} "
-        f"{'A_s':>3} {'A_t':>3} {'A_os':>4} {'A_ot':>4} "
-        f"{'H_src':>7} {'H_tgt':>7} "
-        f"{'H_opp_s':>7} {'H_opp_t':>7}"
+        f"{'A_s':>3} {'A_t':>3} "
+        f"{'H_src':>7} {'H_tgt':>7}"
     )
     print(header)
     for r in results:
         line = (
             f"{r.ply:>3}  {r.move_uci:<8} "
             f"{r.loss_src:>7.4f} {r.loss_tgt:>7.4f} "
-            f"{r.loss_opp_src:>7.4f} "
-            f"{r.loss_opp_tgt:>7.4f} "
             f"{r.total_loss:>8.4f} "
-            f"{_fmt_acc(r.acc_src):>3} "
-            f"{_fmt_acc(r.acc_tgt):>3} "
-            f"{_fmt_acc(r.acc_opp_src):>4} "
-            f"{_fmt_acc(r.acc_opp_tgt):>4} "
+            f"{r.acc_src:>3} "
+            f"{r.acc_tgt:>3} "
             f"{r.entropy_src:>7.4f} "
-            f"{r.entropy_tgt:>7.4f} "
-            f"{r.entropy_opp_src:>7.4f} "
-            f"{r.entropy_opp_tgt:>7.4f}"
+            f"{r.entropy_tgt:>7.4f}"
         )
         print(line)
 
@@ -431,47 +379,21 @@ def print_summary(
     total = [r.total_loss for r in results]
     h_src = [r.entropy_src for r in results]
     h_tgt = [r.entropy_tgt for r in results]
-    h_opp_s = [r.entropy_opp_src for r in results]
-    h_opp_t = [r.entropy_opp_tgt for r in results]
     m_ent = [r.mean_entropy for r in results]
 
-    # Opp losses: exclude terminal plies (acc_opp_src == -1)
-    l_opp_s = [
-        r.loss_opp_src for r in results
-        if r.acc_opp_src != -1
-    ]
-    l_opp_t = [
-        r.loss_opp_tgt for r in results
-        if r.acc_opp_src != -1
-    ]
-
-    # Accuracies: exclude -1 sentinels
-    a_src = [r.acc_src for r in results if r.acc_src != -1]
-    a_tgt = [r.acc_tgt for r in results if r.acc_tgt != -1]
-    a_opp_s = [
-        r.acc_opp_src for r in results
-        if r.acc_opp_src != -1
-    ]
-    a_opp_t = [
-        r.acc_opp_tgt for r in results
-        if r.acc_opp_tgt != -1
-    ]
+    # Accuracies
+    a_src = [float(r.acc_src) for r in results]
+    a_tgt = [float(r.acc_tgt) for r in results]
 
     print("\n=== Summary ===")
     for name, vals in [
         ("loss_src", l_src),
         ("loss_tgt", l_tgt),
-        ("loss_opp_src", l_opp_s),
-        ("loss_opp_tgt", l_opp_t),
         ("total_loss", total),
-        ("acc_src", [float(v) for v in a_src]),
-        ("acc_tgt", [float(v) for v in a_tgt]),
-        ("acc_opp_src", [float(v) for v in a_opp_s]),
-        ("acc_opp_tgt", [float(v) for v in a_opp_t]),
+        ("acc_src", a_src),
+        ("acc_tgt", a_tgt),
         ("entropy_src", h_src),
         ("entropy_tgt", h_tgt),
-        ("entropy_opp_src", h_opp_s),
-        ("entropy_opp_tgt", h_opp_t),
         ("mean_entropy", m_ent),
     ]:
         if vals:

@@ -42,7 +42,7 @@ class StatsPanel(tk.Frame):
         "blue", "red", "purple", "black",
     ]
 
-    _HEADS: list[str] = ["src", "tgt", "opp_src", "opp_tgt"]
+    _HEADS: list[str] = ["src", "tgt"]
 
     def __init__(
         self,
@@ -67,7 +67,7 @@ class StatsPanel(tk.Frame):
             self,
             columns=("head", "loss", "acc", "entropy"),
             show="headings",
-            height=4,
+            height=2,
         )
         for col, width, label in [
             ("head", 80, "Head"),
@@ -134,16 +134,6 @@ class StatsPanel(tk.Frame):
                 result.loss_tgt,
                 result.acc_tgt,
                 result.entropy_tgt,
-            ),
-            "opp_src": (
-                result.loss_opp_src,
-                result.acc_opp_src,
-                result.entropy_opp_src,
-            ),
-            "opp_tgt": (
-                result.loss_opp_tgt,
-                result.acc_opp_tgt,
-                result.entropy_opp_tgt,
             ),
         }
         for head, (loss, acc, entropy) in rows.items():

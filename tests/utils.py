@@ -26,9 +26,6 @@ N_SQUARES: int = 64
 def make_synthetic_batch(batch_size: int = 4, device: str = "cpu") -> ChessBatch:
     """Return a random ChessBatch of long tensors for use in unit tests.
 
-    All label values are in range [0, 63] (valid square indices). Opponent
-    labels are also set to valid squares (no -1) to simplify loss testing.
-
     Args:
         batch_size: Number of examples in the batch. Default 4.
         device: Torch device string. Default 'cpu'.
@@ -47,47 +44,11 @@ def make_synthetic_batch(batch_size: int = 4, device: str = "cpu") -> ChessBatch
         trajectory_tokens=torch.randint(0, 5, (batch_size, SEQ_LEN), dtype=torch.long, device=device),
         src_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
         tgt_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
-        opp_src_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
-        opp_tgt_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
-    )
-
-
-def make_synthetic_batch_with_ignore(batch_size: int = 4, device: str = "cpu") -> ChessBatch:
-    """Return a ChessBatch where opp labels contain -1 (ignore_index) for last move.
-
-    Half the examples have -1 in opp_src_sq and opp_tgt_sq to simulate
-    terminal board states. Used to test T18.
-
-    Args:
-        batch_size: Number of examples in the batch. Default 4.
-        device: Torch device string. Default 'cpu'.
-
-    Returns:
-        ChessBatch with -1 values in opponent label tensors.
-
-    Example:
-        >>> batch = make_synthetic_batch_with_ignore(4)
-        >>> (batch.opp_src_sq == -1).any().item()
-        True
-    """
-    batch = make_synthetic_batch(batch_size, device)
-    opp_src = batch.opp_src_sq.clone()
-    opp_tgt = batch.opp_tgt_sq.clone()
-    opp_src[batch_size // 2:] = -1
-    opp_tgt[batch_size // 2:] = -1
-    return ChessBatch(
-        board_tokens=batch.board_tokens,
-        color_tokens=batch.color_tokens,
-        trajectory_tokens=batch.trajectory_tokens,
-        src_sq=batch.src_sq,
-        tgt_sq=batch.tgt_sq,
-        opp_src_sq=opp_src,
-        opp_tgt_sq=opp_tgt,
     )
 
 
 def make_label_tensors(batch_size: int = 4, device: str = "cpu") -> LabelTensors:
-    """Return random LabelTensors with all valid square indices (no -1).
+    """Return random LabelTensors with all valid square indices.
 
     Args:
         batch_size: Number of examples. Default 4.
@@ -99,8 +60,6 @@ def make_label_tensors(batch_size: int = 4, device: str = "cpu") -> LabelTensors
     return LabelTensors(
         src_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
         tgt_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
-        opp_src_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
-        opp_tgt_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
     )
 
 
@@ -112,7 +71,7 @@ def make_prediction_output(batch_size: int = 4, device: str = "cpu") -> Predicti
         device: Torch device string. Default 'cpu'.
 
     Returns:
-        PredictionOutput with four [B, 64] float tensors.
+        PredictionOutput with two [B, 64] float tensors.
     """
     return PredictionOutput(
         src_sq_logits=torch.randn(
@@ -120,14 +79,6 @@ def make_prediction_output(batch_size: int = 4, device: str = "cpu") -> Predicti
             requires_grad=True,
         ),
         tgt_sq_logits=torch.randn(
-            batch_size, N_SQUARES, device=device,
-            requires_grad=True,
-        ),
-        opp_src_sq_logits=torch.randn(
-            batch_size, N_SQUARES, device=device,
-            requires_grad=True,
-        ),
-        opp_tgt_sq_logits=torch.randn(
             batch_size, N_SQUARES, device=device,
             requires_grad=True,
         ),
@@ -234,8 +185,6 @@ def make_training_examples(n: int = 10) -> list[TrainingExample]:
             trajectory_tokens=trajectory_tokens,
             src_sq=int(torch.randint(0, 64, (1,)).item()),
             tgt_sq=int(torch.randint(0, 64, (1,)).item()),
-            opp_src_sq=int(torch.randint(0, 64, (1,)).item()),
-            opp_tgt_sq=int(torch.randint(0, 64, (1,)).item()),
         ))
     return examples
 

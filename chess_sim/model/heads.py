@@ -1,11 +1,10 @@
-"""PredictionHeads: maps CLS embedding to four square-prediction logit tensors.
+"""PredictionHeads: maps CLS embedding to two square-prediction logit tensors.
 
-Four independent Linear(256, 64) layers predict:
+Two independent Linear(256, 64) layers predict:
   1. Player's source square (which piece moves)
   2. Player's target square (where the piece moves)
-  3. Opponent's source square (what the opponent will move next)
-  4. Opponent's target square (where the opponent will move next)
 
+Each ply is always predicted from the side-to-move's perspective.
 Piece identity is implicit: given the predicted source square and the known board
 state, P(piece | src_sq, board) = 1 — no separate piece-type head is needed.
 """
@@ -21,20 +20,20 @@ from chess_sim.protocols import Predictable
 from chess_sim.types import PredictionOutput
 
 N_SQUARES: int = 64
-N_HEADS: int = 4
+N_HEADS: int = 2
 
 
 class PredictionHeads(nn.Module):
-    """Four independent linear heads mapping CLS embedding to square logits.
+    """Two independent linear heads mapping CLS embedding to square logits.
 
     Implements the Predictable protocol.
 
-    All four heads share the same architecture (Linear(256, 64)) but have
+    Both heads share the same architecture (Linear(256, 64)) but have
     independent parameters — no weight sharing between heads.
 
     Attributes:
-        heads: nn.ModuleList of 4 x nn.Linear(256, 64).
-               Order: [src_sq, tgt_sq, opp_src_sq, opp_tgt_sq].
+        heads: nn.ModuleList of 2 x nn.Linear(256, 64).
+               Order: [src_sq, tgt_sq].
 
     Example:
         >>> ph = PredictionHeads()
@@ -44,16 +43,15 @@ class PredictionHeads(nn.Module):
     """
 
     def __init__(self) -> None:
-        """Initialize four independent Linear(256, 64) prediction heads.
+        """Initialize two independent Linear(256, 64) prediction heads.
 
         Uses nn.ModuleList for DRY construction. Index mapping:
-          0 -> src_sq_head, 1 -> tgt_sq_head,
-          2 -> opp_src_sq_head, 3 -> opp_tgt_sq_head.
+          0 -> src_sq_head, 1 -> tgt_sq_head.
 
         Example:
             >>> ph = PredictionHeads()
             >>> len(ph.heads)
-            4
+            2
         """
         super().__init__()
         self.heads = nn.ModuleList(
@@ -61,13 +59,13 @@ class PredictionHeads(nn.Module):
         )
 
     def predict(self, cls_embedding: Tensor) -> PredictionOutput:
-        """Apply all four heads to the CLS embedding and return logit tensors.
+        """Apply both heads to the CLS embedding and return logit tensors.
 
         Args:
             cls_embedding: torch.float [B, 256]. Global board representation.
 
         Returns:
-            PredictionOutput with four tensors each of shape [B, 64].
+            PredictionOutput with two tensors each of shape [B, 64].
 
         Example:
             >>> ph = PredictionHeads()
@@ -79,8 +77,6 @@ class PredictionHeads(nn.Module):
         return PredictionOutput(
             src_sq_logits=logits[0],
             tgt_sq_logits=logits[1],
-            opp_src_sq_logits=logits[2],
-            opp_tgt_sq_logits=logits[3],
         )
 
     def forward(self, cls_embedding: Tensor) -> PredictionOutput:

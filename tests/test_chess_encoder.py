@@ -276,8 +276,6 @@ class TestEvaluateStepTrajectory(unittest.TestCase):
             trajectory_tokens=[0] * 65,
             src_sq=12,
             tgt_sq=28,
-            opp_src_sq=52,
-            opp_tgt_sq=36,
         )
         result = evaluate_step(
             example=ex,

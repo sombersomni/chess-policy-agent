@@ -100,16 +100,16 @@ class Encodable(Protocol):
 
 @runtime_checkable
 class Predictable(Protocol):
-    """Maps a CLS embedding to four square-prediction logit tensors."""
+    """Maps a CLS embedding to two square-prediction logit tensors."""
 
     def predict(self, cls_embedding: Tensor) -> PredictionOutput:
-        """Predict player src/tgt and opponent src/tgt squares from CLS embedding.
+        """Predict player src/tgt squares from CLS embedding.
 
         Args:
             cls_embedding: Float tensor [B, 256] — the global board representation.
 
         Returns:
-            PredictionOutput with four logit tensors each of shape [B, 64].
+            PredictionOutput with two logit tensors each of shape [B, 64].
 
         Example:
             >>> heads = PredictionHeads()

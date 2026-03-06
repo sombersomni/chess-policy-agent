@@ -40,18 +40,6 @@ class TestPredictionHeadsOutputShape(unittest.TestCase):
             out = self.heads.predict(self._make_cls())
         self.assertEqual(out.tgt_sq_logits.shape, (self.batch_size, N_SQUARES))
 
-    def test_opp_src_sq_logits_shape(self) -> None:
-        """T06: opp_src_sq_logits shape is (B, 64)."""
-        with torch.no_grad():
-            out = self.heads.predict(self._make_cls())
-        self.assertEqual(out.opp_src_sq_logits.shape, (self.batch_size, N_SQUARES))
-
-    def test_opp_tgt_sq_logits_shape(self) -> None:
-        """T06: opp_tgt_sq_logits shape is (B, 64)."""
-        with torch.no_grad():
-            out = self.heads.predict(self._make_cls())
-        self.assertEqual(out.opp_tgt_sq_logits.shape, (self.batch_size, N_SQUARES))
-
     def test_heads_produce_independent_gradients(self) -> None:
         """T06: Each head's loss contributes a gradient only through its own parameters."""
         cls_emb = self._make_cls().requires_grad_(True)

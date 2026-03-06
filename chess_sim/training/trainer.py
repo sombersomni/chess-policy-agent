@@ -220,7 +220,6 @@ class Trainer:
         from chess_sim.types import LabelTensors
         labels = LabelTensors(
             batch.src_sq, batch.tgt_sq,
-            batch.opp_src_sq, batch.opp_tgt_sq,
         )
         loss = self.loss_fn.compute(preds, labels)
         self.optimizer.zero_grad()
@@ -281,4 +280,4 @@ class Trainer:
         self.encoder.load_state_dict(
             ckpt['encoder'], strict=False
         )
-        self.heads.load_state_dict(ckpt['heads'])
+        self.heads.load_state_dict(ckpt['heads'], strict=False)

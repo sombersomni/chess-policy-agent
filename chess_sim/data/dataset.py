@@ -64,14 +64,13 @@ class ChessDataset(Dataset):
     def __getitem__(self, idx: int) -> ChessBatch:
         """Return one training example as a ChessBatch of scalar/1D tensors.
 
-        All returned tensors have dtype=torch.long. Labels use -1 as ignore_index
-        for the opponent heads when the current move is the last in the game.
+        All returned tensors have dtype=torch.long.
 
         Args:
             idx: Integer index into the dataset.
 
         Returns:
-            ChessBatch with board_tokens [65], color_tokens [65], and four label scalars.
+            ChessBatch with board_tokens [65], color_tokens [65], and two label scalars.
 
         Example:
             >>> item = ds[0]
@@ -94,12 +93,6 @@ class ChessDataset(Dataset):
             ),
             tgt_sq=torch.tensor(
                 ex.tgt_sq, dtype=torch.long
-            ),
-            opp_src_sq=torch.tensor(
-                ex.opp_src_sq, dtype=torch.long
-            ),
-            opp_tgt_sq=torch.tensor(
-                ex.opp_tgt_sq, dtype=torch.long
             ),
         )
 

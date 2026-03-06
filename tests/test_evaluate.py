@@ -1,4 +1,4 @@
-"""Unit tests for scripts.evaluate (TEV01-TEV11).
+"""Unit tests for scripts.evaluate (TEV01-TEV14).
 
 All tests run on CPU only.
 """
@@ -52,7 +52,7 @@ class TestShannonEntropy(unittest.TestCase):
 
 
 class TestTop1Accuracy(unittest.TestCase):
-    """TEV03-TEV05: top1_accuracy pure function."""
+    """TEV03-TEV04: top1_accuracy pure function."""
 
     def test_tev03_correct(self) -> None:
         """TEV03: returns 1 when argmax matches label."""
@@ -66,20 +66,9 @@ class TestTop1Accuracy(unittest.TestCase):
         logits[7] = 10.0
         self.assertEqual(top1_accuracy(logits, 3), 0)
 
-    def test_tev05_skip(self) -> None:
-        """TEV05: returns -1 when label == -1."""
-        logits = torch.zeros(64)
-        self.assertEqual(top1_accuracy(logits, -1), -1)
-
 
 class TestPerHeadCE(unittest.TestCase):
     """TEV06-TEV07: per_head_ce pure function."""
-
-    def test_tev06_ignored_label(self) -> None:
-        """TEV06: returns 0.0 when label==-1 and ignore_index==-1."""
-        logits = torch.randn(64)
-        result = per_head_ce(logits, label=-1, ignore_index=-1)
-        self.assertEqual(result, 0.0)
 
     def test_tev07_valid_label(self) -> None:
         """TEV07: returns finite positive float for valid label."""
@@ -90,7 +79,7 @@ class TestPerHeadCE(unittest.TestCase):
 
 
 class TestEvaluateStep(unittest.TestCase):
-    """TEV08-TEV09: evaluate_step integration."""
+    """TEV08: evaluate_step integration."""
 
     def setUp(self) -> None:
         """Create encoder, heads, and a synthetic example."""
@@ -106,18 +95,6 @@ class TestEvaluateStep(unittest.TestCase):
             trajectory_tokens=[0] * 65,
             src_sq=12,
             tgt_sq=28,
-            opp_src_sq=52,
-            opp_tgt_sq=36,
-        )
-        # Terminal example (opp labels = -1)
-        self.terminal_example = TrainingExample(
-            board_tokens=[0] + [1] * 64,
-            color_tokens=[0] + [0] * 64,
-            trajectory_tokens=[0] * 65,
-            src_sq=12,
-            tgt_sq=28,
-            opp_src_sq=-1,
-            opp_tgt_sq=-1,
         )
 
     def test_tev08_step_result_populated(self) -> None:
@@ -134,44 +111,18 @@ class TestEvaluateStep(unittest.TestCase):
         self.assertEqual(result.ply, 0)
         self.assertEqual(result.move_uci, "e2e4")
         # All losses are finite floats
-        for field in [
-            "loss_src", "loss_tgt",
-            "loss_opp_src", "loss_opp_tgt", "total_loss",
-        ]:
+        for field in ["loss_src", "loss_tgt", "total_loss"]:
             val = getattr(result, field)
             self.assertIsInstance(val, float)
             self.assertTrue(math.isfinite(val))
-        # Accuracies are 0 or 1 for non-terminal
-        for field in [
-            "acc_src", "acc_tgt",
-            "acc_opp_src", "acc_opp_tgt",
-        ]:
+        # Accuracies are 0 or 1
+        for field in ["acc_src", "acc_tgt"]:
             val = getattr(result, field)
             self.assertIn(val, (0, 1))
         # Entropies are positive
-        for field in [
-            "entropy_src", "entropy_tgt",
-            "entropy_opp_src", "entropy_opp_tgt",
-            "mean_entropy",
-        ]:
+        for field in ["entropy_src", "entropy_tgt", "mean_entropy"]:
             val = getattr(result, field)
             self.assertGreater(val, 0.0)
-
-    def test_tev09_terminal_ply(self) -> None:
-        """TEV09: last ply has acc_opp_src==-1, acc_opp_tgt==-1."""
-        result = evaluate_step(
-            example=self.terminal_example,
-            move_uci="d7d5",
-            ply=5,
-            encoder=self.encoder,
-            heads=self.heads,
-            device="cpu",
-        )
-        self.assertEqual(result.acc_opp_src, -1)
-        self.assertEqual(result.acc_opp_tgt, -1)
-        # Opp losses should be 0.0 (NaN guard)
-        self.assertEqual(result.loss_opp_src, 0.0)
-        self.assertEqual(result.loss_opp_tgt, 0.0)
 
 
 class TestGameEvaluator(unittest.TestCase):
@@ -206,17 +157,12 @@ class TestGameEvaluator(unittest.TestCase):
             self.assertIsInstance(r, StepResult)
 
     def test_tev11_mean_entropy_correct(self) -> None:
-        """TEV11: mean_entropy == mean of 4 head entropies."""
+        """TEV11: mean_entropy == mean of 2 head entropies."""
         game = self.games[1]
         results = self.evaluator.evaluate_game(game)
         self.assertGreater(len(results), 0)
         for r in results:
-            expected = (
-                r.entropy_src
-                + r.entropy_tgt
-                + r.entropy_opp_src
-                + r.entropy_opp_tgt
-            ) / 4.0
+            expected = (r.entropy_src + r.entropy_tgt) / 2.0
             self.assertAlmostEqual(
                 r.mean_entropy, expected, places=6
             )

@@ -2,3 +2,4 @@ torch>=2.0
 python-chess>=1.9
 zstandard>=0.21
 parameterized
+matplotlib>=3.7

@@ -1,0 +1,547 @@
+# Chess Transformer Encoder -- Design
+
+## Problem Statement
+
+The chess-sim project needs a foundation model that produces rich, contextual embeddings of chess board states for downstream tasks (value network, policy network, MCTS evaluation). Classical engines hand-craft evaluation features; neural engines learn implicitly from self-play. This encoder takes a third path: learning the language of chess analytically from master games using a BERT-style transformer, producing representations where strategic concepts emerge as geometric structure in embedding space. The encoder must be trainable on commodity hardware (single GPU) and produce embeddings usable by multiple downstream heads without retraining the backbone.
+
+---
+
+## Feasibility Analysis
+
+| Approach | Pros | Cons | Verdict |
+|----------|------|------|---------|
+| **A. BERT-style encoder, CLS + 64 squares, 4 classification heads** | Minimal vocabulary (8 tokens); natural CLS pooling for global state; per-square embeddings for local reasoning; well-understood architecture; ~4.8M params fits single GPU | No autoregressive move sequence modeling; CLS-only heads ignore per-square information for move selection | **Accept** |
+| **B. GPT-style decoder, autoregressive move generation** | Directly models move sequences; natural for policy head | Requires causal masking that breaks full-board attention; harder to extract static board embeddings; training requires move-sequence tokenization not just board snapshots | Reject -- misaligned with embedding-first goal |
+| **C. Graph Neural Network over piece-square graph** | Captures adjacency and attack structure naturally; variable-size input | Non-standard architecture; fewer pretrained baselines; harder to integrate with downstream transformer-based heads; custom batching logic | Reject -- engineering complexity too high for v1 |
+| **D. CNN over 8x8 board image** | Spatial inductive bias is built in; AlphaZero precedent | Fixed receptive field limits long-range piece interaction; no natural CLS equivalent; harder to produce per-square embeddings | Reject -- transformer attention handles long-range better |
+
+---
+
+## Chosen Approach
+
+Approach A is accepted. A BERT-style transformer encoder over a 65-token sequence (CLS + 64 squares) with additive embedding composition (piece + color + square) and four classification heads (player move prediction + opponent move prediction) provides the best balance of simplicity, expressiveness, and alignment with downstream tasks. The architecture totals ~4.8M parameters, trainable on a single GPU. The two-task objective (predict both the player's move and the opponent's response) forces the CLS embedding to compress a richer global board representation capturing the strategic intentions of both sides simultaneously.
+
+---
+
+## Architecture
+
+### Diagram 1 -- Full System Overview
+
+```mermaid
+flowchart TD
+    PGN["Lichess PGN Dump<br/>80M games, .zst compressed"] -->|"StreamingPGNReader<br/>game-by-game"| RS["ReservoirSampler<br/>O(N) memory"]
+    RS -->|"1M sampled games"| REPLAY["BoardTokenizer<br/>python-chess replay"]
+    REPLAY -->|"board_tokens, color_tokens, labels"| DS["ChessDataset<br/>~40M examples"]
+    DS -->|"DataLoader<br/>batch_size=512"| TRAIN["TrainingLoop"]
+
+    subgraph ENCODER["ChessEncoder Module"]
+        EMB["EmbeddingLayer<br/>piece + color + square"] -->|"65 x 256"| TF["TransformerEncoder<br/>6 layers, 8 heads"]
+        TF -->|"65 x 256"| SPLIT{{"split"}}
+        SPLIT -->|"index 0"| CLS["CLS embedding<br/>256-dim"]
+        SPLIT -->|"index 1:65"| SQ["Square embeddings<br/>64 x 256"]
+    end
+
+    TRAIN -->|"board_tokens, color_tokens"| ENCODER
+
+    CLS --> HEADS["PredictionHeads"]
+
+    subgraph HEADS["PredictionHeads Module"]
+        H1["src_piece_head<br/>Linear 256 -> 8"]
+        H2["tgt_sq_head<br/>Linear 256 -> 64"]
+        H3["opp_piece_head<br/>Linear 256 -> 8"]
+        H4["opp_tgt_sq_head<br/>Linear 256 -> 64"]
+    end
+
+    HEADS -->|"4 CE losses"| LOSS["LossComputer<br/>sum of 4 cross-entropy"]
+    LOSS -->|"backprop"| ENCODER
+    LOSS -->|"backprop"| HEADS
+
+    CLS -.->|"Phase 2: downstream"| VN["Value Network"]
+    SQ -.->|"Phase 2: downstream"| PN["Policy Network"]
+    CLS -.->|"Phase 2: downstream"| MCTS["MCTS Evaluator"]
+```
+
+*Caption: End-to-end data flow from raw PGN to trained encoder. Solid lines are Phase 1 (pretraining). Dashed lines are Phase 2 (downstream, out of scope).*
+
+---
+
+### Diagram 2 -- Embedding Composition Detail
+
+```mermaid
+flowchart LR
+    PT["piece_type<br/>0..7"] --> PE["PieceEmbedding<br/>Embedding(8, 256)"]
+    COL["color<br/>0=empty, 1=player, 2=opponent"] --> CE["ColorEmbedding<br/>Embedding(3, 256)"]
+    SQ["square_index<br/>0..64 (0=CLS)"] --> SE["SquareEmbedding<br/>Embedding(65, 256)"]
+
+    PE --> ADD(("+"))
+    CE --> ADD
+    SE --> ADD
+    ADD --> LN["LayerNorm(256)"]
+    LN --> DROP["Dropout(0.1)"]
+    DROP --> TOK["token_embedding<br/>256-dim"]
+```
+
+*Caption: Three independent embedding tables are summed element-wise, then normalized and dropped out. CLS uses piece_type=0 (CLS token), color=0 (empty), square_index=0.*
+
+---
+
+### Diagram 3 -- Training Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant DL as DataLoader
+    participant ENC as ChessEncoder
+    participant EMB as EmbeddingLayer
+    participant TF as TransformerEncoder
+    participant PH as PredictionHeads
+    participant LC as LossComputer
+    participant OPT as AdamW Optimizer
+
+    DL->>ENC: batch(board_tokens, color_tokens, labels)
+    ENC->>EMB: forward(board_tokens, color_tokens)
+    EMB-->>TF: embeddings [B, 65, 256]
+    TF-->>ENC: encoded [B, 65, 256]
+    ENC->>ENC: cls = encoded[:, 0, :]
+    ENC->>PH: forward(cls)
+    PH-->>LC: 4 logit tensors
+    LC->>LC: sum(CE(logits_i, labels_i) for i in 1..4)
+    LC-->>OPT: total_loss scalar
+    OPT->>OPT: zero_grad, loss.backward, step
+    OPT-->>ENC: updated parameters
+```
+
+*Caption: Single training step sequence. The encoder and heads share the backward pass through the combined loss.*
+
+---
+
+### Diagram 4 -- Class Structure
+
+```mermaid
+classDiagram
+    class Tokenizable {
+        <<Protocol>>
+        +tokenize(board: chess.Board, turn: chess.Color) TokenizedBoard
+    }
+
+    class Embeddable {
+        <<Protocol>>
+        +embed(board_tokens: Tensor, color_tokens: Tensor) Tensor
+    }
+
+    class Encodable {
+        <<Protocol>>
+        +encode(board_tokens: Tensor, color_tokens: Tensor) EncoderOutput
+    }
+
+    class Predictable {
+        <<Protocol>>
+        +predict(cls_embedding: Tensor) PredictionOutput
+    }
+
+    class Trainable {
+        <<Protocol>>
+        +train_step(batch: ChessBatch) float
+    }
+
+    class Samplable {
+        <<Protocol>>
+        +sample(stream: Iterator~Game~, n: int) list~Game~
+    }
+
+    class BoardTokenizer {
+        +tokenize(board: chess.Board, turn: chess.Color) TokenizedBoard
+    }
+
+    class EmbeddingLayer {
+        +piece_emb: Embedding
+        +color_emb: Embedding
+        +square_emb: Embedding
+        +layer_norm: LayerNorm
+        +dropout: Dropout
+        +embed(board_tokens: Tensor, color_tokens: Tensor) Tensor
+    }
+
+    class ChessEncoder {
+        +embedding: EmbeddingLayer
+        +transformer: TransformerEncoder
+        +encode(board_tokens: Tensor, color_tokens: Tensor) EncoderOutput
+    }
+
+    class PredictionHeads {
+        +src_piece_head: Linear
+        +tgt_sq_head: Linear
+        +opp_piece_head: Linear
+        +opp_tgt_sq_head: Linear
+        +predict(cls_embedding: Tensor) PredictionOutput
+    }
+
+    class LossComputer {
+        +compute(predictions: PredictionOutput, labels: LabelTensors) Tensor
+    }
+
+    class ReservoirSampler {
+        +sample(stream: Iterator~Game~, n: int) list~Game~
+    }
+
+    class StreamingPGNReader {
+        +stream(path: Path) Iterator~Game~
+    }
+
+    class ChessDataset {
+        +examples: list~TrainingExample~
+        +__getitem__(idx: int) ChessBatch
+        +__len__() int
+    }
+
+    class Trainer {
+        +encoder: ChessEncoder
+        +heads: PredictionHeads
+        +optimizer: AdamW
+        +train_step(batch: ChessBatch) float
+        +train_epoch(loader: DataLoader) float
+    }
+
+    Tokenizable <|.. BoardTokenizer
+    Embeddable <|.. EmbeddingLayer
+    Encodable <|.. ChessEncoder
+    Predictable <|.. PredictionHeads
+    Trainable <|.. Trainer
+    Samplable <|.. ReservoirSampler
+
+    ChessEncoder --> EmbeddingLayer : owns
+    Trainer --> ChessEncoder : owns
+    Trainer --> PredictionHeads : owns
+    Trainer --> LossComputer : uses
+    ChessDataset --> BoardTokenizer : uses
+    StreamingPGNReader --> ReservoirSampler : feeds
+```
+
+*Caption: Static class structure with Protocol-based interfaces. Each concrete class implements exactly one Protocol, enforcing single responsibility.*
+
+---
+
+### Diagram 5 -- Data Pipeline Detail
+
+```mermaid
+flowchart TD
+    ZST["lichess_db.pgn.zst<br/>~20GB compressed"] -->|"zstandard decompress<br/>streaming"| RAW["Raw PGN text stream"]
+    RAW -->|"chess.pgn.read_game()<br/>one game at a time"| SPGN["StreamingPGNReader"]
+    SPGN -->|"Iterator[Game]"| RS["ReservoirSampler<br/>N=1,000,000"]
+    RS -->|"list[Game]<br/>uniformly sampled"| PROC["Processing Loop"]
+
+    PROC -->|"for each game"| REPLAY["Replay Moves<br/>board.push(move)"]
+    REPLAY -->|"for each move"| TOK["BoardTokenizer.tokenize()"]
+    TOK --> BT["board_tokens: int[65]"]
+    TOK --> CT["color_tokens: int[65]"]
+    REPLAY -->|"extract from move"| LABELS["Labels:<br/>src_sq, src_piece,<br/>tgt_sq, tgt_piece,<br/>opp_src_sq, opp_src_piece,<br/>opp_tgt_sq, opp_tgt_piece"]
+
+    BT --> SAVE["Save to disk<br/>.pt or .arrow files"]
+    CT --> SAVE
+    LABELS --> SAVE
+    SAVE --> DS["ChessDataset<br/>memory-mapped"]
+    DS -->|"DataLoader<br/>batch=512, shuffle=True<br/>num_workers=4"| BATCH["ChessBatch tensors"]
+```
+
+*Caption: Data pipeline from compressed PGN to batched training tensors. Preprocessing runs once; training loads from disk.*
+
+---
+
+### Diagram 6 -- Training Loop Flowchart
+
+```mermaid
+flowchart TD
+    START["Start Training"] --> INIT["Initialize:<br/>ChessEncoder, PredictionHeads,<br/>AdamW(lr=3e-4), CosineScheduler"]
+    INIT --> EPOCH["for epoch in 1..max_epochs"]
+    EPOCH --> BATCH["for batch in DataLoader"]
+    BATCH --> FWD["encoder.encode(board_tokens, color_tokens)"]
+    FWD --> CLS["cls = output.cls_embedding"]
+    CLS --> PRED["heads.predict(cls)"]
+    PRED --> LOSS["loss = LossComputer.compute(pred, labels)"]
+    LOSS --> BACK["loss.backward()"]
+    BACK --> CLIP["clip_grad_norm_(params, max_norm=1.0)"]
+    CLIP --> STEP["optimizer.step()<br/>scheduler.step()"]
+    STEP --> LOG{"log_interval?"}
+    LOG -->|Yes| PRINT["Log: epoch, step, loss,<br/>per-head accuracy"]
+    LOG -->|No| BATCH
+    PRINT --> BATCH
+
+    BATCH -->|"epoch done"| EVAL["Evaluate on held-out set"]
+    EVAL --> SAVE{"best val loss?"}
+    SAVE -->|Yes| CKPT["Save checkpoint"]
+    SAVE -->|No| EARLY{"patience exhausted?"}
+    CKPT --> EPOCH
+    EARLY -->|No| EPOCH
+    EARLY -->|Yes| DONE["Training complete"]
+```
+
+*Caption: Training loop with gradient clipping, cosine LR schedule, validation-based checkpointing, and early stopping.*
+
+---
+
+## Component Breakdown
+
+### 1. `BoardTokenizer`
+
+- **Responsibility:** Converts a `chess.Board` into the 65-token integer sequence (board_tokens + color_tokens) from the current player's perspective.
+- **Protocol:** `Tokenizable`
+- **Key interface:**
+  ```
+  tokenize(board: chess.Board, turn: chess.Color) -> TokenizedBoard
+  ```
+  where `TokenizedBoard` is a `NamedTuple(board_tokens: list[int], color_tokens: list[int])`.
+- **Color normalization:** The board is always encoded from the perspective of the player to move. The player's pieces receive color index 1, the opponent's pieces receive color index 2, empty squares receive color index 0.
+- **Square ordering:** a1=0, b1=1, ..., h8=63 (python-chess default). For Black's perspective, the board is flipped: square `i` maps to square `63 - i` so that "forward" is always toward higher ranks from the current player's viewpoint.
+- **Testability:** Pure function, no side effects. Tested with known board positions.
+
+### 2. `EmbeddingLayer` (nn.Module)
+
+- **Responsibility:** Composes the three learned embedding streams (piece, color, square) into a single token embedding per position, applies LayerNorm and Dropout.
+- **Protocol:** `Embeddable`
+- **Key interface:**
+  ```
+  embed(board_tokens: Tensor[B, 65], color_tokens: Tensor[B, 65]) -> Tensor[B, 65, 256]
+  ```
+- **Internal structure:**
+  - `piece_emb: nn.Embedding(8, 256)` -- vocabulary: CLS=0, EMPTY=1, PAWN=2, KNIGHT=3, BISHOP=4, ROOK=5, QUEEN=6, KING=7
+  - `color_emb: nn.Embedding(3, 256)` -- EMPTY=0, PLAYER=1, OPPONENT=2
+  - `square_emb: nn.Embedding(65, 256)` -- index 0 = CLS position, 1..64 = board squares
+  - `layer_norm: nn.LayerNorm(256)`
+  - `dropout: nn.Dropout(0.1)`
+- **Square embedding initialization:** Optionally initialized with 2D coordinate encodings (`rank * 8 + file` decomposed into sin/cos) to provide a geometric prior. Allowed to drift during training.
+- **Testability:** Verified by asserting output shape and checking that different piece types produce different embeddings.
+
+### 3. `ChessEncoder` (nn.Module)
+
+- **Responsibility:** Runs the full forward pass from tokens to contextualized embeddings (CLS + 64 square outputs).
+- **Protocol:** `Encodable`
+- **Key interface:**
+  ```
+  encode(board_tokens: Tensor[B, 65], color_tokens: Tensor[B, 65]) -> EncoderOutput
+  ```
+  where `EncoderOutput` is a `NamedTuple(cls_embedding: Tensor[B, 256], square_embeddings: Tensor[B, 64, 256])`.
+- **Internal structure:**
+  - `embedding: EmbeddingLayer`
+  - `transformer: nn.TransformerEncoder(layer, num_layers=6)` where layer is `nn.TransformerEncoderLayer(d_model=256, nhead=8, dim_feedforward=1024, dropout=0.1, batch_first=True)`
+- **Testability:** Forward pass with random inputs verifies output shapes. Gradient flow verified by checking that `loss.backward()` populates all parameter gradients.
+
+### 4. `PredictionHeads` (nn.Module)
+
+- **Responsibility:** Maps the CLS embedding to four classification outputs (player move + opponent move).
+- **Protocol:** `Predictable`
+- **Key interface:**
+  ```
+  predict(cls_embedding: Tensor[B, 256]) -> PredictionOutput
+  ```
+  where `PredictionOutput` is a `NamedTuple(src_piece_logits: Tensor[B, 8], tgt_sq_logits: Tensor[B, 64], opp_piece_logits: Tensor[B, 8], opp_tgt_sq_logits: Tensor[B, 64])`.
+- **Internal structure:** Four independent `nn.Linear` layers. No shared parameters between heads.
+- **Testability:** Verified by asserting output shapes and that each head produces independent gradients.
+
+### 5. `LossComputer`
+
+- **Responsibility:** Computes the combined cross-entropy loss across all four heads.
+- **Key interface:**
+  ```
+  compute(predictions: PredictionOutput, labels: LabelTensors) -> Tensor
+  ```
+  where `LabelTensors` is a `NamedTuple(src_piece: Tensor[B], tgt_sq: Tensor[B], opp_piece: Tensor[B], opp_tgt_sq: Tensor[B])`.
+- **Loss formula:** `loss = CE(src_piece) + CE(tgt_sq) + CE(opp_piece) + CE(opp_tgt_sq)`
+- **Optional per-head weighting via `loss_weights: tuple[float, float, float, float]` parameter**, defaulting to `(1.0, 1.0, 1.0, 1.0)`. Adjustable if one objective dominates early training.
+- **Testability:** Verified with known logits and labels against hand-computed CE values.
+
+### 6. `StreamingPGNReader`
+
+- **Responsibility:** Streams games one at a time from a `.zst`-compressed PGN file without loading the full file into memory.
+- **Key interface:**
+  ```
+  stream(path: Path) -> Iterator[chess.pgn.Game]
+  ```
+- **Decompression:** Uses `zstandard` library for streaming `.zst` decompression. Wraps the decompressed byte stream in a `TextIOWrapper` for `chess.pgn.read_game()`.
+- **Testability:** Verified with a small test PGN file (3-5 games).
+
+### 7. `ReservoirSampler`
+
+- **Responsibility:** Selects N games uniformly at random from a stream of unknown length using O(N) memory.
+- **Protocol:** `Samplable`
+- **Key interface:**
+  ```
+  sample(stream: Iterator[Game], n: int) -> list[Game]
+  ```
+- **Algorithm:** Standard reservoir sampling (Vitter's Algorithm R). For each game `i` in the stream: if `i < N`, append to reservoir; else generate `j = randint(0, i)`, and if `j < N`, replace `reservoir[j]`.
+- **Testability:** Verified by running on a stream of known length and checking that sample distribution is approximately uniform (chi-squared test).
+
+### 8. `ChessDataset` (torch.utils.data.Dataset)
+
+- **Responsibility:** Stores preprocessed training examples and serves them as batched tensors.
+- **Key interface:**
+  ```
+  __getitem__(idx: int) -> ChessBatch
+  __len__() -> int
+  ```
+  where `ChessBatch` is a `NamedTuple(board_tokens: Tensor[65], color_tokens: Tensor[65], src_piece: int, tgt_sq: int, opp_piece: int, opp_tgt_sq: int)`.
+- **Storage:** Preprocessed examples are saved to disk as `.pt` files (or Apache Arrow/Parquet for larger scale). The dataset memory-maps from disk at training time.
+- **Train/val split:** 95% train, 5% validation. Split at the game level (not example level) to prevent data leakage from consecutive board states.
+- **Testability:** Verified by loading a small dataset and checking tensor shapes and dtypes.
+
+### 9. `Trainer`
+
+- **Responsibility:** Orchestrates the training loop: forward pass, loss computation, backward pass, optimization, logging, checkpointing.
+- **Protocol:** `Trainable`
+- **Key interface:**
+  ```
+  train_step(batch: ChessBatch) -> float  # returns loss value
+  train_epoch(loader: DataLoader) -> float  # returns avg epoch loss
+  ```
+- **Optimizer:** AdamW with lr=3e-4, weight_decay=0.01.
+- **Scheduler:** Cosine annealing with warmup (1000 steps linear warmup).
+- **Gradient clipping:** `clip_grad_norm_(params, max_norm=1.0)`.
+- **Checkpointing:** Saves model state when validation loss improves.
+- **Early stopping:** Patience of 3 epochs without improvement.
+- **Logging decorator:** A `@log_metrics` decorator handles metric logging (loss, per-head accuracy, learning rate) to avoid polluting the training loop with logging logic.
+- **Device management:** A `@device_aware` decorator handles `.to(device)` calls, defaulting to GPU when available, CPU for unit tests.
+- **Testability:** `train_step` is tested in isolation with a single synthetic batch, verifying that loss decreases after one step.
+
+---
+
+## Data Structures
+
+```
+TokenizedBoard = NamedTuple:
+    board_tokens: list[int]     # length 65, values 0..7
+    color_tokens: list[int]     # length 65, values 0..2
+
+TrainingExample = NamedTuple:
+    board_tokens: list[int]     # length 65
+    color_tokens: list[int]     # length 65
+    src_piece: int              # 0..7
+    tgt_sq: int                 # 0..63
+    opp_piece: int              # 0..7
+    opp_tgt_sq: int             # 0..63
+
+ChessBatch = NamedTuple:
+    board_tokens: Tensor[B, 65]
+    color_tokens: Tensor[B, 65]
+    src_piece: Tensor[B]
+    tgt_sq: Tensor[B]
+    opp_piece: Tensor[B]
+    opp_tgt_sq: Tensor[B]
+
+EncoderOutput = NamedTuple:
+    cls_embedding: Tensor[B, 256]
+    square_embeddings: Tensor[B, 64, 256]
+
+PredictionOutput = NamedTuple:
+    src_piece_logits: Tensor[B, 8]
+    tgt_sq_logits: Tensor[B, 64]
+    opp_piece_logits: Tensor[B, 8]
+    opp_tgt_sq_logits: Tensor[B, 64]
+
+LabelTensors = NamedTuple:
+    src_piece: Tensor[B]
+    tgt_sq: Tensor[B]
+    opp_piece: Tensor[B]
+    opp_tgt_sq: Tensor[B]
+```
+
+---
+
+## Hyperparameters
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| `d_model` | 256 | Sufficient expressiveness for 8-token vocab; keeps param count at ~4.8M |
+| `n_heads` | 8 | 256/8 = 32-dim per head; standard ratio |
+| `n_layers` | 6 | Matches BERT-base depth-to-width ratio scaled down |
+| `d_ff` | 1024 | 4x d_model, standard FFN expansion |
+| `dropout` | 0.1 | Standard regularization |
+| `max_seq_len` | 65 | CLS + 64 squares, fixed |
+| `batch_size` | 512 | Fits in ~4GB GPU memory with this param count |
+| `learning_rate` | 3e-4 | Standard for AdamW on transformers of this scale |
+| `weight_decay` | 0.01 | Mild L2 regularization |
+| `warmup_steps` | 1000 | ~1 epoch warmup at batch_size=512 over 40M examples |
+| `max_epochs` | 10 | Early stopping at patience=3 |
+| `gradient_clip` | 1.0 | Prevents gradient explosion |
+| `num_workers` | 4 | DataLoader parallelism |
+| `reservoir_size` | 1,000,000 | Games sampled per training run |
+| **Total params** | **~4,795,024** | Validated via hypothesis script |
+
+---
+
+## Test Cases
+
+| ID | Scenario | Input | Expected Outcome | Edge? |
+|----|----------|-------|------------------|-------|
+| T01 | Tokenize initial position as White | `chess.Board()`, turn=WHITE | board_tokens[0]=0 (CLS), board_tokens[1]=5 (ROOK at a1); color_tokens[1]=1 (PLAYER) | No |
+| T02 | Tokenize initial position as Black | `chess.Board()`, turn=BLACK | Board is flipped; board_tokens[1] encodes h8 (ROOK); color_tokens[1]=1 (PLAYER for Black's rook) | No |
+| T03 | Tokenize empty square | Board with empty e4 | board_tokens[e4_idx]=1 (EMPTY), color_tokens[e4_idx]=0 (EMPTY) | No |
+| T04 | Embedding output shape | batch of 4, seq_len=65 | Output tensor shape = (4, 65, 256) | No |
+| T05 | Encoder output shape | batch of 4 | cls_embedding: (4, 256), square_embeddings: (4, 64, 256) | No |
+| T06 | Prediction heads output shape | cls_embedding of shape (4, 256) | src_piece: (4, 8), tgt_sq: (4, 64), opp_piece: (4, 8), opp_tgt_sq: (4, 64) | No |
+| T07 | Loss computation correctness | Known logits + labels | Loss matches hand-computed CE within 1e-5 tolerance | No |
+| T08 | Loss decreases after one train step | Random batch, two forward passes | loss_after < loss_before | No |
+| T09 | Gradient flow to all parameters | One backward pass | All encoder + head parameters have non-None, non-zero gradients | No |
+| T10 | Reservoir sampler uniformity | Stream of 10,000 items, sample 100, repeat 1,000 times | Each item appears with frequency ~100/10,000 (chi-squared p > 0.01) | No |
+| T11 | Reservoir sampler with N > stream length | Stream of 50 items, sample 100 | Returns all 50 items | Yes |
+| T12 | Streaming PGN reader yields valid games | Small test PGN with 3 games | Iterator yields exactly 3 `chess.pgn.Game` objects | No |
+| T13 | Color normalization consistency | Same position, tokenized as White then Black | Piece types match (after flip); color indices swap (1 <-> 2) | No |
+| T14 | Promotion handling | Board where pawn promotes to queen | src_piece = PAWN (label reflects piece before move) | Yes |
+| T15 | En passant tokenization | Board with en passant capture available | Target square is the en passant square (not the captured pawn's square) | Yes |
+| T16 | Castling tokenization | Board where king castles | src_piece = KING, tgt_sq = king's destination (g1 or c1) | Yes |
+| T17 | Opponent label extraction | Move pair (e4, e5) at move 1 | For the board before e4: opp_piece=PAWN, opp_tgt_sq=e5_index | No |
+| T18 | Last move in game has no opponent label | Final move of a game | opp_piece and opp_tgt_sq are set to ignore_index (-1) | Yes |
+| T19 | Checkpoint save and reload | Train, save, reload, forward pass | Outputs are identical before save and after reload | No |
+| T20 | DataLoader produces correct dtypes | Load one batch | board_tokens: torch.long, color_tokens: torch.long, labels: torch.long | No |
+
+---
+
+## Coding Standards
+
+The engineering team adheres to these standards for all modules in this design:
+
+- **DRY:** The four classification heads share no code but follow an identical pattern. If head logic grows beyond a single `nn.Linear`, extract a shared `ClassificationHead` class parameterized by output size.
+- **Decorators for cross-cutting concerns:**
+  - `@log_metrics` -- wraps `train_step` and `train_epoch` to emit structured logs without cluttering business logic.
+  - `@device_aware` -- handles tensor device placement. Use CPU for unit tests, GPU for training/evaluation.
+  - `@timed` -- optional performance decorator for profiling data pipeline stages.
+- **Typing everywhere:** All function signatures include full type annotations. Use `Tensor` with shape comments (e.g., `Tensor  # [B, 65, 256]`). No bare `Any`.
+- **Protocols over ABCs:** Use `typing.Protocol` for `Tokenizable`, `Embeddable`, `Encodable`, `Predictable`, `Samplable`, `Trainable`. Concrete classes implement these implicitly (structural subtyping).
+- **NamedTuples for data containers:** `TokenizedBoard`, `TrainingExample`, `ChessBatch`, `EncoderOutput`, `PredictionOutput`, `LabelTensors` are all `NamedTuple` types. Immutable, typed, self-documenting.
+- **Comments:** 280 characters max. If more context is needed, the code is unclear.
+- **Unit tests required:** Every component has corresponding tests. The `Trainer` is tested with synthetic data on CPU. The data pipeline is tested with a small PGN fixture.
+- **No new dependencies without justification.** Required dependencies:
+  - `torch` -- transformer implementation and training
+  - `python-chess` -- PGN parsing and board state management
+  - `zstandard` -- streaming decompression of `.zst` files
+
+---
+
+## Dependencies
+
+| Package | Version | Justification |
+|---------|---------|---------------|
+| `torch` | >=2.0 | Core ML framework; provides nn.TransformerEncoder, DataLoader, optimizers |
+| `python-chess` | >=1.9 | PGN parsing, move legality, board state management; no viable alternative |
+| `zstandard` | >=0.21 | Streaming decompression of Lichess .zst dumps; stdlib has no zstd support |
+
+---
+
+## Open Questions
+
+1. **Opponent label for the last move in a game:** The final move has no opponent response. Options: (a) exclude from training, (b) use ignore_index=-1 in CE loss so the opponent heads skip this example, (c) use a special NONE label. Recommendation: option (b) using `ignore_index=-1` in `nn.CrossEntropyLoss` -- simplest and requires no vocabulary change.
+
+2. **Board flipping for Black's perspective:** The design specifies flipping square indices (`i -> 63-i`) when it is Black's turn. This makes "forward" always toward higher ranks. Confirm whether this also requires reversing file order within each rank, or only rank reversal.
+
+3. **Per-head loss weighting:** The initial design uses equal weights (1.0 each). If the 64-way square classification heads dominate the gradient early in training (due to higher output dimensionality), consider weighting the 8-way piece heads higher. Defer to empirical observation.
+
+4. **Preprocessing once vs. on-the-fly:** The current design preprocesses all 40M examples to disk, then loads via memory-mapped dataset. Alternative: generate examples on-the-fly during training (saves disk but increases CPU load). Recommendation: preprocess once -- 40M examples at ~200 bytes each is ~8GB on disk, acceptable.
+
+5. **Handling promotions in piece vocabulary:** When a pawn promotes, the `src_piece` label is PAWN (piece before the move). The `tgt_piece` concept from the draft (piece type after the move) is not used in the four-head design. If promotion prediction is needed downstream, a fifth head or a promotion flag could be added later.
+
+6. **Rating filter on sampled games:** The draft does not filter by player rating. Low-rated games contain blunders that may degrade embedding quality. Consider filtering to games where both players are rated >= 1800. Trade-off: reduces available data but increases signal quality.
+
+7. **Sequence length for downstream fine-tuning:** The encoder produces 65 tokens. Downstream tasks (value, policy) may only need the CLS embedding. Confirm whether the full 64 square embeddings are needed for any Phase 2 task, as this affects whether the encoder should expose both or only CLS.
+
+8. **Mixed precision training:** At ~4.8M params and batch_size=512, the model fits in FP32 on most GPUs. FP16/BF16 mixed precision would roughly halve memory and increase throughput. Defer to engineering based on available hardware.
+
+9. **Validation metric:** Beyond loss, track top-1 accuracy for each of the four heads. For the 64-way square heads, also track top-5 accuracy as a secondary metric, since multiple moves may be reasonable.
+
+10. **Data versioning:** Lichess dumps are monthly snapshots. Pin the exact dump URL (e.g., `lichess_db_standard_rated_2024-01.pgn.zst`) in a config file to ensure reproducibility across training runs.

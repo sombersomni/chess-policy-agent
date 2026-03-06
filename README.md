@@ -9,12 +9,13 @@ graph TD
     PGN[".zst PGN File"] --> Reader["StreamingPGNReader"]
     Reader --> Sampler["ReservoirSampler"]
     Sampler --> Tokenizer["BoardTokenizer"]
-    Tokenizer --> Dataset["ChessDataset"]
+    Tokenizer --> Trajectory["_make_trajectory_tokens()"]
+    Trajectory --> Dataset["ChessDataset"]
     Dataset --> Loader["DataLoader"]
     Loader --> Encoder["ChessEncoder (6-layer BERT)"]
     Encoder --> Heads["PredictionHeads (4x Linear)"]
     Heads --> Loss["LossComputer (CrossEntropy x4)"]
-    Loss --> Trainer["Trainer (AdamW + CosineAnnealing)"]
+    Loss --> Trainer["Trainer (AdamW + CosineAnnealingLR)"]
 ```
 
 ### Token Sequence
@@ -25,7 +26,9 @@ Each board is encoded as 65 tokens: `[CLS, a1, b1, ..., h8]`.
 |--------|-------|---------|
 | `board_tokens` | 8 | Piece type: 0=CLS, 1=empty, 2=pawn, 3=knight, 4=bishop, 5=rook, 6=queen, 7=king |
 | `color_tokens` | 3 | Piece ownership: 0=empty/CLS, 1=player, 2=opponent |
-| `square_emb` | 65 | Learned positional embedding per square index |
+| `trajectory_tokens` | 5 | Last-move roles: 0=none/CLS, 1=player prev src, 2=player prev tgt, 3=opp prev src, 4=opp prev tgt |
+
+> `square_emb` is an internal positional embedding (65 positions, sin/cos geometric initialization) and is not passed as external input.
 
 ### Model Hyperparameters
 
@@ -76,7 +79,7 @@ python -m unittest tests.test_trainer
 python -m unittest tests.test_dataset
 ```
 
-Test coverage spans T01–T20 across these modules:
+Test coverage spans T01–T20 (core components), T26–T40 (trajectory/encoder integration), and TEV01–TEV14 (evaluation metrics).
 
 | File | Tests |
 |------|-------|
@@ -89,6 +92,8 @@ Test coverage spans T01–T20 across these modules:
 | `tests/test_dataset.py` | T17, T18, T20: DataLoader dtypes and opponent labels |
 | `tests/test_reader.py` | StreamingPGNReader streaming |
 | `tests/test_sampler.py` | ReservoirSampler uniform sampling |
+| `tests/test_chess_encoder.py` | T26–T40: trajectory tokens, 4-stream embedding, geometric init, gradient flow, structural subtyping |
+| `tests/test_evaluate.py` | TEV01–TEV14: Shannon entropy, top-1 accuracy, per_head_ce, GameEvaluator integration, winner_color, winners_only filtering |
 
 ---
 
@@ -126,6 +131,22 @@ result = tok.tokenize(board, chess.WHITE)
 
 # result.board_tokens  -> list[int] of length 65
 # result.color_tokens  -> list[int] of length 65
+```
+
+### 3b. Generate trajectory tokens
+
+```python
+from scripts.train_real import _make_trajectory_tokens
+import chess
+
+# move_history is populated as the game is replayed with board.push(move)
+move_history: list[chess.Move] = []
+trajectory_tokens = _make_trajectory_tokens(move_history)
+
+# trajectory_tokens: list[int] of length 65
+# index 0 = CLS = 0 (always)
+# values: 0=none, 1=player prev src, 2=player prev tgt,
+#         3=opp prev src, 4=opp prev tgt
 ```
 
 ### 4. Build a dataset and DataLoader
@@ -189,12 +210,13 @@ from chess_sim.model.heads import PredictionHeads
 enc = ChessEncoder().eval()
 heads = PredictionHeads().eval()
 
-# board_tokens and color_tokens: [B, 65] long tensors
+# board_tokens, color_tokens, trajectory_tokens: [B, 65] long tensors
 board_tokens = torch.zeros(1, 65, dtype=torch.long)
 color_tokens = torch.zeros(1, 65, dtype=torch.long)
+trajectory_tokens = torch.zeros(1, 65, dtype=torch.long)
 
 with torch.no_grad():
-    encoder_out = enc(board_tokens, color_tokens)
+    encoder_out = enc(board_tokens, color_tokens, trajectory_tokens)
     preds = heads(encoder_out.cls_embedding)
 
 # preds.src_sq_logits  -> [B, 64]
@@ -208,28 +230,74 @@ tgt_sq = preds.tgt_sq_logits.argmax(dim=-1)   # predicted target square
 
 ---
 
+## Scripts
+
+### Train from a PGN file
+
+```bash
+# Activate virtual environment first
+source .venv/bin/activate
+
+# Train from a plain PGN file
+python -m scripts.train_real --pgn data/games.pgn --epochs 10 --checkpoint checkpoints/run_01.pt
+
+# Train from a compressed PGN (.zst)
+python -m scripts.train_real --pgn data/lichess_db.pgn.zst --epochs 10 --checkpoint checkpoints/run_01.pt
+
+# Winners-only filtering (skips draws; only uses positions where the winning side is to move)
+python -m scripts.train_real --pgn data/games.pgn --winners-only --checkpoint checkpoints/winner_run.pt
+
+# Synthetic games (no PGN file required)
+python -m scripts.train_real --num-games 100 --epochs 5 --checkpoint checkpoints/synthetic_run.pt
+```
+
+### Evaluate a trained checkpoint
+
+```bash
+python -m scripts.evaluate \
+    --checkpoint checkpoints/run_01.pt \
+    --pgn data/games.pgn \
+    --game-index 0 \
+    --top-n 3
+```
+
+Output includes a per-ply table with CE loss, top-1 accuracy, and Shannon entropy for each of the four prediction heads, plus an aggregate summary with the top-N highest-entropy positions.
+
+Use `--winners-only` to evaluate only positions where the winning player is to move (mirrors the training flag).
+
+---
+
 ## Project Structure
 
 ```
 chess-sim/
 ├── chess_sim/
-│   ├── protocols.py          # Structural type protocols (Tokenizable, Encodable, ...)
-│   ├── types.py              # NamedTuple data containers
+│   ├── protocols.py          # Structural type protocols (Tokenizable, Embeddable, Encodable, Predictable, Trainable, Samplable)
+│   ├── types.py              # NamedTuple containers: TokenizedBoard (board_tokens, color_tokens), TrainingExample, ChessBatch, EncoderOutput, PredictionOutput, LabelTensors
+│   ├── utils.py              # winner_color(): chess.pgn.Game -> Optional[chess.Color]
 │   ├── data/
-│   │   ├── tokenizer.py      # BoardTokenizer: chess.Board -> token lists
+│   │   ├── tokenizer.py      # BoardTokenizer: chess.Board -> TokenizedBoard
 │   │   ├── reader.py         # StreamingPGNReader: .zst -> chess.pgn.Game iterator
 │   │   ├── sampler.py        # ReservoirSampler: uniform sampling (Vitter's Algorithm R)
-│   │   └── dataset.py        # ChessDataset: torch Dataset + split utility
+│   │   └── dataset.py        # ChessDataset: torch Dataset + split(train_frac=0.9)
 │   ├── model/
-│   │   ├── embedding.py      # EmbeddingLayer: piece + color + square -> [B, 65, 256]
+│   │   ├── embedding.py      # EmbeddingLayer: piece + color + square + trajectory -> [B, 65, 256]
 │   │   ├── encoder.py        # ChessEncoder: BERT-style transformer (6 layers)
 │   │   └── heads.py          # PredictionHeads: 4x Linear(256, 64)
 │   └── training/
 │       ├── loss.py           # LossComputer: CrossEntropy x4 with ignore_index=-1
-│       └── trainer.py        # Trainer: AdamW + CosineAnnealingLR + decorators
+│       └── trainer.py        # Trainer: AdamW + CosineAnnealingLR; decorators: @log_metrics, @device_aware, @timed
+├── scripts/
+│   ├── __init__.py
+│   ├── train_real.py         # CLI: end-to-end training from PGN or synthetic games
+│   └── evaluate.py           # CLI: per-move evaluation with GameEvaluator
 ├── tests/
-│   ├── utils.py              # Shared test fixtures (make_synthetic_batch, etc.)
-│   └── test_*.py             # Unit tests T01-T20
+│   ├── utils.py              # Shared test fixtures (make_synthetic_batch, make_training_examples, etc.)
+│   ├── test_*.py             # Unit tests T01–T20
+│   ├── test_chess_encoder.py # Integration tests T26–T40
+│   └── test_evaluate.py      # Evaluation tests TEV01–TEV14
+├── checkpoints/              # Trained model .pt files
+├── data/                     # PGN files (gitignored)
 ├── requirements.txt
 └── chess_encoder_final_design.md  # Full architecture design document
 ```
@@ -246,3 +314,9 @@ The last move in a game has no opponent response. The model uses `opp_src_sq=-1`
 
 **Square indexing**
 Squares are always encoded in fixed geometric order: a1=index 1, b1=index 2, ..., h8=index 64. The board is never flipped. The `color_tokens` stream conveys whose pieces are whose relative to the player to move.
+
+**Trajectory tokens**
+The fourth embedding stream encodes the role of each square in the last 2 half-moves via `_make_trajectory_tokens(move_history)` in `scripts/train_real.py`. Vocabulary is 5 bins: 0=none/CLS, 1=player previous source, 2=player previous target, 3=opponent previous source, 4=opponent previous target. Opponent marks overwrite player marks on collision (semantically correct for captures). `trajectory_emb: nn.Embedding(5, 256)`.
+
+**`--winners-only` training and evaluation flag**
+Both `scripts/train_real.py` and `scripts/evaluate.py` accept `--winners-only`. When set, only board positions where the game's winner is to move are included; draws are excluded entirely. Uses `winner_color()` from `chess_sim/utils.py`.

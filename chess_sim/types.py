@@ -30,16 +30,18 @@ class TrainingExample(NamedTuple):
     """A single preprocessed training example saved to disk.
 
     Attributes:
-        board_tokens: Length-65 list. Piece-type indices including CLS at position 0.
-        color_tokens: Length-65 list. Color indices including CLS at position 0.
-        src_sq:       0-63 index of the player's source square for this move.
-        tgt_sq:       0-63 index of the player's target square for this move.
-        opp_src_sq:   0-63 index of opponent's source square, or -1 if last move.
-        opp_tgt_sq:   0-63 index of opponent's target square, or -1 if last move.
+        board_tokens:    Length-65 list. Piece-type indices including CLS at position 0.
+        color_tokens:    Length-65 list. Color indices including CLS at position 0.
+        activity_tokens: Length-65 list. Activity scores 0-8, CLS always 0.
+        src_sq:          0-63 index of the player's source square for this move.
+        tgt_sq:          0-63 index of the player's target square for this move.
+        opp_src_sq:      0-63 index of opponent's source square, or -1 if last move.
+        opp_tgt_sq:      0-63 index of opponent's target square, or -1 if last move.
     """
 
     board_tokens: list[int]
     color_tokens: list[int]
+    activity_tokens: list[int]
     src_sq: int
     tgt_sq: int
     opp_src_sq: int
@@ -50,20 +52,22 @@ class ChessBatch(NamedTuple):
     """A batched training example served by DataLoader.
 
     Attributes:
-        board_tokens: torch.long tensor [B, 65]. Piece-type indices.
-        color_tokens: torch.long tensor [B, 65]. Color indices.
-        src_sq:       torch.long tensor [B]. Player source square indices 0-63.
-        tgt_sq:       torch.long tensor [B]. Player target square indices 0-63.
-        opp_src_sq:   torch.long tensor [B]. Opponent source indices; -1 = ignore.
-        opp_tgt_sq:   torch.long tensor [B]. Opponent target indices; -1 = ignore.
+        board_tokens:    torch.long tensor [B, 65]. Piece-type indices.
+        color_tokens:    torch.long tensor [B, 65]. Color indices.
+        activity_tokens: torch.long tensor [B, 65]. Activity scores 0-8.
+        src_sq:          torch.long tensor [B]. Player source square indices 0-63.
+        tgt_sq:          torch.long tensor [B]. Player target square indices 0-63.
+        opp_src_sq:      torch.long tensor [B]. Opponent source indices; -1 = ignore.
+        opp_tgt_sq:      torch.long tensor [B]. Opponent target indices; -1 = ignore.
     """
 
-    board_tokens: Tensor  # [B, 65] long
-    color_tokens: Tensor  # [B, 65] long
-    src_sq: Tensor        # [B] long
-    tgt_sq: Tensor        # [B] long
-    opp_src_sq: Tensor    # [B] long
-    opp_tgt_sq: Tensor    # [B] long
+    board_tokens: Tensor     # [B, 65] long
+    color_tokens: Tensor     # [B, 65] long
+    activity_tokens: Tensor  # [B, 65] long
+    src_sq: Tensor           # [B] long
+    tgt_sq: Tensor           # [B] long
+    opp_src_sq: Tensor       # [B] long
+    opp_tgt_sq: Tensor       # [B] long
 
 
 class EncoderOutput(NamedTuple):

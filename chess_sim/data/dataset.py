@@ -86,6 +86,9 @@ class ChessDataset(Dataset):
             color_tokens=torch.tensor(
                 ex.color_tokens, dtype=torch.long
             ),
+            activity_tokens=torch.tensor(
+                ex.activity_tokens, dtype=torch.long
+            ),
             src_sq=torch.tensor(
                 ex.src_sq, dtype=torch.long
             ),

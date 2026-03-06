@@ -27,6 +27,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from chess_sim.data.scorer import ActivityScorer
 from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.model.heads import PredictionHeads
@@ -179,12 +180,18 @@ def evaluate_step(
         Fully populated StepResult.
     """
     bt = torch.tensor(
-        [example.board_tokens], dtype=torch.long, device=device
+        [example.board_tokens],
+        dtype=torch.long, device=device,
     )
     ct = torch.tensor(
-        [example.color_tokens], dtype=torch.long, device=device
+        [example.color_tokens],
+        dtype=torch.long, device=device,
     )
-    enc_out = encoder(bt, ct)
+    at = torch.tensor(
+        [example.activity_tokens],
+        dtype=torch.long, device=device,
+    )
+    enc_out = encoder(bt, ct, at)
     pred = heads(enc_out.cls_embedding)
 
     # Squeeze batch dim: [1, 64] -> [64]
@@ -262,6 +269,7 @@ class GameEvaluator:
         """
         self.device = device
         self.tokenizer = BoardTokenizer()
+        self.scorer = ActivityScorer()
         self._trainer = Trainer(device=device)
         self._trainer.load_checkpoint(checkpoint_path)
         self._trainer.encoder.eval()
@@ -302,14 +310,19 @@ class GameEvaluator:
         moves = list(game.mainline_moves())
         tokenizer = self.tokenizer
         results: list[StepResult] = []
+        move_history: list[chess.Move] = []
 
         for i, move in enumerate(moves):
             if winners_only and board.turn != winner:
+                move_history.append(move)
                 board.push(move)
                 continue
 
             tokenized = tokenizer.tokenize(
                 board, board.turn
+            )
+            activity_tokens = self.scorer.score(
+                move_history, board, n=4
             )
             if i + 1 < len(moves):
                 opp = moves[i + 1]
@@ -321,6 +334,7 @@ class GameEvaluator:
             ex = TrainingExample(
                 board_tokens=tokenized.board_tokens,
                 color_tokens=tokenized.color_tokens,
+                activity_tokens=activity_tokens,
                 src_sq=move.from_square,
                 tgt_sq=move.to_square,
                 opp_src_sq=opp_src,
@@ -336,6 +350,7 @@ class GameEvaluator:
                 device=self.device,
             )
             results.append(result)
+            move_history.append(move)
             board.push(move)
 
         return results

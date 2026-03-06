@@ -26,6 +26,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from chess_sim.data.dataset import ChessDataset
+from chess_sim.data.scorer import ActivityScorer
 from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.training.trainer import Trainer
 from chess_sim.types import TrainingExample
@@ -95,16 +96,22 @@ def game_to_examples(
     if winners_only and winner is None:
         return []
 
+    scorer = ActivityScorer()
     examples: list[TrainingExample] = []
     board = game.board()
     moves = list(game.mainline_moves())
+    move_history: list[chess.Move] = []
 
     for i, move in enumerate(moves):
         if winners_only and board.turn != winner:
+            move_history.append(move)
             board.push(move)
             continue
 
         tokenized = tokenizer.tokenize(board, board.turn)
+        activity_tokens = scorer.score(
+            move_history, board, n=4
+        )
         if i + 1 < len(moves):
             opp = moves[i + 1]
             opp_src_sq = opp.from_square
@@ -115,11 +122,13 @@ def game_to_examples(
         examples.append(TrainingExample(
             board_tokens=tokenized.board_tokens,
             color_tokens=tokenized.color_tokens,
+            activity_tokens=activity_tokens,
             src_sq=move.from_square,
             tgt_sq=move.to_square,
             opp_src_sq=opp_src_sq,
             opp_tgt_sq=opp_tgt_sq,
         ))
+        move_history.append(move)
         board.push(move)
 
     return examples
@@ -181,6 +190,8 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--checkpoint", type=str, default="",
                         help="Path to save final checkpoint (.pt)")
+    parser.add_argument("--resume", type=str, default="",
+                        help="Path to checkpoint to resume from (.pt)")
     parser.add_argument(
         "--winners-only",
         action="store_true",
@@ -216,6 +227,20 @@ def main() -> None:
 
     total_steps = args.epochs * len(loader)
     trainer = Trainer(device=device, total_steps=max(total_steps, 1))
+
+    if args.resume:
+        ckpt = torch.load(
+            args.resume, map_location=device
+        )
+        # strict=False allows loading old 3-stream checkpoints
+        # that lack activity_emb weights.
+        trainer.encoder.load_state_dict(
+            ckpt['encoder'], strict=False
+        )
+        trainer.heads.load_state_dict(
+            ckpt['heads'], strict=False
+        )
+        print(f"Resumed from {args.resume}")
 
     print(f"\nTraining {args.epochs} epochs | "
           f"batches/epoch={len(loader)} | total_steps={total_steps}\n")

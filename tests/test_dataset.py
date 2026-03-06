@@ -65,6 +65,7 @@ class TestLastMoveIgnoreIndex(unittest.TestCase):
         terminal = TrainingExample(
             board_tokens=examples[0].board_tokens,
             color_tokens=examples[0].color_tokens,
+            activity_tokens=[0] * 65,
             src_sq=examples[0].src_sq,
             tgt_sq=examples[0].tgt_sq,
             opp_src_sq=-1,

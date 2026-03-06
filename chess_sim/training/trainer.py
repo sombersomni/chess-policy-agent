@@ -212,7 +212,9 @@ class Trainer:
         self.encoder.train()
         self.heads.train()
         output = self.encoder(
-            batch.board_tokens, batch.color_tokens
+            batch.board_tokens,
+            batch.color_tokens,
+            batch.activity_tokens,
         )
         preds = self.heads(output.cls_embedding)
         from chess_sim.types import LabelTensors

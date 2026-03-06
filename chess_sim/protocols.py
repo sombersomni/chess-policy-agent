@@ -44,22 +44,51 @@ class Tokenizable(Protocol):
 
 
 @runtime_checkable
+class Scorable(Protocol):
+    """Computes per-square activity tokens from game move history."""
+
+    def score(
+        self,
+        moves: list[chess.Move],
+        board: chess.Board,
+        n: int = 4,
+    ) -> list[int]:
+        """Return activity_tokens of length 65 (0=CLS, 1-64=squares).
+
+        Args:
+            moves: Move history up to the current ply.
+            board: Board state after all moves played.
+            n: Number of recent moves to consider.
+
+        Returns:
+            List of 65 ints, values 0-8.
+        """
+        ...
+
+
+@runtime_checkable
 class Embeddable(Protocol):
     """Converts token index tensors into dense embedding vectors."""
 
-    def embed(self, board_tokens: Tensor, color_tokens: Tensor) -> Tensor:
-        """Compose piece, color, and square embeddings into per-token vectors.
+    def embed(
+        self,
+        board_tokens: Tensor,
+        color_tokens: Tensor,
+        activity_tokens: Tensor,
+    ) -> Tensor:
+        """Compose piece, color, square, and activity embeddings.
 
         Args:
-            board_tokens: Integer tensor [B, 65] with piece-type indices 0-7.
-            color_tokens: Integer tensor [B, 65] with color indices 0-2.
+            board_tokens: Integer tensor [B, 65] indices 0-7.
+            color_tokens: Integer tensor [B, 65] indices 0-2.
+            activity_tokens: Integer tensor [B, 65] indices 0-8.
 
         Returns:
-            Float tensor [B, 65, 256] of composed token embeddings.
+            Float tensor [B, 65, 256] of composed embeddings.
 
         Example:
             >>> emb = EmbeddingLayer()
-            >>> out = emb.embed(board_tok, color_tok)  # out.shape == (B, 65, 256)
+            >>> out = emb.embed(bt, ct, at)
         """
         ...
 
@@ -68,19 +97,26 @@ class Embeddable(Protocol):
 class Encodable(Protocol):
     """Runs the full transformer forward pass, producing CLS and square embeddings."""
 
-    def encode(self, board_tokens: Tensor, color_tokens: Tensor) -> EncoderOutput:
-        """Encode a batch of board states into contextualized embeddings.
+    def encode(
+        self,
+        board_tokens: Tensor,
+        color_tokens: Tensor,
+        activity_tokens: Tensor,
+    ) -> EncoderOutput:
+        """Encode a batch of board states into embeddings.
 
         Args:
-            board_tokens: Integer tensor [B, 65] with piece-type indices.
-            color_tokens: Integer tensor [B, 65] with color indices.
+            board_tokens: Integer tensor [B, 65] piece indices.
+            color_tokens: Integer tensor [B, 65] color indices.
+            activity_tokens: Integer tensor [B, 65] activity 0-8.
 
         Returns:
-            EncoderOutput with cls_embedding [B, 256] and square_embeddings [B, 64, 256].
+            EncoderOutput with cls_embedding [B, 256]
+            and square_embeddings [B, 64, 256].
 
         Example:
             >>> enc = ChessEncoder()
-            >>> out = enc.encode(board_tok, color_tok)
+            >>> out = enc.encode(bt, ct, at)
         """
         ...
 

@@ -66,39 +66,56 @@ class ChessEncoder(nn.Module):
             enable_nested_tensor=False,
         )
 
-    def encode(self, board_tokens: Tensor, color_tokens: Tensor) -> EncoderOutput:
+    def encode(
+        self,
+        board_tokens: Tensor,
+        color_tokens: Tensor,
+        activity_tokens: Tensor,
+    ) -> EncoderOutput:
         """Encode a batch of board states into CLS and per-square embeddings.
 
-        Calls EmbeddingLayer, passes through TransformerEncoder, then splits
-        the output: encoded[:, 0, :] -> cls_embedding, encoded[:, 1:, :] -> squares.
+        Calls EmbeddingLayer with all four streams, passes through
+        TransformerEncoder, then splits: index 0 -> cls, 1:65 -> squares.
 
         Args:
             board_tokens: torch.long [B, 65]. Piece-type indices.
             color_tokens: torch.long [B, 65]. Color indices.
+            activity_tokens: torch.long [B, 65]. Activity scores 0-8.
 
         Returns:
-            EncoderOutput(cls_embedding=[B, 256], square_embeddings=[B, 64, 256]).
+            EncoderOutput(cls_embedding=[B, 256],
+                          square_embeddings=[B, 64, 256]).
 
         Example:
-            >>> out = enc.encode(board_tok, color_tok)
+            >>> out = enc.encode(bt, ct, at)
             >>> out.square_embeddings.shape
             torch.Size([4, 64, 256])
         """
-        x = self.embedding(board_tokens, color_tokens)
+        x = self.embedding(
+            board_tokens, color_tokens, activity_tokens
+        )
         encoded = self.transformer(x)
         return EncoderOutput(
             cls_embedding=encoded[:, 0, :],
             square_embeddings=encoded[:, 1:, :],
         )
 
-    def forward(self, board_tokens: Tensor, color_tokens: Tensor) -> EncoderOutput:
-        """nn.Module forward — delegates to encode().
+    def forward(
+        self,
+        board_tokens: Tensor,
+        color_tokens: Tensor,
+        activity_tokens: Tensor,
+    ) -> EncoderOutput:
+        """nn.Module forward -- delegates to encode().
 
         Args:
             board_tokens: torch.long [B, 65].
             color_tokens: torch.long [B, 65].
+            activity_tokens: torch.long [B, 65].
 
         Returns:
             EncoderOutput namedtuple.
         """
-        return self.encode(board_tokens, color_tokens)
+        return self.encode(
+            board_tokens, color_tokens, activity_tokens
+        )

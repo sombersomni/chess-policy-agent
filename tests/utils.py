@@ -44,6 +44,7 @@ def make_synthetic_batch(batch_size: int = 4, device: str = "cpu") -> ChessBatch
     return ChessBatch(
         board_tokens=torch.randint(0, 8, (batch_size, SEQ_LEN), dtype=torch.long, device=device),
         color_tokens=torch.randint(0, 3, (batch_size, SEQ_LEN), dtype=torch.long, device=device),
+        activity_tokens=torch.randint(0, 9, (batch_size, SEQ_LEN), dtype=torch.long, device=device),
         src_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
         tgt_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
         opp_src_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
@@ -77,6 +78,7 @@ def make_synthetic_batch_with_ignore(batch_size: int = 4, device: str = "cpu") -
     return ChessBatch(
         board_tokens=batch.board_tokens,
         color_tokens=batch.color_tokens,
+        activity_tokens=batch.activity_tokens,
         src_sq=batch.src_sq,
         tgt_sq=batch.tgt_sq,
         opp_src_sq=opp_src,
@@ -225,9 +227,11 @@ def make_training_examples(n: int = 10) -> list[TrainingExample]:
     for _ in range(n):
         board_tokens = [0] + [int(torch.randint(1, 8, (1,)).item()) for _ in range(64)]
         color_tokens = [0] + [int(torch.randint(0, 3, (1,)).item()) for _ in range(64)]
+        activity_tokens = [0] * 65
         examples.append(TrainingExample(
             board_tokens=board_tokens,
             color_tokens=color_tokens,
+            activity_tokens=activity_tokens,
             src_sq=int(torch.randint(0, 64, (1,)).item()),
             tgt_sq=int(torch.randint(0, 64, (1,)).item()),
             opp_src_sq=int(torch.randint(0, 64, (1,)).item()),

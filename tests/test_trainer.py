@@ -38,39 +38,42 @@ class TestTrainerCheckpoint(unittest.TestCase):
         torch.manual_seed(42)
 
     def test_checkpoint_roundtrip_preserves_outputs(self) -> None:
-        """T19: Outputs are identical before saving and after reloading checkpoint."""
-        board_tokens = torch.randint(0, 8, (2, 65))
-        color_tokens = torch.randint(0, 3, (2, 65))
+        """T19: Outputs are identical before/after checkpoint reload."""
+        bt = torch.randint(0, 8, (2, 65))
+        ct = torch.randint(0, 3, (2, 65))
+        at = torch.zeros(2, 65, dtype=torch.long)
 
-        # Eval mode disables dropout for deterministic output.
         self.trainer.encoder.eval()
         with torch.no_grad():
-            out_before: EncoderOutput = self.trainer.encoder.encode(
-                board_tokens, color_tokens
+            out_before: EncoderOutput = (
+                self.trainer.encoder.encode(bt, ct, at)
             )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             ckpt_path = Path(tmpdir) / "test.pt"
             self.trainer.save_checkpoint(ckpt_path)
-
-            # Create a fresh trainer and load the checkpoint.
             fresh_trainer = Trainer(device="cpu")
             fresh_trainer.load_checkpoint(ckpt_path)
 
-        # Eval mode disables dropout for deterministic output.
         fresh_trainer.encoder.eval()
         with torch.no_grad():
-            out_after: EncoderOutput = fresh_trainer.encoder.encode(
-                board_tokens, color_tokens
+            out_after: EncoderOutput = (
+                fresh_trainer.encoder.encode(bt, ct, at)
             )
 
         self.assertTrue(
-            torch.allclose(out_before.cls_embedding, out_after.cls_embedding),
-            msg="cls_embedding differs after checkpoint reload",
+            torch.allclose(
+                out_before.cls_embedding,
+                out_after.cls_embedding,
+            ),
+            msg="cls_embedding differs after reload",
         )
         self.assertTrue(
-            torch.allclose(out_before.square_embeddings, out_after.square_embeddings),
-            msg="square_embeddings differ after checkpoint reload",
+            torch.allclose(
+                out_before.square_embeddings,
+                out_after.square_embeddings,
+            ),
+            msg="square_embeddings differ after reload",
         )
 
 

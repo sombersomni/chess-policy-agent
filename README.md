@@ -1,6 +1,6 @@
 # chess-sim
 
-A BERT-style transformer encoder for chess position understanding. The model encodes board states as token sequences and predicts the next move's source and target squares — for both the current player and their opponent.
+A BERT-style transformer encoder for chess position understanding. The model encodes board states as token sequences and predicts the current player's move (source and target squares) from the side-to-move's perspective.
 
 ## Architecture Overview
 
@@ -13,8 +13,8 @@ graph TD
     Trajectory --> Dataset["ChessDataset"]
     Dataset --> Loader["DataLoader"]
     Loader --> Encoder["ChessEncoder (6-layer BERT)"]
-    Encoder --> Heads["PredictionHeads (4x Linear)"]
-    Heads --> Loss["LossComputer (CrossEntropy x4)"]
+    Encoder --> Heads["PredictionHeads (2x Linear)"]
+    Heads --> Loss["LossComputer (CrossEntropy x2)"]
     Loss --> Trainer["Trainer (AdamW + CosineAnnealingLR)"]
 ```
 
@@ -87,12 +87,12 @@ Test coverage spans T01–T20 (core components), T26–T40 (trajectory/encoder i
 | `tests/test_embedding.py` | T05–T08: EmbeddingLayer output shapes and dtype |
 | `tests/test_encoder.py` | T09–T12: ChessEncoder forward pass and gradient flow |
 | `tests/test_heads.py` | T13–T14: PredictionHeads output shapes |
-| `tests/test_loss.py` | T15–T16, T18: LossComputer with ignore_index=-1 |
+| `tests/test_loss.py` | T15–T16: LossComputer correctness |
 | `tests/test_trainer.py` | T19: train_step, checkpoint roundtrip |
-| `tests/test_dataset.py` | T17, T18, T20: DataLoader dtypes and opponent labels |
+| `tests/test_dataset.py` | T17, T20: DataLoader dtypes and move labels |
 | `tests/test_reader.py` | StreamingPGNReader streaming |
 | `tests/test_sampler.py` | ReservoirSampler uniform sampling |
-| `tests/test_chess_encoder.py` | T26–T40: trajectory tokens, 4-stream embedding, geometric init, gradient flow, structural subtyping |
+| `tests/test_chess_encoder.py` | T26–T40: trajectory tokens, embedding init priors, gradient flow, structural subtyping |
 | `tests/test_evaluate.py` | TEV01–TEV14: Shannon entropy, top-1 accuracy, per_head_ce, GameEvaluator integration, winner_color, winners_only filtering |
 
 ---
@@ -221,8 +221,6 @@ with torch.no_grad():
 
 # preds.src_sq_logits  -> [B, 64]
 # preds.tgt_sq_logits  -> [B, 64]
-# preds.opp_src_sq_logits -> [B, 64]
-# preds.opp_tgt_sq_logits -> [B, 64]
 
 src_sq = preds.src_sq_logits.argmax(dim=-1)   # predicted source square
 tgt_sq = preds.tgt_sq_logits.argmax(dim=-1)   # predicted target square
@@ -270,7 +268,7 @@ python -m scripts.gui.viewer \
 | `--checkpoint` | `checkpoints/winner_run_01.pt` | Path to trained `.pt` checkpoint |
 | `--game-index` | `0` | Zero-based index of the game to view |
 
-**Controls:** use the `◀ Prev` / `Next ▶` buttons or drag the slider to navigate plies. The board highlights the actual move's source square (yellow border) and target square (orange border). The right panel updates automatically with per-head CE loss, top-1 accuracy (✓/✗/–), Shannon entropy, and a mean-entropy bar.
+**Controls:** use the `◀ Prev` / `Next ▶` buttons or drag the slider to navigate plies. The board highlights the actual move's source square (yellow border) and target square (orange border). The right panel updates automatically with per-head CE loss, top-1 accuracy (✓/✗), Shannon entropy, and a mean-entropy bar.
 
 ---
 
@@ -284,7 +282,7 @@ python -m scripts.evaluate \
     --top-n 3
 ```
 
-Output includes a per-ply table with CE loss, top-1 accuracy, and Shannon entropy for each of the four prediction heads, plus an aggregate summary with the top-N highest-entropy positions.
+Output includes a per-ply table with CE loss, top-1 accuracy, and Shannon entropy for each prediction head (src, tgt), plus an aggregate summary with the top-N highest-entropy positions.
 
 Use `--winners-only` to evaluate only positions where the winning player is to move (mirrors the training flag).
 
@@ -306,9 +304,9 @@ chess-sim/
 │   ├── model/
 │   │   ├── embedding.py      # EmbeddingLayer: piece + color + square + trajectory -> [B, 65, 256]
 │   │   ├── encoder.py        # ChessEncoder: BERT-style transformer (6 layers)
-│   │   └── heads.py          # PredictionHeads: 4x Linear(256, 64)
+│   │   └── heads.py          # PredictionHeads: 2x Linear(256, 64)
 │   └── training/
-│       ├── loss.py           # LossComputer: CrossEntropy x4 with ignore_index=-1
+│       ├── loss.py           # LossComputer: CrossEntropy x2 (src + tgt)
 │       └── trainer.py        # Trainer: AdamW + CosineAnnealingLR; decorators: @log_metrics, @device_aware, @timed
 ├── scripts/
 │   ├── __init__.py
@@ -336,8 +334,8 @@ chess-sim/
 
 ## Key Design Notes
 
-**Opponent labels use `ignore_index=-1`**
-The last move in a game has no opponent response. The model uses `opp_src_sq=-1` and `opp_tgt_sq=-1` as sentinel values, which `nn.CrossEntropyLoss(ignore_index=-1)` skips during loss computation.
+**Player-perspective prediction**
+Each ply is predicted from the side-to-move's perspective using two heads: `src_sq` (which piece moves) and `tgt_sq` (where it goes). When it's Black's turn, the board is tokenized with Black as "player" and White as "opponent" — the model always sees itself as the player. This simplifies the learning task compared to separate player/opponent heads.
 
 **Pre-Layer-Norm (Pre-LN) architecture**
 `TransformerEncoderLayer` is configured with `norm_first=True` to ensure stable gradient flow on CPU with PyTorch 2.x's scaled dot-product attention backend.

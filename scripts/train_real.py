@@ -29,6 +29,7 @@ from chess_sim.data.dataset import ChessDataset
 from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.training.trainer import Trainer
 from chess_sim.types import TrainingExample
+from chess_sim.utils import winner_color
 
 
 # ---------------------------------------------------------------------------
@@ -75,18 +76,39 @@ def generate_random_game(max_moves: int = 80) -> chess.pgn.Game:
 # ---------------------------------------------------------------------------
 
 def game_to_examples(
-    game: chess.pgn.Game, tokenizer: BoardTokenizer
+    game: chess.pgn.Game,
+    tokenizer: BoardTokenizer,
+    winners_only: bool = False,
 ) -> list[TrainingExample]:
-    """Walk every ply of a game and emit one TrainingExample per position."""
+    """Walk every ply of a game and emit one TrainingExample per position.
+
+    Args:
+        game: A parsed PGN game object.
+        tokenizer: Board tokenizer instance.
+        winners_only: If True, only include positions where
+            the winning side is to move. Draws return [].
+
+    Returns:
+        List of TrainingExample namedtuples.
+    """
+    winner = winner_color(game) if winners_only else None
+    if winners_only and winner is None:
+        return []
+
     examples: list[TrainingExample] = []
     board = game.board()
     moves = list(game.mainline_moves())
 
     for i, move in enumerate(moves):
+        if winners_only and board.turn != winner:
+            board.push(move)
+            continue
+
         tokenized = tokenizer.tokenize(board, board.turn)
         if i + 1 < len(moves):
             opp = moves[i + 1]
-            opp_src_sq, opp_tgt_sq = opp.from_square, opp.to_square
+            opp_src_sq = opp.from_square
+            opp_tgt_sq = opp.to_square
         else:
             opp_src_sq, opp_tgt_sq = -1, -1
 
@@ -103,13 +125,32 @@ def game_to_examples(
     return examples
 
 
-def build_examples_from_file(pgn_path: Path) -> list[TrainingExample]:
+def build_examples_from_file(
+    pgn_path: Path,
+    winners_only: bool = False,
+) -> list[TrainingExample]:
+    """Build training examples from a PGN file.
+
+    Args:
+        pgn_path: Path to .pgn or .pgn.zst file.
+        winners_only: If True, only include winning side positions.
+
+    Returns:
+        List of TrainingExample namedtuples.
+    """
     tokenizer = BoardTokenizer()
     all_examples: list[TrainingExample] = []
     for i, game in enumerate(stream_pgn(pgn_path)):
-        all_examples.extend(game_to_examples(game, tokenizer))
+        all_examples.extend(
+            game_to_examples(
+                game, tokenizer, winners_only=winners_only
+            )
+        )
         if (i + 1) % 50 == 0:
-            print(f"  Processed {i + 1} games ({len(all_examples)} examples)")
+            print(
+                f"  Processed {i + 1} games "
+                f"({len(all_examples)} examples)"
+            )
     return all_examples
 
 
@@ -140,6 +181,15 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--checkpoint", type=str, default="",
                         help="Path to save final checkpoint (.pt)")
+    parser.add_argument(
+        "--winners-only",
+        action="store_true",
+        default=False,
+        help=(
+            "Include only the winning player's positions."
+            " Skips draws."
+        ),
+    )
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -148,7 +198,9 @@ def main() -> None:
     if args.pgn:
         pgn_path = Path(args.pgn)
         print(f"\nLoading examples from {pgn_path} ...")
-        examples = build_examples_from_file(pgn_path)
+        examples = build_examples_from_file(
+            pgn_path, winners_only=args.winners_only
+        )
     else:
         print(f"\nGenerating examples from {args.num_games} synthetic games...")
         examples = build_examples_synthetic(args.num_games)

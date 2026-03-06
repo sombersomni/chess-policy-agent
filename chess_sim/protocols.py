@@ -6,7 +6,8 @@ implicitly via structural subtyping — no explicit `implements` declaration nee
 
 from __future__ import annotations
 
-from typing import Iterator, Protocol, runtime_checkable
+from pathlib import Path
+from typing import TYPE_CHECKING, Iterator, Protocol, runtime_checkable
 
 import chess
 import chess.pgn
@@ -20,6 +21,9 @@ from chess_sim.types import (
     PredictionOutput,
     TokenizedBoard,
 )
+
+if TYPE_CHECKING:
+    from chess_sim.data.streaming_types import ManifestInfo, PreprocessConfig
 
 
 @runtime_checkable
@@ -170,5 +174,91 @@ class Samplable(Protocol):
         Example:
             >>> sampler = ReservoirSampler()
             >>> games = sampler.sample(reader.stream(path), 1_000_000)
+        """
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Streaming data pipeline protocols
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class Preprocessable(Protocol):
+    """Defines the interface for a PGN preprocessing pipeline."""
+
+    def preprocess(
+        self, pgn_path: Path, output_dir: Path, config: "PreprocessConfig"
+    ) -> "ManifestInfo":
+        """Run preprocessing on a PGN file and produce shard files + manifest.
+
+        Args:
+            pgn_path: Path to the source PGN file (plain or .zst).
+            output_dir: Directory for output shards and manifest.
+            config: PreprocessConfig with chunk_size, winners_only, etc.
+
+        Returns:
+            ManifestInfo with shard paths, example counts, and checksum.
+
+        Example:
+            >>> info = preprocessor.preprocess(pgn, out, config)
+        """
+        ...
+
+
+@runtime_checkable
+class ShardWritable(Protocol):
+    """Defines the interface for shard serialization to disk."""
+
+    def flush(
+        self, tensors: dict[str, Tensor], shard_idx: int, output_dir: Path
+    ) -> Path:
+        """Serialize a tensor dict to a numbered .pt shard file.
+
+        Args:
+            tensors: Dict mapping field names to torch.long tensors.
+            shard_idx: Zero-based shard index for filename generation.
+            output_dir: Directory where the shard file is written.
+
+        Returns:
+            Path to the written shard file.
+
+        Example:
+            >>> path = writer.flush(tensors, 0, Path("/tmp/shards"))
+        """
+        ...
+
+
+@runtime_checkable
+class Cacheable(Protocol):
+    """Defines the interface for cache validation and checksum computation."""
+
+    def checksum(self, path: Path) -> str:
+        """Compute a fast checksum of a file for cache keying.
+
+        Args:
+            path: Path to the file to checksum.
+
+        Returns:
+            Hex-encoded digest string.
+
+        Example:
+            >>> cs = cache.checksum(Path("data.pgn"))
+        """
+        ...
+
+    def is_cached(self, manifest_path: Path, source_checksum: str) -> bool:
+        """Check if a valid cached manifest exists for the given checksum.
+
+        Args:
+            manifest_path: Path to the manifest.json file.
+            source_checksum: Expected checksum of the source file.
+
+        Returns:
+            True if manifest exists and checksums match.
+
+        Example:
+            >>> cache.is_cached(Path("manifest.json"), "abc123")
+            False
         """
         ...

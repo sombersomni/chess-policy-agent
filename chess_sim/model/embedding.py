@@ -1,14 +1,15 @@
-"""EmbeddingLayer: composes piece, color, square, and activity embeddings.
+"""EmbeddingLayer: composes piece, color, square, and trajectory embeddings.
 
 Four independent embedding tables are summed element-wise then passed through
 LayerNorm and Dropout. This gives the model independent learned representations
-for piece type, piece ownership, board position, and recent move activity.
+for piece type, piece ownership, board position, and last-move trajectory.
 
 Vocabulary sizes:
-  piece_emb:    8  (CLS=0, EMPTY=1, PAWN=2, KNIGHT=3, BISHOP=4, ROOK=5, QUEEN=6, KING=7)
-  color_emb:    3  (EMPTY=0, PLAYER=1, OPPONENT=2)
-  square_emb:   65 (index 0=CLS position, 1..64=squares a1..h8)
-  activity_emb: 9  (activity scores 0-8)
+  piece_emb:      8  (CLS=0, EMPTY=1, PAWN=2, KNIGHT=3, BISHOP=4, ROOK=5, QUEEN=6, KING=7)
+  color_emb:      3  (EMPTY=0, PLAYER=1, OPPONENT=2)
+  square_emb:     65 (index 0=CLS position, 1..64=squares a1..h8)
+  trajectory_emb: 5  (0=none, 1=player prev src, 2=player prev tgt,
+                      3=opp prev src, 4=opp prev tgt)
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ D_MODEL: int = 256
 PIECE_VOCAB_SIZE: int = 8
 COLOR_VOCAB_SIZE: int = 3
 SQUARE_VOCAB_SIZE: int = 65  # CLS + 64 squares
-ACTIVITY_VOCAB_SIZE: int = 9  # activity scores 0-8
+TRAJECTORY_VOCAB_SIZE: int = 5  # 0=none, 1=pl_src, 2=pl_tgt, 3=opp_src, 4=opp_tgt
 DROPOUT: float = 0.1
 
 # Role features: [value, mobility, linearity, diagonality, can_jump, royalty, freq_prior]
@@ -50,18 +51,18 @@ class EmbeddingLayer(nn.Module):
     Implements the Embeddable protocol.
 
     Internal structure:
-      piece_emb:    nn.Embedding(8, 256)  — role-feature init
-      color_emb:    nn.Embedding(3, 256)
-      square_emb:   nn.Embedding(65, 256) — geometric sin/cos init
-      activity_emb: nn.Embedding(9, 256)
-      layer_norm:   nn.LayerNorm(256)
-      dropout:      nn.Dropout(0.1)
+      piece_emb:      nn.Embedding(8, 256)  — role-feature init
+      color_emb:      nn.Embedding(3, 256)
+      square_emb:     nn.Embedding(65, 256) — geometric sin/cos init
+      trajectory_emb: nn.Embedding(5, 256)
+      layer_norm:     nn.LayerNorm(256)
+      dropout:        nn.Dropout(0.1)
 
-    Output = LayerNorm(Dropout(piece + color + square + activity)).
+    Output = LayerNorm(Dropout(piece + color + square + trajectory)).
 
     Example:
         >>> layer = EmbeddingLayer()
-        >>> out = layer.embed(bt, ct, at)  # [B, 65, 256]
+        >>> out = layer.embed(bt, ct, tt)  # [B, 65, 256]
     """
 
     def __init__(self) -> None:
@@ -83,8 +84,8 @@ class EmbeddingLayer(nn.Module):
         self.square_emb = nn.Embedding(
             SQUARE_VOCAB_SIZE, D_MODEL
         )
-        self.activity_emb = nn.Embedding(
-            ACTIVITY_VOCAB_SIZE, D_MODEL
+        self.trajectory_emb = nn.Embedding(
+            TRAJECTORY_VOCAB_SIZE, D_MODEL
         )
         self.layer_norm = nn.LayerNorm(D_MODEL)
         self.dropout = nn.Dropout(DROPOUT)
@@ -136,17 +137,17 @@ class EmbeddingLayer(nn.Module):
         self,
         board_tokens: Tensor,
         color_tokens: Tensor,
-        activity_tokens: Tensor,
+        trajectory_tokens: Tensor,
     ) -> Tensor:
         """Compose four embedding streams into [B, 65, 256].
 
-        Sums piece + color + square + activity embeddings,
+        Sums piece + color + square + trajectory embeddings,
         applies LayerNorm, then Dropout.
 
         Args:
             board_tokens: torch.long [B, 65].
             color_tokens: torch.long [B, 65].
-            activity_tokens: torch.long [B, 65].
+            trajectory_tokens: torch.long [B, 65]. Values 0-4.
 
         Returns:
             torch.float [B, 65, 256].
@@ -166,7 +167,7 @@ class EmbeddingLayer(nn.Module):
             self.piece_emb(board_tokens)
             + self.color_emb(color_tokens)
             + self.square_emb(sq_idx)
-            + self.activity_emb(activity_tokens)
+            + self.trajectory_emb(trajectory_tokens)
         )
         return self.dropout(self.layer_norm(x))
 
@@ -174,18 +175,18 @@ class EmbeddingLayer(nn.Module):
         self,
         board_tokens: Tensor,
         color_tokens: Tensor,
-        activity_tokens: Tensor,
+        trajectory_tokens: Tensor,
     ) -> Tensor:
         """nn.Module forward -- delegates to embed().
 
         Args:
             board_tokens: torch.long [B, 65].
             color_tokens: torch.long [B, 65].
-            activity_tokens: torch.long [B, 65].
+            trajectory_tokens: torch.long [B, 65]. Values 0-4.
 
         Returns:
             torch.float [B, 65, 256].
         """
         return self.embed(
-            board_tokens, color_tokens, activity_tokens
+            board_tokens, color_tokens, trajectory_tokens
         )

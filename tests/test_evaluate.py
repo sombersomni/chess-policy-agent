@@ -103,7 +103,7 @@ class TestEvaluateStep(unittest.TestCase):
         self.example = TrainingExample(
             board_tokens=[0] + [1] * 64,
             color_tokens=[0] + [0] * 64,
-            activity_tokens=[0] * 65,
+            trajectory_tokens=[0] * 65,
             src_sq=12,
             tgt_sq=28,
             opp_src_sq=52,
@@ -113,7 +113,7 @@ class TestEvaluateStep(unittest.TestCase):
         self.terminal_example = TrainingExample(
             board_tokens=[0] + [1] * 64,
             color_tokens=[0] + [0] * 64,
-            activity_tokens=[0] * 65,
+            trajectory_tokens=[0] * 65,
             src_sq=12,
             tgt_sq=28,
             opp_src_sq=-1,

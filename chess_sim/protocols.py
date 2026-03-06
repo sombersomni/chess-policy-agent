@@ -44,29 +44,6 @@ class Tokenizable(Protocol):
 
 
 @runtime_checkable
-class Scorable(Protocol):
-    """Computes per-square activity tokens from game move history."""
-
-    def score(
-        self,
-        moves: list[chess.Move],
-        board: chess.Board,
-        n: int = 4,
-    ) -> list[int]:
-        """Return activity_tokens of length 65 (0=CLS, 1-64=squares).
-
-        Args:
-            moves: Move history up to the current ply.
-            board: Board state after all moves played.
-            n: Number of recent moves to consider.
-
-        Returns:
-            List of 65 ints, values 0-8.
-        """
-        ...
-
-
-@runtime_checkable
 class Embeddable(Protocol):
     """Converts token index tensors into dense embedding vectors."""
 
@@ -74,21 +51,21 @@ class Embeddable(Protocol):
         self,
         board_tokens: Tensor,
         color_tokens: Tensor,
-        activity_tokens: Tensor,
+        trajectory_tokens: Tensor,
     ) -> Tensor:
-        """Compose piece, color, square, and activity embeddings.
+        """Compose piece, color, square, and trajectory embeddings.
 
         Args:
             board_tokens: Integer tensor [B, 65] indices 0-7.
             color_tokens: Integer tensor [B, 65] indices 0-2.
-            activity_tokens: Integer tensor [B, 65] indices 0-8.
+            trajectory_tokens: Integer tensor [B, 65] indices 0-4.
 
         Returns:
             Float tensor [B, 65, 256] of composed embeddings.
 
         Example:
             >>> emb = EmbeddingLayer()
-            >>> out = emb.embed(bt, ct, at)
+            >>> out = emb.embed(bt, ct, tt)
         """
         ...
 
@@ -101,14 +78,14 @@ class Encodable(Protocol):
         self,
         board_tokens: Tensor,
         color_tokens: Tensor,
-        activity_tokens: Tensor,
+        trajectory_tokens: Tensor,
     ) -> EncoderOutput:
         """Encode a batch of board states into embeddings.
 
         Args:
             board_tokens: Integer tensor [B, 65] piece indices.
             color_tokens: Integer tensor [B, 65] color indices.
-            activity_tokens: Integer tensor [B, 65] activity 0-8.
+            trajectory_tokens: Integer tensor [B, 65] values 0-4.
 
         Returns:
             EncoderOutput with cls_embedding [B, 256]
@@ -116,7 +93,7 @@ class Encodable(Protocol):
 
         Example:
             >>> enc = ChessEncoder()
-            >>> out = enc.encode(bt, ct, at)
+            >>> out = enc.encode(bt, ct, tt)
         """
         ...
 

@@ -27,7 +27,6 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from chess_sim.data.scorer import ActivityScorer
 from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.model.heads import PredictionHeads
@@ -35,7 +34,11 @@ from chess_sim.training.trainer import Trainer, timed
 from chess_sim.types import TrainingExample
 from chess_sim.utils import winner_color
 
-from scripts.train_real import game_to_examples, stream_pgn
+from scripts.train_real import (
+    _make_trajectory_tokens,
+    game_to_examples,
+    stream_pgn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,11 +190,11 @@ def evaluate_step(
         [example.color_tokens],
         dtype=torch.long, device=device,
     )
-    at = torch.tensor(
-        [example.activity_tokens],
+    tt = torch.tensor(
+        [example.trajectory_tokens],
         dtype=torch.long, device=device,
     )
-    enc_out = encoder(bt, ct, at)
+    enc_out = encoder(bt, ct, tt)
     pred = heads(enc_out.cls_embedding)
 
     # Squeeze batch dim: [1, 64] -> [64]
@@ -269,7 +272,6 @@ class GameEvaluator:
         """
         self.device = device
         self.tokenizer = BoardTokenizer()
-        self.scorer = ActivityScorer()
         self._trainer = Trainer(device=device)
         self._trainer.load_checkpoint(checkpoint_path)
         self._trainer.encoder.eval()
@@ -321,8 +323,8 @@ class GameEvaluator:
             tokenized = tokenizer.tokenize(
                 board, board.turn
             )
-            activity_tokens = self.scorer.score(
-                move_history, board, n=4
+            trajectory_tokens = _make_trajectory_tokens(
+                move_history
             )
             if i + 1 < len(moves):
                 opp = moves[i + 1]
@@ -334,7 +336,7 @@ class GameEvaluator:
             ex = TrainingExample(
                 board_tokens=tokenized.board_tokens,
                 color_tokens=tokenized.color_tokens,
-                activity_tokens=activity_tokens,
+                trajectory_tokens=trajectory_tokens,
                 src_sq=move.from_square,
                 tgt_sq=move.to_square,
                 opp_src_sq=opp_src,

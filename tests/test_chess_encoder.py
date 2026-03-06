@@ -1,6 +1,6 @@
-"""Tests for Encoder v2: ActivityScorer, 4-stream embedding, and protocols.
+"""Tests for Encoder v2: trajectory tokens, 4-stream embedding, and protocols.
 
-T26-T40: New tests for activity scoring, embedding init priors,
+T26-T40: Tests for trajectory token derivation, embedding init priors,
 4-stream encoder signature, gradient flow, and structural subtyping.
 """
 
@@ -15,142 +15,87 @@ import chess
 import torch
 import torch.nn.functional as F
 
-from chess_sim.data.scorer import ActivityScorer
 from chess_sim.model.embedding import D_MODEL, EmbeddingLayer
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.protocols import Embeddable, Encodable
 from chess_sim.types import ChessBatch, TrainingExample
+from scripts.train_real import _make_trajectory_tokens
 from tests.utils import make_training_examples
 
 
 # ------------------------------------------------------------------
-# T26-T28: ActivityScorer
+# T26-T28: _make_trajectory_tokens
 # ------------------------------------------------------------------
 
-class TestActivityScorerCLS(unittest.TestCase):
-    """T26: CLS index is always 0."""
+class TestTrajectoryTokensEmpty(unittest.TestCase):
+    """T26: Empty move history produces all-zero tokens."""
+
+    def test_t26_empty_history_all_zeros(self) -> None:
+        """T26: _make_trajectory_tokens([]) returns length-65 all zeros."""
+        result = _make_trajectory_tokens([])
+        self.assertEqual(len(result), 65)
+        self.assertTrue(all(v == 0 for v in result))
 
     def test_t26_cls_always_zero(self) -> None:
-        """T26: score() result[0] == 0 regardless of moves."""
-        scorer = ActivityScorer()
-        board = chess.Board()
-        # Play a move to have history
-        move = chess.Move.from_uci("e2e4")
-        board.push(move)
-        result = scorer.score([move], board, n=4)
-        self.assertEqual(result[0], 0)
-
-    def test_t26_cls_zero_empty_moves(self) -> None:
-        """T26: CLS is zero with empty move list."""
-        scorer = ActivityScorer()
-        result = scorer.score([], chess.Board(), n=4)
+        """T26: Index 0 (CLS) is always 0 even with moves."""
+        m = chess.Move.from_uci("e2e4")
+        result = _make_trajectory_tokens([m])
         self.assertEqual(result[0], 0)
 
 
-class TestActivityScorerCapture(unittest.TestCase):
-    """T27: Two capturing moves from same square score 4."""
+class TestTrajectoryTokensOpp(unittest.TestCase):
+    """T27: With 1-move history, opp squares marked at 3/4."""
 
-    def test_t27_two_captures_same_square(self) -> None:
-        """T27: Two captures from the same square produce score 4."""
-        # Set up a position where a piece captures twice
-        # from the same square. Use a knight on d5 that
-        # captures on e7, then captures on c7.
-        # Board: White Kh1, Nd5, Pawns; Black Ke8, Pe7, Pc7
-        board = chess.Board(fen="4k3/2p1p3/8/3N4/8/8/8/7K w - - 0 1")
-        # Move 1: Nd5xe7 (capture black pawn on e7)
-        m1 = chess.Move.from_uci("d5e7")
-        board.push(m1)
-        # Black moves king
-        m2 = chess.Move.from_uci("e8d8")
-        board.push(m2)
-        # Move 3: Ne7xc7 (but we want same from_square)
-        # Actually m1 is from d5 and m3 would be from e7.
-        # Let me redesign: use a queen that captures twice
-        # from the same square.
-        # Better: Qd1 captures on d7, then from d7 captures
-        # on d8. Both from different squares. Let me think
-        # about this differently.
-        #
-        # Two captures FROM the same square: piece stays there
-        # and captures in two consecutive moves? Not possible
-        # in chess -- a piece moves away after capturing.
-        #
-        # Actually: different pieces can move FROM the same
-        # square in different moves. But that's also impossible
-        # since only one piece occupies a square.
-        #
-        # The spec says "two consecutive capturing moves from
-        # same square". This means the from_square is the same
-        # for both moves, which is impossible in normal chess.
-        # But we can test with synthetic moves.
-        #
-        # Let's use the scorer directly with synthetic input.
-        scorer = ActivityScorer()
+    def test_t27_opp_src_marked_3(self) -> None:
+        """T27: opp.from_square+1 has value 3."""
+        # e2e4: from_square=12 -> idx 13
+        m = chess.Move.from_uci("e2e4")
+        result = _make_trajectory_tokens([m])
+        self.assertEqual(result[13], 3)
 
-        # Create a board where we can rewind to detect captures.
-        board2 = chess.Board(
-            fen="4k3/3pp3/8/8/8/8/4P3/4K3 w - - 0 1"
-        )
-        # Move pawn e2-e4 (non-capture, from e2=sq12)
-        m_a = chess.Move.from_uci("e2e4")
-        board2.push(m_a)
-        # Black d7-d5 (non-capture)
-        m_b = chess.Move.from_uci("d7d5")
-        board2.push(m_b)
-        # White e4xd5 (capture from e4=sq28, to d5=sq35)
-        m_c = chess.Move.from_uci("e4d5")
-        board2.push(m_c)
-        # Black e7-e5 (non-capture)
-        m_d = chess.Move.from_uci("e7e5")
-        board2.push(m_d)
+    def test_t27_opp_tgt_marked_4(self) -> None:
+        """T27: opp.to_square+1 has value 4."""
+        # e2e4: to_square=28 -> idx 29
+        m = chess.Move.from_uci("e2e4")
+        result = _make_trajectory_tokens([m])
+        self.assertEqual(result[29], 4)
 
-        history = [m_a, m_b, m_c, m_d]
-        result = scorer.score(history, board2, n=4)
-
-        # m_a from e2 (sq12): non-capture -> +1 at idx 13
-        # m_b from d7 (sq51): non-capture -> +1 at idx 52
-        # m_c from e4 (sq28): capture -> +2 at idx 29
-        # m_d from e7 (sq52): non-capture -> +1 at idx 53
-        self.assertEqual(result[13], 1)   # e2
-        self.assertEqual(result[52], 1)   # d7
-        self.assertEqual(result[29], 2)   # e4 (capture)
-        self.assertEqual(result[53], 1)   # e7
-
-    def test_t27_capture_adds_two_points(self) -> None:
-        """T27: A single capture move contributes 2 points."""
-        scorer = ActivityScorer()
-        # Simple Italian game opening: 1.e4 e5 2.Nf3 Nc6
-        # 3.Bc4 Bc5 4.Bxf7+ (capture)
-        board = chess.Board()
-        moves_uci = [
-            "e2e4", "e7e5", "g1f3", "b8c6",
-            "f1c4", "f8c5", "c4f7",
-        ]
-        history: list[chess.Move] = []
-        for uci in moves_uci:
-            m = chess.Move.from_uci(uci)
-            history.append(m)
-            board.push(m)
-
-        result = scorer.score(history, board, n=4)
-        # Last 4 moves: Nc6(b8->c6), Bc4(f1->c4),
-        # Bc5(f8->c5), Bxf7(c4->f7 capture)
-        # c4=sq26 -> idx 27: capture -> 2 pts
-        self.assertEqual(result[27], 2)
+    def test_t27_no_player_marks_with_one_move(self) -> None:
+        """T27: With only 1 move in history, no player marks (1 or 2)."""
+        m = chess.Move.from_uci("e2e4")
+        result = _make_trajectory_tokens([m])
+        self.assertNotIn(1, result)
+        self.assertNotIn(2, result)
 
 
-class TestActivityScorerNZero(unittest.TestCase):
-    """T28: n=0 returns all zeros."""
+class TestTrajectoryTokensPlayer(unittest.TestCase):
+    """T28: With 2-move history, player marks (1,2) also set."""
 
-    def test_t28_n_zero_all_zeros(self) -> None:
-        """T28: score with n=0 returns all zeros."""
-        scorer = ActivityScorer()
-        board = chess.Board()
-        board.push(chess.Move.from_uci("e2e4"))
-        result = scorer.score(
-            [chess.Move.from_uci("e2e4")], board, n=0
-        )
-        self.assertTrue(all(v == 0 for v in result))
+    def test_t28_player_src_marked_1(self) -> None:
+        """T28: player move (history[-2]) from_square+1 has value 1."""
+        # Player: e2e4 (from=12 -> idx 13)
+        # Opp:    e7e5 (from=52 -> idx 53)
+        pl = chess.Move.from_uci("e2e4")
+        opp = chess.Move.from_uci("e7e5")
+        result = _make_trajectory_tokens([pl, opp])
+        self.assertEqual(result[13], 1)
+
+    def test_t28_player_tgt_marked_2(self) -> None:
+        """T28: player move to_square+1 has value 2."""
+        # e2e4: to_square=28 -> idx 29
+        pl = chess.Move.from_uci("e2e4")
+        opp = chess.Move.from_uci("d7d5")
+        result = _make_trajectory_tokens([pl, opp])
+        self.assertEqual(result[29], 2)
+
+    def test_t28_opp_marks_still_correct(self) -> None:
+        """T28: Opp marks are correct alongside player marks."""
+        # d7d5: from=51 -> idx 52; to=35 -> idx 36
+        pl = chess.Move.from_uci("e2e4")
+        opp = chess.Move.from_uci("d7d5")
+        result = _make_trajectory_tokens([pl, opp])
+        self.assertEqual(result[52], 3)  # opp src
+        self.assertEqual(result[36], 4)  # opp tgt
 
 
 # ------------------------------------------------------------------
@@ -158,7 +103,7 @@ class TestActivityScorerNZero(unittest.TestCase):
 # ------------------------------------------------------------------
 
 class TestEmbeddingLayer4Stream(unittest.TestCase):
-    """T29-T30: 4-stream output shape and activity contribution."""
+    """T29-T30: 4-stream output shape and trajectory contribution."""
 
     def setUp(self) -> None:
         self.layer = EmbeddingLayer()
@@ -168,21 +113,21 @@ class TestEmbeddingLayer4Stream(unittest.TestCase):
         """T29: 4-stream embed output shape is (4, 65, 256)."""
         bt = torch.randint(0, 8, (4, 65))
         ct = torch.randint(0, 3, (4, 65))
-        at = torch.zeros(4, 65, dtype=torch.long)
+        tt = torch.zeros(4, 65, dtype=torch.long)
         with torch.no_grad():
-            out = self.layer.embed(bt, ct, at)
+            out = self.layer.embed(bt, ct, tt)
         self.assertEqual(out.shape, (4, 65, 256))
 
-    def test_t30_activity_contributes_to_output(self) -> None:
-        """T30: Nonzero activity_tokens change the output."""
+    def test_t30_trajectory_contributes_to_output(self) -> None:
+        """T30: Nonzero trajectory_tokens change the output."""
         bt = torch.randint(0, 8, (2, 65))
         ct = torch.randint(0, 3, (2, 65))
-        at_zero = torch.zeros(2, 65, dtype=torch.long)
-        at_nonzero = torch.ones(2, 65, dtype=torch.long)
+        tt_zero = torch.zeros(2, 65, dtype=torch.long)
+        tt_nonzero = torch.ones(2, 65, dtype=torch.long)
         with torch.no_grad():
-            out_zero = self.layer.embed(bt, ct, at_zero)
+            out_zero = self.layer.embed(bt, ct, tt_zero)
             out_nonzero = self.layer.embed(
-                bt, ct, at_nonzero
+                bt, ct, tt_nonzero
             )
         self.assertFalse(torch.allclose(out_zero, out_nonzero))
 
@@ -249,12 +194,12 @@ class TestEncoder3ArgSignature(unittest.TestCase):
         self.B = 4
 
     def test_t34_output_shapes(self) -> None:
-        """T34: encode(bt, ct, at) returns correct shapes."""
+        """T34: encode(bt, ct, tt) returns correct shapes."""
         bt = torch.randint(0, 8, (self.B, 65))
         ct = torch.randint(0, 3, (self.B, 65))
-        at = torch.zeros(self.B, 65, dtype=torch.long)
+        tt = torch.zeros(self.B, 65, dtype=torch.long)
         with torch.no_grad():
-            out = self.encoder.encode(bt, ct, at)
+            out = self.encoder.encode(bt, ct, tt)
         self.assertEqual(
             out.cls_embedding.shape, (self.B, D_MODEL)
         )
@@ -264,60 +209,60 @@ class TestEncoder3ArgSignature(unittest.TestCase):
         )
 
 
-class TestActivityEmbGradient(unittest.TestCase):
-    """T35: Gradient flows through activity_emb."""
+class TestTrajectoryEmbGradient(unittest.TestCase):
+    """T35: Gradient flows through trajectory_emb."""
 
-    def test_t35_activity_emb_receives_gradient(self) -> None:
-        """T35: activity_emb.weight.grad is not None and not all zero."""
+    def test_t35_trajectory_emb_receives_gradient(self) -> None:
+        """T35: trajectory_emb.weight.grad is not None and not all zero."""
         encoder = ChessEncoder()
         bt = torch.randint(0, 8, (2, 65))
         ct = torch.randint(0, 3, (2, 65))
-        # Use nonzero activity to ensure gradient signal
-        at = torch.randint(1, 9, (2, 65))
-        out = encoder.encode(bt, ct, at)
+        # Use nonzero trajectory tokens to ensure gradient signal
+        tt = torch.randint(1, 5, (2, 65))
+        out = encoder.encode(bt, ct, tt)
         loss = out.cls_embedding.sum()
         loss.backward()
-        grad = encoder.embedding.activity_emb.weight.grad
+        grad = encoder.embedding.trajectory_emb.weight.grad
         self.assertIsNotNone(grad)
         self.assertFalse(grad.eq(0).all())
 
 
 # ------------------------------------------------------------------
-# T36-T37: ChessBatch activity_tokens dtype and range
+# T36-T37: ChessBatch trajectory_tokens dtype and range
 # ------------------------------------------------------------------
 
-class TestChessBatchActivityTokens(unittest.TestCase):
-    """T36-T37: ChessBatch activity_tokens properties."""
+class TestChessBatchTrajectoryTokens(unittest.TestCase):
+    """T36-T37: ChessBatch trajectory_tokens properties."""
 
-    def test_t36_activity_tokens_dtype_long(self) -> None:
-        """T36: ChessBatch activity_tokens dtype is torch.long."""
+    def test_t36_trajectory_tokens_dtype_long(self) -> None:
+        """T36: ChessBatch trajectory_tokens dtype is torch.long."""
         from chess_sim.data.dataset import ChessDataset
         examples = make_training_examples(3)
         ds = ChessDataset(examples)
         item = ds[0]
         self.assertEqual(
-            item.activity_tokens.dtype, torch.long
+            item.trajectory_tokens.dtype, torch.long
         )
 
-    def test_t37_activity_tokens_values_in_range(self) -> None:
-        """T37: activity_tokens values are in [0, 8]."""
+    def test_t37_trajectory_tokens_values_in_range(self) -> None:
+        """T37: trajectory_tokens values are in [0, 4]."""
         from chess_sim.data.dataset import ChessDataset
         examples = make_training_examples(3)
         ds = ChessDataset(examples)
         item = ds[0]
-        self.assertTrue((item.activity_tokens >= 0).all())
-        self.assertTrue((item.activity_tokens <= 8).all())
+        self.assertTrue((item.trajectory_tokens >= 0).all())
+        self.assertTrue((item.trajectory_tokens <= 4).all())
 
 
 # ------------------------------------------------------------------
-# T38: evaluate_step accepts activity_tokens
+# T38: evaluate_step accepts trajectory_tokens
 # ------------------------------------------------------------------
 
-class TestEvaluateStepActivity(unittest.TestCase):
-    """T38: evaluate_step returns finite StepResult with activity."""
+class TestEvaluateStepTrajectory(unittest.TestCase):
+    """T38: evaluate_step returns finite StepResult with trajectory."""
 
-    def test_t38_evaluate_step_with_activity(self) -> None:
-        """T38: evaluate_step accepts activity_tokens in example."""
+    def test_t38_evaluate_step_with_trajectory(self) -> None:
+        """T38: evaluate_step accepts trajectory_tokens in example."""
         from scripts.evaluate import StepResult, evaluate_step
         torch.manual_seed(42)
         encoder = ChessEncoder().to("cpu")
@@ -328,7 +273,7 @@ class TestEvaluateStepActivity(unittest.TestCase):
         ex = TrainingExample(
             board_tokens=[0] + [1] * 64,
             color_tokens=[0] + [0] * 64,
-            activity_tokens=[0] * 65,
+            trajectory_tokens=[0] * 65,
             src_sq=12,
             tgt_sq=28,
             opp_src_sq=52,

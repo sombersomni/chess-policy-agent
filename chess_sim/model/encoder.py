@@ -70,7 +70,7 @@ class ChessEncoder(nn.Module):
         self,
         board_tokens: Tensor,
         color_tokens: Tensor,
-        activity_tokens: Tensor,
+        trajectory_tokens: Tensor,
     ) -> EncoderOutput:
         """Encode a batch of board states into CLS and per-square embeddings.
 
@@ -80,7 +80,7 @@ class ChessEncoder(nn.Module):
         Args:
             board_tokens: torch.long [B, 65]. Piece-type indices.
             color_tokens: torch.long [B, 65]. Color indices.
-            activity_tokens: torch.long [B, 65]. Activity scores 0-8.
+            trajectory_tokens: torch.long [B, 65]. Activity scores 0-8.
 
         Returns:
             EncoderOutput(cls_embedding=[B, 256],
@@ -92,7 +92,7 @@ class ChessEncoder(nn.Module):
             torch.Size([4, 64, 256])
         """
         x = self.embedding(
-            board_tokens, color_tokens, activity_tokens
+            board_tokens, color_tokens, trajectory_tokens
         )
         encoded = self.transformer(x)
         return EncoderOutput(
@@ -104,18 +104,18 @@ class ChessEncoder(nn.Module):
         self,
         board_tokens: Tensor,
         color_tokens: Tensor,
-        activity_tokens: Tensor,
+        trajectory_tokens: Tensor,
     ) -> EncoderOutput:
         """nn.Module forward -- delegates to encode().
 
         Args:
             board_tokens: torch.long [B, 65].
             color_tokens: torch.long [B, 65].
-            activity_tokens: torch.long [B, 65].
+            trajectory_tokens: torch.long [B, 65].
 
         Returns:
             EncoderOutput namedtuple.
         """
         return self.encode(
-            board_tokens, color_tokens, activity_tokens
+            board_tokens, color_tokens, trajectory_tokens
         )

@@ -4,7 +4,7 @@
 - Source: `chess_sim/` with subpackages `data/`, `model/`, `training/`
 - Tests: `tests/` using `unittest` + `pytest` + `parameterized`
 - Types: `chess_sim/types.py` (all NamedTuples: TokenizedBoard, TrainingExample, ChessBatch, EncoderOutput, PredictionOutput, LabelTensors)
-- Protocols: `chess_sim/protocols.py` (Tokenizable, Embeddable, Encodable, Predictable, Trainable, Samplable)
+- Protocols: `chess_sim/protocols.py` (Tokenizable, Embeddable, Encodable, Predictable, Trainable, Samplable, Scorable)
 - Test utils: `tests/utils.py` (make_synthetic_batch, make_prediction_output, make_training_examples, etc.)
 
 ## Key Implementation Decisions
@@ -13,6 +13,15 @@
 - **NaN handling in LossComputer**: When all opponent labels are -1 (ignored), CE returns nan. Replace nan with zeros_like before summing.
 - **requires_grad in test utils**: `make_prediction_output` needs `requires_grad=True` on logit tensors for backward tests.
 - **Eval mode for checkpoint tests**: Dropout makes outputs non-deterministic in train mode; checkpoint roundtrip tests need `.eval()`.
+- **Gitignore `data/`**: The `.gitignore` has `data/` which matches `chess_sim/data/`. New files in `chess_sim/data/` require `git add -f`.
+
+## Encoder v2 (4-stream)
+- `EmbeddingLayer` has 4 streams: piece_emb(8,256), color_emb(3,256), square_emb(65,256), activity_emb(9,256)
+- `embed()`, `encode()` signatures: `(board_tokens, color_tokens, activity_tokens)`
+- `TrainingExample` and `ChessBatch` include `activity_tokens` field (between color_tokens and src_sq)
+- `ActivityScorer` in `chess_sim/data/scorer.py`: computes per-square activity from move history
+- Square emb: geometric sin/cos init; Piece emb: role-feature init (7-elem tiled to 256, scaled 0.02)
+- Checkpoint migration: `strict=False` when loading old 3-stream checkpoints
 
 ## Dependencies
 - `torch`, `python-chess`, `zstandard` (in requirements.txt)
@@ -22,3 +31,12 @@
 - `.venv/` at project root
 - Activate: `source .venv/bin/activate`
 - Run tests: `python -m pytest tests/ -v`
+
+## Test Files
+- `tests/test_tokenizer.py` - T01-T03; `tests/test_embedding.py` - T04
+- `tests/test_encoder.py` - T05, T09; `tests/test_heads.py` - T06
+- `tests/test_loss.py` - T07; `tests/test_trainer.py` - T08, T19
+- `tests/test_dataset.py` - T17, T18, T20
+- `tests/test_reader.py`, `tests/test_sampler.py` - data pipeline
+- `tests/test_evaluate.py` - TEV01-TEV14
+- `tests/test_chess_encoder.py` - T26-T40: Encoder v2 tests

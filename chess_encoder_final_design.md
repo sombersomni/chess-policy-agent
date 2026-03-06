@@ -10,7 +10,7 @@ The chess-sim project needs a foundation model that produces rich, contextual em
 
 | Approach | Pros | Cons | Verdict |
 |----------|------|------|---------|
-| **A. BERT-style encoder, CLS + 64 squares, 4 classification heads** | Minimal vocabulary (8 tokens); natural CLS pooling for global state; per-square embeddings for local reasoning; well-understood architecture; ~4.8M params fits single GPU | No autoregressive move sequence modeling; CLS-only heads ignore per-square information for move selection | **Accept** |
+| **A. BERT-style encoder, CLS + 64 squares, 4 space-prediction heads** | Minimal vocabulary (8 tokens); natural CLS pooling for global state; per-square embeddings for local reasoning; well-understood architecture; ~4.8M params fits single GPU; piece identity is implicit from board state — no redundant piece heads needed | No autoregressive move sequence modeling; CLS-only heads ignore per-square information for move selection | **Accept** |
 | **B. GPT-style decoder, autoregressive move generation** | Directly models move sequences; natural for policy head | Requires causal masking that breaks full-board attention; harder to extract static board embeddings; training requires move-sequence tokenization not just board snapshots | Reject -- misaligned with embedding-first goal |
 | **C. Graph Neural Network over piece-square graph** | Captures adjacency and attack structure naturally; variable-size input | Non-standard architecture; fewer pretrained baselines; harder to integrate with downstream transformer-based heads; custom batching logic | Reject -- engineering complexity too high for v1 |
 | **D. CNN over 8x8 board image** | Spatial inductive bias is built in; AlphaZero precedent | Fixed receptive field limits long-range piece interaction; no natural CLS equivalent; harder to produce per-square embeddings | Reject -- transformer attention handles long-range better |
@@ -19,7 +19,7 @@ The chess-sim project needs a foundation model that produces rich, contextual em
 
 ## Chosen Approach
 
-Approach A is accepted. A BERT-style transformer encoder over a 65-token sequence (CLS + 64 squares) with additive embedding composition (piece + color + square) and four classification heads (player move prediction + opponent move prediction) provides the best balance of simplicity, expressiveness, and alignment with downstream tasks. The architecture totals ~4.8M parameters, trainable on a single GPU. The two-task objective (predict both the player's move and the opponent's response) forces the CLS embedding to compress a richer global board representation capturing the strategic intentions of both sides simultaneously.
+Approach A is accepted. A BERT-style transformer encoder over a 65-token sequence (CLS + 64 squares) with additive embedding composition (piece + color + square) and four space-prediction heads (player src/tgt squares + opponent src/tgt squares) provides the best balance of simplicity, expressiveness, and alignment with downstream tasks. Piece identity is derived as a joint probability: since the board state is known, predicting a source square implicitly identifies the piece at that square — `P(piece | src_sq, board) = 1`. This eliminates redundant piece-type classification heads while preserving full move information. The architecture totals ~4.8M parameters, trainable on a single GPU. The two-task objective (predict both the player's move and the opponent's response) forces the CLS embedding to compress a richer global board representation capturing the strategic intentions of both sides simultaneously.
 
 ---
 
@@ -46,9 +46,9 @@ flowchart TD
     CLS --> HEADS["PredictionHeads"]
 
     subgraph HEADS["PredictionHeads Module"]
-        H1["src_piece_head<br/>Linear 256 -> 8"]
+        H1["src_sq_head<br/>Linear 256 -> 64"]
         H2["tgt_sq_head<br/>Linear 256 -> 64"]
-        H3["opp_piece_head<br/>Linear 256 -> 8"]
+        H3["opp_src_sq_head<br/>Linear 256 -> 64"]
         H4["opp_tgt_sq_head<br/>Linear 256 -> 64"]
     end
 
@@ -104,7 +104,7 @@ sequenceDiagram
     ENC->>ENC: cls = encoded[:, 0, :]
     ENC->>PH: forward(cls)
     PH-->>LC: 4 logit tensors
-    LC->>LC: sum(CE(logits_i, labels_i) for i in 1..4)
+    LC->>LC: sum(CE(sq_logits_i, sq_labels_i) for i in 1..4)
     LC-->>OPT: total_loss scalar
     OPT->>OPT: zero_grad, loss.backward, step
     OPT-->>ENC: updated parameters
@@ -168,9 +168,9 @@ classDiagram
     }
 
     class PredictionHeads {
-        +src_piece_head: Linear
+        +src_sq_head: Linear
         +tgt_sq_head: Linear
-        +opp_piece_head: Linear
+        +opp_src_sq_head: Linear
         +opp_tgt_sq_head: Linear
         +predict(cls_embedding: Tensor) PredictionOutput
     }
@@ -233,7 +233,7 @@ flowchart TD
     REPLAY -->|"for each move"| TOK["BoardTokenizer.tokenize()"]
     TOK --> BT["board_tokens: int[65]"]
     TOK --> CT["color_tokens: int[65]"]
-    REPLAY -->|"extract from move"| LABELS["Labels:<br/>src_sq, src_piece,<br/>tgt_sq, tgt_piece,<br/>opp_src_sq, opp_src_piece,<br/>opp_tgt_sq, opp_tgt_piece"]
+    REPLAY -->|"extract from move"| LABELS["Labels:<br/>src_sq, tgt_sq,<br/>opp_src_sq, opp_tgt_sq"]
 
     BT --> SAVE["Save to disk<br/>.pt or .arrow files"]
     CT --> SAVE
@@ -326,15 +326,16 @@ flowchart TD
 
 ### 4. `PredictionHeads` (nn.Module)
 
-- **Responsibility:** Maps the CLS embedding to four classification outputs (player move + opponent move).
+- **Responsibility:** Maps the CLS embedding to four square-prediction outputs (player src/tgt + opponent src/tgt). Piece identity is derived from the board state at the predicted source square — no separate piece heads needed.
 - **Protocol:** `Predictable`
 - **Key interface:**
   ```
   predict(cls_embedding: Tensor[B, 256]) -> PredictionOutput
   ```
-  where `PredictionOutput` is a `NamedTuple(src_piece_logits: Tensor[B, 8], tgt_sq_logits: Tensor[B, 64], opp_piece_logits: Tensor[B, 8], opp_tgt_sq_logits: Tensor[B, 64])`.
-- **Internal structure:** Four independent `nn.Linear` layers. No shared parameters between heads.
-- **Testability:** Verified by asserting output shapes and that each head produces independent gradients.
+  where `PredictionOutput` is a `NamedTuple(src_sq_logits: Tensor[B, 64], tgt_sq_logits: Tensor[B, 64], opp_src_sq_logits: Tensor[B, 64], opp_tgt_sq_logits: Tensor[B, 64])`.
+- **Joint probability for piece identity:** `P(piece, src_sq | board) = P(piece | src_sq, board) * P(src_sq | board)`. Since the board state is known, `P(piece | src_sq, board) = 1` — the piece type is deterministic given the square. The model only needs to learn `P(src_sq | board)`.
+- **Internal structure:** Four independent `nn.Linear(256, 64)` layers. No shared parameters between heads.
+- **Testability:** Verified by asserting output shapes (all `[B, 64]`) and that each head produces independent gradients.
 
 ### 5. `LossComputer`
 
@@ -343,9 +344,9 @@ flowchart TD
   ```
   compute(predictions: PredictionOutput, labels: LabelTensors) -> Tensor
   ```
-  where `LabelTensors` is a `NamedTuple(src_piece: Tensor[B], tgt_sq: Tensor[B], opp_piece: Tensor[B], opp_tgt_sq: Tensor[B])`.
-- **Loss formula:** `loss = CE(src_piece) + CE(tgt_sq) + CE(opp_piece) + CE(opp_tgt_sq)`
-- **Optional per-head weighting via `loss_weights: tuple[float, float, float, float]` parameter**, defaulting to `(1.0, 1.0, 1.0, 1.0)`. Adjustable if one objective dominates early training.
+  where `LabelTensors` is a `NamedTuple(src_sq: Tensor[B], tgt_sq: Tensor[B], opp_src_sq: Tensor[B], opp_tgt_sq: Tensor[B])`.
+- **Loss formula:** `loss = CE(src_sq) + CE(tgt_sq) + CE(opp_src_sq) + CE(opp_tgt_sq)`
+- **Optional per-head weighting via `loss_weights: tuple[float, float, float, float]` parameter**, defaulting to `(1.0, 1.0, 1.0, 1.0)`. All heads share the same output dimensionality (64-way), so gradient balance is expected to be more uniform than the previous mixed 8-way/64-way design.
 - **Testability:** Verified with known logits and labels against hand-computed CE values.
 
 ### 6. `StreamingPGNReader`
@@ -377,7 +378,7 @@ flowchart TD
   __getitem__(idx: int) -> ChessBatch
   __len__() -> int
   ```
-  where `ChessBatch` is a `NamedTuple(board_tokens: Tensor[65], color_tokens: Tensor[65], src_piece: int, tgt_sq: int, opp_piece: int, opp_tgt_sq: int)`.
+  where `ChessBatch` is a `NamedTuple(board_tokens: Tensor[65], color_tokens: Tensor[65], src_sq: int, tgt_sq: int, opp_src_sq: int, opp_tgt_sq: int)`.
 - **Storage:** Preprocessed examples are saved to disk as `.pt` files (or Apache Arrow/Parquet for larger scale). The dataset memory-maps from disk at training time.
 - **Train/val split:** 95% train, 5% validation. Split at the game level (not example level) to prevent data leakage from consecutive board states.
 - **Testability:** Verified by loading a small dataset and checking tensor shapes and dtypes.
@@ -412,17 +413,17 @@ TokenizedBoard = NamedTuple:
 TrainingExample = NamedTuple:
     board_tokens: list[int]     # length 65
     color_tokens: list[int]     # length 65
-    src_piece: int              # 0..7
+    src_sq: int                 # 0..63
     tgt_sq: int                 # 0..63
-    opp_piece: int              # 0..7
+    opp_src_sq: int             # 0..63
     opp_tgt_sq: int             # 0..63
 
 ChessBatch = NamedTuple:
     board_tokens: Tensor[B, 65]
     color_tokens: Tensor[B, 65]
-    src_piece: Tensor[B]
+    src_sq: Tensor[B]
     tgt_sq: Tensor[B]
-    opp_piece: Tensor[B]
+    opp_src_sq: Tensor[B]
     opp_tgt_sq: Tensor[B]
 
 EncoderOutput = NamedTuple:
@@ -430,15 +431,15 @@ EncoderOutput = NamedTuple:
     square_embeddings: Tensor[B, 64, 256]
 
 PredictionOutput = NamedTuple:
-    src_piece_logits: Tensor[B, 8]
+    src_sq_logits: Tensor[B, 64]
     tgt_sq_logits: Tensor[B, 64]
-    opp_piece_logits: Tensor[B, 8]
+    opp_src_sq_logits: Tensor[B, 64]
     opp_tgt_sq_logits: Tensor[B, 64]
 
 LabelTensors = NamedTuple:
-    src_piece: Tensor[B]
+    src_sq: Tensor[B]
     tgt_sq: Tensor[B]
-    opp_piece: Tensor[B]
+    opp_src_sq: Tensor[B]
     opp_tgt_sq: Tensor[B]
 ```
 
@@ -475,7 +476,7 @@ LabelTensors = NamedTuple:
 | T03 | Tokenize empty square | Board with empty e4 | board_tokens[e4_idx]=1 (EMPTY), color_tokens[e4_idx]=0 (EMPTY) | No |
 | T04 | Embedding output shape | batch of 4, seq_len=65 | Output tensor shape = (4, 65, 256) | No |
 | T05 | Encoder output shape | batch of 4 | cls_embedding: (4, 256), square_embeddings: (4, 64, 256) | No |
-| T06 | Prediction heads output shape | cls_embedding of shape (4, 256) | src_piece: (4, 8), tgt_sq: (4, 64), opp_piece: (4, 8), opp_tgt_sq: (4, 64) | No |
+| T06 | Prediction heads output shape | cls_embedding of shape (4, 256) | src_sq: (4, 64), tgt_sq: (4, 64), opp_src_sq: (4, 64), opp_tgt_sq: (4, 64) | No |
 | T07 | Loss computation correctness | Known logits + labels | Loss matches hand-computed CE within 1e-5 tolerance | No |
 | T08 | Loss decreases after one train step | Random batch, two forward passes | loss_after < loss_before | No |
 | T09 | Gradient flow to all parameters | One backward pass | All encoder + head parameters have non-None, non-zero gradients | No |
@@ -483,11 +484,11 @@ LabelTensors = NamedTuple:
 | T11 | Reservoir sampler with N > stream length | Stream of 50 items, sample 100 | Returns all 50 items | Yes |
 | T12 | Streaming PGN reader yields valid games | Small test PGN with 3 games | Iterator yields exactly 3 `chess.pgn.Game` objects | No |
 | T13 | Color normalization consistency | Same position, tokenized as White then Black | Piece types match (after flip); color indices swap (1 <-> 2) | No |
-| T14 | Promotion handling | Board where pawn promotes to queen | src_piece = PAWN (label reflects piece before move) | Yes |
+| T14 | Promotion handling | Board where pawn promotes to queen | src_sq = pawn's square, tgt_sq = promotion square; piece identity (PAWN) derived from board state at src_sq | Yes |
 | T15 | En passant tokenization | Board with en passant capture available | Target square is the en passant square (not the captured pawn's square) | Yes |
-| T16 | Castling tokenization | Board where king castles | src_piece = KING, tgt_sq = king's destination (g1 or c1) | Yes |
-| T17 | Opponent label extraction | Move pair (e4, e5) at move 1 | For the board before e4: opp_piece=PAWN, opp_tgt_sq=e5_index | No |
-| T18 | Last move in game has no opponent label | Final move of a game | opp_piece and opp_tgt_sq are set to ignore_index (-1) | Yes |
+| T16 | Castling tokenization | Board where king castles | src_sq = king's square (e1/e8), tgt_sq = king's destination (g1 or c1); piece identity (KING) derived from board state at src_sq | Yes |
+| T17 | Opponent label extraction | Move pair (e4, e5) at move 1 | For the board before e4: opp_src_sq=e7_index, opp_tgt_sq=e5_index | No |
+| T18 | Last move in game has no opponent label | Final move of a game | opp_src_sq and opp_tgt_sq are set to ignore_index (-1) | Yes |
 | T19 | Checkpoint save and reload | Train, save, reload, forward pass | Outputs are identical before save and after reload | No |
 | T20 | DataLoader produces correct dtypes | Load one batch | board_tokens: torch.long, color_tokens: torch.long, labels: torch.long | No |
 
@@ -497,7 +498,7 @@ LabelTensors = NamedTuple:
 
 The engineering team adheres to these standards for all modules in this design:
 
-- **DRY:** The four classification heads share no code but follow an identical pattern. If head logic grows beyond a single `nn.Linear`, extract a shared `ClassificationHead` class parameterized by output size.
+- **DRY:** All four heads are identical `nn.Linear(256, 64)` layers. Since they share the same architecture, consider a factory or loop-based construction (e.g., `nn.ModuleList([nn.Linear(256, 64) for _ in range(4)])`). If head logic grows beyond a single linear layer, extract a shared `SquareHead` class.
 - **Decorators for cross-cutting concerns:**
   - `@log_metrics` -- wraps `train_step` and `train_epoch` to emit structured logs without cluttering business logic.
   - `@device_aware` -- handles tensor device placement. Use CPU for unit tests, GPU for training/evaluation.
@@ -526,15 +527,15 @@ The engineering team adheres to these standards for all modules in this design:
 
 ## Open Questions
 
-1. **Opponent label for the last move in a game:** The final move has no opponent response. Options: (a) exclude from training, (b) use ignore_index=-1 in CE loss so the opponent heads skip this example, (c) use a special NONE label. Recommendation: option (b) using `ignore_index=-1` in `nn.CrossEntropyLoss` -- simplest and requires no vocabulary change.
+1. **Opponent label for the last move in a game:** The final move has no opponent response. Options: (a) exclude from training, (b) use ignore_index=-1 in CE loss so the opponent square heads skip this example, (c) use a special NONE label. Recommendation: option (b) using `ignore_index=-1` in `nn.CrossEntropyLoss` -- simplest and requires no vocabulary change.
 
 2. **Board flipping for Black's perspective:** The design specifies flipping square indices (`i -> 63-i`) when it is Black's turn. This makes "forward" always toward higher ranks. Confirm whether this also requires reversing file order within each rank, or only rank reversal.
 
-3. **Per-head loss weighting:** The initial design uses equal weights (1.0 each). If the 64-way square classification heads dominate the gradient early in training (due to higher output dimensionality), consider weighting the 8-way piece heads higher. Defer to empirical observation.
+3. **Per-head loss weighting:** The initial design uses equal weights (1.0 each). All four heads are now 64-way square classifiers with identical output dimensionality, so gradient balance should be more uniform. Weighting may still help if one task (player vs opponent) converges faster. Defer to empirical observation.
 
 4. **Preprocessing once vs. on-the-fly:** The current design preprocesses all 40M examples to disk, then loads via memory-mapped dataset. Alternative: generate examples on-the-fly during training (saves disk but increases CPU load). Recommendation: preprocess once -- 40M examples at ~200 bytes each is ~8GB on disk, acceptable.
 
-5. **Handling promotions in piece vocabulary:** When a pawn promotes, the `src_piece` label is PAWN (piece before the move). The `tgt_piece` concept from the draft (piece type after the move) is not used in the four-head design. If promotion prediction is needed downstream, a fifth head or a promotion flag could be added later.
+5. **Handling promotions:** When a pawn promotes, the source square contains a PAWN (derivable from board state) and the target square is the promotion square. The model learns src_sq and tgt_sq — promotion piece type (queen/rook/bishop/knight) is not explicitly predicted. If under-promotion prediction is needed downstream, a fifth head with a 4-way classifier could be added.
 
 6. **Rating filter on sampled games:** The draft does not filter by player rating. Low-rated games contain blunders that may degrade embedding quality. Consider filtering to games where both players are rated >= 1800. Trade-off: reduces available data but increases signal quality.
 

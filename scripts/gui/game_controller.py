@@ -46,7 +46,24 @@ class GameController:
         Raises:
             IndexError: If game_index >= number of games in pgn_path.
         """
-        raise NotImplementedError("To be implemented")
+        games = list(stream_pgn(pgn_path))
+        game = games[game_index]
+        evaluator = GameEvaluator(
+            checkpoint_path, device="cpu"
+        )
+
+        board = game.board()
+        self._boards = []
+        for move in game.mainline_moves():
+            self._boards.append(board.copy())
+            board.push(move)
+
+        self._results = evaluator.evaluate_game(game)
+        self._piece_emb = (
+            evaluator.encoder.embedding.piece_emb.weight
+            .detach().cpu().numpy()
+        )
+        self._current_ply = 0
 
     @property
     def current_ply(self) -> int:
@@ -56,11 +73,13 @@ class GameController:
     @current_ply.setter
     def current_ply(self, ply: int) -> None:
         """Set current ply; clamped to [0, total_plies - 1]."""
-        raise NotImplementedError("To be implemented")
+        self._current_ply = max(
+            0, min(ply, self.total_plies() - 1)
+        )
 
     def total_plies(self) -> int:
         """Return the number of evaluated plies."""
-        raise NotImplementedError("To be implemented")
+        return len(self._results)
 
     def board_at(self, ply: int) -> chess.Board:
         """Return the board snapshot at the given ply.
@@ -68,7 +87,7 @@ class GameController:
         Args:
             ply: Zero-based ply index in [0, total_plies).
         """
-        raise NotImplementedError("To be implemented")
+        return self._boards[ply]
 
     def step_result_at(self, ply: int) -> StepResult:
         """Return StepResult metrics for the given ply.
@@ -76,11 +95,13 @@ class GameController:
         Args:
             ply: Zero-based ply index in [0, total_plies).
         """
-        raise NotImplementedError("To be implemented")
+        return self._results[ply]
 
     def piece_embeddings(self) -> np.ndarray:
         """Return piece embedding weight matrix of shape (8, 256).
 
         Extracted from encoder.embedding.piece_emb.weight on load.
         """
-        raise NotImplementedError("To be implemented")
+        if self._piece_emb is None:
+            raise RuntimeError("Call load() first")
+        return self._piece_emb

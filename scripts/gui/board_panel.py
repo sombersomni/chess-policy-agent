@@ -80,7 +80,20 @@ class BoardPanel(tk.Frame):
 
     def render(self) -> None:
         """Clear canvas and redraw board, pieces, and move highlights."""
-        raise NotImplementedError("To be implemented")
+        self._canvas.delete("all")
+        self._draw_board()
+        board = self._controller.board_at(self._current_ply)
+        self._draw_pieces(board)
+        result = self._controller.step_result_at(
+            self._current_ply
+        )
+        self._draw_predictions(result)
+        total = self._controller.total_plies()
+        self._ply_label.config(
+            text=f"Ply {self._current_ply + 1} / {total}"
+        )
+        self._slider.config(to=total - 1)
+        self._slider.set(self._current_ply)
 
     def go_to_ply(self, ply: int) -> None:
         """Jump to ply; clamp to valid range; render; fire _on_ply_change.
@@ -88,47 +101,91 @@ class BoardPanel(tk.Frame):
         Args:
             ply: Target ply index.
         """
-        raise NotImplementedError("To be implemented")
+        total = self._controller.total_plies()
+        self._current_ply = max(0, min(ply, total - 1))
+        self._controller.current_ply = self._current_ply
+        self.render()
+        self._on_ply_change(self._current_ply)
 
     def next_ply(self) -> None:
         """Advance one ply if not at the last ply."""
-        raise NotImplementedError("To be implemented")
+        self.go_to_ply(self._current_ply + 1)
 
     def prev_ply(self) -> None:
         """Step back one ply if not at ply 0."""
-        raise NotImplementedError("To be implemented")
+        self.go_to_ply(self._current_ply - 1)
 
     def _draw_board(self) -> None:
         """Draw 64 alternating-colour square rectangles onto _canvas."""
-        raise NotImplementedError("To be implemented")
+        for rank in range(8):
+            for file in range(8):
+                x0 = file * self.SQUARE_PX
+                y0 = (7 - rank) * self.SQUARE_PX
+                x1 = x0 + self.SQUARE_PX
+                y1 = y0 + self.SQUARE_PX
+                color = (
+                    self.LIGHT_SQ
+                    if (rank + file) % 2 == 0
+                    else self.DARK_SQ
+                )
+                self._canvas.create_rectangle(
+                    x0, y0, x1, y1,
+                    fill=color, outline=""
+                )
 
     def _draw_pieces(self, board: chess.Board) -> None:
         """Overlay Unicode piece symbols at each occupied square.
 
         Args:
             board: Board snapshot for the current ply.
-
-        Note:
-            White pieces use the filled Unicode symbols.
-            Black pieces use the hollow Unicode symbols.
-            Both are displayed as centred text within each square.
         """
-        raise NotImplementedError("To be implemented")
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece is None:
+                continue
+            file = chess.square_file(square)
+            rank = chess.square_rank(square)
+            cx = file * self.SQUARE_PX + self.SQUARE_PX // 2
+            cy = (
+                (7 - rank) * self.SQUARE_PX
+                + self.SQUARE_PX // 2
+            )
+            symbol = self.PIECE_SYMBOLS[piece.piece_type]
+            color = (
+                "white"
+                if piece.color == chess.WHITE
+                else "black"
+            )
+            self._canvas.create_text(
+                cx, cy, text=symbol,
+                fill=color, font=("Arial", 28)
+            )
 
     def _draw_predictions(self, result: StepResult) -> None:
         """Highlight actual move source/target squares from move_uci.
 
         Args:
             result: StepResult for the current ply.
-
-        Note:
-            StepResult does not carry logits, so predicted-square
-            highlights are limited to actual move squares derived from
-            result.move_uci. Coloured borders are drawn:
-            ACTUAL_SRC_BDR (yellow) on source, ACTUAL_TGT_BDR (orange)
-            on target.
         """
-        raise NotImplementedError("To be implemented")
+        uci = result.move_uci
+        if not uci or len(uci) < 4:
+            return
+        src_sq = chess.parse_square(uci[:2])
+        tgt_sq = chess.parse_square(uci[2:4])
+        for sq, color in [
+            (src_sq, self.ACTUAL_SRC_BDR),
+            (tgt_sq, self.ACTUAL_TGT_BDR),
+        ]:
+            file = chess.square_file(sq)
+            rank = chess.square_rank(sq)
+            x0 = file * self.SQUARE_PX + 2
+            y0 = (7 - rank) * self.SQUARE_PX + 2
+            x1 = x0 + self.SQUARE_PX - 4
+            y1 = y0 + self.SQUARE_PX - 4
+            self._canvas.create_rectangle(
+                x0, y0, x1, y1,
+                outline=color, width=3
+            )
 
     def _on_slider_change(self, value: str) -> None:
         """Handle tk.Scale callback; value is a string integer.
@@ -136,4 +193,4 @@ class BoardPanel(tk.Frame):
         Args:
             value: String representation of the selected ply index.
         """
-        raise NotImplementedError("To be implemented")
+        self.go_to_ply(int(value))

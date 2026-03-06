@@ -98,7 +98,12 @@ class StatsPanel(tk.Frame):
 
     def render(self) -> None:
         """Read current ply from controller and refresh all sub-widgets."""
-        raise NotImplementedError("To be implemented")
+        result = self._controller.step_result_at(
+            self._controller.current_ply
+        )
+        self._update_ply_info(result)
+        self._update_metrics_table(result)
+        self._update_entropy_bar(result)
 
     def _update_ply_info(self, result: StepResult) -> None:
         """Update the ply label with ply index and move UCI.
@@ -106,7 +111,12 @@ class StatsPanel(tk.Frame):
         Args:
             result: StepResult for the current ply.
         """
-        raise NotImplementedError("To be implemented")
+        self._ply_label.config(
+            text=(
+                f"Ply {result.ply + 1}"
+                f" \u2014 Move: {result.move_uci}"
+            )
+        )
 
     def _update_metrics_table(self, result: StepResult) -> None:
         """Populate treeview rows with loss, accuracy, and entropy per head.
@@ -114,7 +124,38 @@ class StatsPanel(tk.Frame):
         Args:
             result: StepResult for the current ply.
         """
-        raise NotImplementedError("To be implemented")
+        rows = {
+            "src": (
+                result.loss_src,
+                result.acc_src,
+                result.entropy_src,
+            ),
+            "tgt": (
+                result.loss_tgt,
+                result.acc_tgt,
+                result.entropy_tgt,
+            ),
+            "opp_src": (
+                result.loss_opp_src,
+                result.acc_opp_src,
+                result.entropy_opp_src,
+            ),
+            "opp_tgt": (
+                result.loss_opp_tgt,
+                result.acc_opp_tgt,
+                result.entropy_opp_tgt,
+            ),
+        }
+        for head, (loss, acc, entropy) in rows.items():
+            self._tree.item(
+                head,
+                values=(
+                    head,
+                    _fmt_loss(loss),
+                    _fmt_acc(acc),
+                    _fmt_entropy(entropy),
+                ),
+            )
 
     def _update_entropy_bar(self, result: StepResult) -> None:
         """Redraw entropy bar proportional to mean_entropy / MAX_ENTROPY.
@@ -122,15 +163,58 @@ class StatsPanel(tk.Frame):
         Args:
             result: StepResult for the current ply.
         """
-        raise NotImplementedError("To be implemented")
+        self._entropy_canvas.delete("all")
+        w = self._entropy_canvas.winfo_width()
+        if w <= 1:
+            w = 400
+        ratio = min(
+            result.mean_entropy / self.MAX_ENTROPY, 1.0
+        )
+        bar_w = int(w * ratio)
+        self._entropy_canvas.create_rectangle(
+            0, 0, bar_w, 20,
+            fill="#4CAF50", outline=""
+        )
+        label = (
+            f"{result.mean_entropy:.3f}"
+            f" / {self.MAX_ENTROPY:.3f}"
+        )
+        self._entropy_canvas.create_text(
+            w // 2, 10, text=label,
+            fill="black", font=("Arial", 9)
+        )
 
     def _draw_embedding_scatter(self) -> None:
         """PCA-project piece_emb [8, 256] -> [8, 2] and draw scatter.
 
-        Called once during __init__. Uses numpy SVD (no sklearn dep):
-            X_centered = X - X.mean(axis=0)
-            _, _, Vt = np.linalg.svd(X_centered, full_matrices=False)
-            coords = X_centered @ Vt[:2].T  # shape [8, 2]
-        Labels each point with PIECE_LABELS, coloured by PIECE_COLORS.
+        Called once during __init__. Uses numpy SVD (no sklearn dep).
         """
-        raise NotImplementedError("To be implemented")
+        emb = self._controller.piece_embeddings()
+        X = emb.astype(np.float64)
+        X_centered = X - X.mean(axis=0)
+        _, _, Vt = np.linalg.svd(
+            X_centered, full_matrices=False
+        )
+        coords = X_centered @ Vt[:2].T
+
+        self._ax.clear()
+        for i, (label, color) in enumerate(
+            zip(self.PIECE_LABELS, self.PIECE_COLORS)
+        ):
+            self._ax.scatter(
+                coords[i, 0], coords[i, 1],
+                c=color, s=80, zorder=3,
+            )
+            self._ax.annotate(
+                label, (coords[i, 0], coords[i, 1]),
+                textcoords="offset points",
+                xytext=(4, 4), fontsize=8,
+            )
+        self._ax.set_title(
+            "Piece Embeddings (PCA)", fontsize=9
+        )
+        self._ax.set_xlabel("PC1", fontsize=8)
+        self._ax.set_ylabel("PC2", fontsize=8)
+        self._ax.tick_params(labelsize=7)
+        self._fig.tight_layout()
+        self._fig_canvas.draw()

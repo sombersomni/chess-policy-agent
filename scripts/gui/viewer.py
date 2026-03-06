@@ -36,28 +36,79 @@ class ChessViewer:
             checkpoint_path: Path to .pt checkpoint.
             game_index: Zero-based game index within the PGN.
         """
-        raise NotImplementedError("To be implemented")
+        self._root = tk.Tk()
+        self._root.title("Chess Encoder Viewer")
+        self._root.geometry("1000x600")
+        self._root.resizable(False, False)
+
+        self._controller = GameController()
+        self._controller.load(
+            pgn_path, checkpoint_path, game_index
+        )
+
+        # Left column (400px)
+        left = tk.Frame(self._root, width=400)
+        left.pack(side=tk.LEFT, fill=tk.Y)
+        left.pack_propagate(False)
+        self._board_panel = BoardPanel(
+            left, self._controller
+        )
+        self._board_panel.pack(fill=tk.BOTH, expand=True)
+
+        # Right column (600px)
+        right = tk.Frame(self._root, width=600)
+        right.pack(
+            side=tk.LEFT, fill=tk.BOTH, expand=True
+        )
+        right.pack_propagate(False)
+        self._stats_panel = StatsPanel(
+            right, self._controller
+        )
+        self._stats_panel.pack(fill=tk.BOTH, expand=True)
+
+        # Wire callback: board nav refreshes stats
+        self._board_panel._on_ply_change = (
+            lambda ply: self._stats_panel.render()
+        )
+
+        # Initial render
+        self._board_panel.go_to_ply(0)
 
     def run(self) -> None:
         """Enter tk.mainloop(). Blocks until window is closed."""
-        raise NotImplementedError("To be implemented")
+        self._root.mainloop()
 
 
 def main() -> None:
-    """Parse CLI args and launch ChessViewer.
-
-    CLI flags:
-        --pgn: Path to PGN file (default: data/games.pgn)
-        --checkpoint: Path to .pt checkpoint (default: checkpoints/winner_run_01.pt)
-        --game-index: Zero-based game index (default: 0)
-
-    Example:
-        python -m scripts.gui.viewer \\
-            --pgn data/games.pgn \\
-            --checkpoint checkpoints/winner_run_01.pt \\
-            --game-index 0
-    """
-    raise NotImplementedError("To be implemented")
+    """Parse CLI args and launch ChessViewer."""
+    parser = argparse.ArgumentParser(
+        description="Chess Encoder Viewer"
+    )
+    parser.add_argument(
+        "--pgn",
+        type=str,
+        default="data/games.pgn",
+        help="Path to PGN file",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="checkpoints/winner_run_01.pt",
+        help="Path to .pt checkpoint",
+    )
+    parser.add_argument(
+        "--game-index",
+        type=int,
+        default=0,
+        help="Zero-based game index",
+    )
+    args = parser.parse_args()
+    viewer = ChessViewer(
+        pgn_path=Path(args.pgn),
+        checkpoint_path=Path(args.checkpoint),
+        game_index=args.game_index,
+    )
+    viewer.run()
 
 
 if __name__ == "__main__":

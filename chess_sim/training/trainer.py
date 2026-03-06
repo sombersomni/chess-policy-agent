@@ -278,5 +278,7 @@ class Trainer:
             >>> trainer.load_checkpoint(Path("checkpoints/best.pt"))
         """
         ckpt = torch.load(path, map_location=self.device)
-        self.encoder.load_state_dict(ckpt['encoder'])
+        self.encoder.load_state_dict(
+            ckpt['encoder'], strict=False
+        )
         self.heads.load_state_dict(ckpt['heads'])

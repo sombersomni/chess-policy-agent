@@ -14,7 +14,7 @@ def _fmt_loss(v: float) -> str:
     Returns:
         String like "3.1416".
     """
-    raise NotImplementedError("To be implemented")
+    return f"{v:.4f}"
 
 
 def _fmt_acc(v: int) -> str:
@@ -26,7 +26,11 @@ def _fmt_acc(v: int) -> str:
     Returns:
         Checkmark for 1, x-mark for 0, en-dash for -1.
     """
-    raise NotImplementedError("To be implemented")
+    if v == 1:
+        return "\u2713"
+    if v == 0:
+        return "\u2717"
+    return "\u2013"
 
 
 def _fmt_entropy(v: float) -> str:
@@ -38,4 +42,4 @@ def _fmt_entropy(v: float) -> str:
     Returns:
         String like "2.0794".
     """
-    raise NotImplementedError("To be implemented")
+    return f"{v:.4f}"

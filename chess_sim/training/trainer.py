@@ -163,14 +163,17 @@ class Trainer:
         >>> loss = trainer.train_step(batch)
     """
 
-    def __init__(self, device: str = "cpu") -> None:
+    def __init__(self, device: str = "cpu", total_steps: int = 10_000) -> None:
         """Initialize encoder, heads, optimizer, and scheduler on the given device.
 
         Args:
             device: torch device string. Use 'cpu' for tests, 'cuda' for training.
+            total_steps: Total number of optimizer steps across all epochs.
+                Set this to num_epochs * batches_per_epoch so the cosine
+                schedule spans the full training run. Defaults to 10_000.
 
         Example:
-            >>> trainer = Trainer(device='cpu')
+            >>> trainer = Trainer(device='cpu', total_steps=5 * 9)
         """
         self.device = device
         self.encoder = ChessEncoder().to(device)
@@ -184,7 +187,7 @@ class Trainer:
             params, lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
         )
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=10
+            self.optimizer, T_max=total_steps
         )
 
     @log_metrics
@@ -227,7 +230,7 @@ class Trainer:
         )
         self.optimizer.step()
         self.scheduler.step()
-        return float(loss)
+        return loss.detach().item()
 
     @log_metrics
     def train_epoch(self, loader: DataLoader) -> float:

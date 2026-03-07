@@ -22,6 +22,14 @@
 - `ActivityScorer` in `chess_sim/data/scorer.py`: computes per-square activity from move history
 - Square emb: geometric sin/cos init; Piece emb: role-feature init (7-elem tiled to 256, scaled 0.02)
 - Checkpoint migration: `strict=False` when loading old 3-stream checkpoints
+- `trainer.load_checkpoint()` uses `strict=False` for encoder (handles missing `trajectory_emb` in old checkpoints)
+
+## GUI Module (`scripts/gui/`)
+- `formatters.py` - pure functions, no tkinter deps, tested headlessly
+- `game_controller.py` - tkinter-free GameSource impl, tested with real data
+- `board_panel.py`, `stats_panel.py`, `viewer.py` - tkinter widgets, no headless tests
+- Tests: `tests/gui/test_stats_panel.py` (7), `tests/gui/test_game_controller.py` (5)
+- Test data: `data/games.pgn` + `checkpoints/winner_run_01.pt`
 
 ## Dependencies
 - `torch`, `python-chess`, `zstandard` (in requirements.txt)

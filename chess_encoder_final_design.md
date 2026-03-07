@@ -19,7 +19,7 @@ The chess-sim project needs a foundation model that produces rich, contextual em
 
 ## Chosen Approach
 
-Approach A is accepted. A BERT-style transformer encoder over a 65-token sequence (CLS + 64 squares) with additive embedding composition (piece + color + square + activity) and four space-prediction heads (player src/tgt squares + opponent src/tgt squares) provides the best balance of simplicity, expressiveness, and alignment with downstream tasks. Piece identity is derived as a joint probability: since the board state is known, predicting a source square implicitly identifies the piece at that square — `P(piece | src_sq, board) = 1`. This eliminates redundant piece-type classification heads while preserving full move information. The architecture totals ~4.8M parameters, trainable on a single GPU. The two-task objective (predict both the player's move and the opponent's response) forces the CLS embedding to compress a richer global board representation capturing the strategic intentions of both sides simultaneously. A fourth embedding stream — activity — encodes how "hot" each square has been in the last 4 plies, giving the transformer direct access to recent-play context without requiring it to infer momentum from static board state alone.
+Approach A is accepted. A BERT-style transformer encoder over a 65-token sequence (CLS + 64 squares) with additive embedding composition (piece + color + square + trajectory) and four space-prediction heads (player src/tgt squares + opponent src/tgt squares) provides the best balance of simplicity, expressiveness, and alignment with downstream tasks. Piece identity is derived as a joint probability: since the board state is known, predicting a source square implicitly identifies the piece at that square — `P(piece | src_sq, board) = 1`. This eliminates redundant piece-type classification heads while preserving full move information. The architecture totals ~4.8M parameters, trainable on a single GPU. The two-task objective (predict both the player's move and the opponent's response) forces the CLS embedding to compress a richer global board representation capturing the strategic intentions of both sides simultaneously. A fourth embedding stream — trajectory tokens — encodes the role of each square in the last 2 half-moves: 0=none/CLS, 1=player previous source, 2=player previous target, 3=opponent previous source, 4=opponent previous target — giving the transformer direct access to recent move endpoints without requiring inference from static board state alone. Vocabulary is 5 bins (0–4).
 
 ---
 
@@ -32,19 +32,19 @@ flowchart TD
     PGN["Lichess PGN Dump<br/>80M games, .zst compressed"] -->|"StreamingPGNReader<br/>game-by-game"| RS["ReservoirSampler<br/>O(N) memory"]
     RS -->|"1M sampled games"| REPLAY["Replay Moves<br/>board.push(move)"]
     REPLAY -->|"board state + turn"| TOK["BoardTokenizer<br/>python-chess replay"]
-    REPLAY -->|"last 4 moves + board"| SCORE["ActivityScorer<br/>per-square activity counts"]
+    REPLAY -->|"move history up to current ply"| TRAJ["_make_trajectory_tokens()<br/>last 2 half-moves"]
     TOK -->|"board_tokens, color_tokens"| DS["ChessDataset<br/>~40M examples"]
-    SCORE -->|"activity_tokens: int[65]"| DS
+    TRAJ -->|"trajectory_tokens: int[65]"| DS
     DS -->|"DataLoader<br/>batch_size=512"| TRAIN["TrainingLoop"]
 
     subgraph ENCODER["ChessEncoder Module"]
-        EMB["EmbeddingLayer<br/>piece + color + square + activity"] -->|"65 x 256"| TF["TransformerEncoder<br/>6 layers, 8 heads"]
+        EMB["EmbeddingLayer<br/>piece + color + square + trajectory"] -->|"65 x 256"| TF["TransformerEncoder<br/>6 layers, 8 heads"]
         TF -->|"65 x 256"| SPLIT{{"split"}}
         SPLIT -->|"index 0"| CLS["CLS embedding<br/>256-dim"]
         SPLIT -->|"index 1:65"| SQ["Square embeddings<br/>64 x 256"]
     end
 
-    TRAIN -->|"board_tokens, color_tokens, activity_tokens"| ENCODER
+    TRAIN -->|"board_tokens, color_tokens, trajectory_tokens"| ENCODER
 
     CLS --> HEADS["PredictionHeads"]
 
@@ -64,7 +64,7 @@ flowchart TD
     EMB -.->|"Phase 2b: if CLS insufficient"| GNN["GNN Policy<br/>learned embeddings as node features"]
 ```
 
-*Caption: End-to-end data flow from raw PGN to trained encoder. `ActivityScorer` runs alongside `BoardTokenizer` during preprocessing, consuming the last 4 moves per ply. Solid lines are Phase 1 (pretraining). Dashed lines are Phase 2 (downstream, out of scope). Phase 2a uses CLS sequences only. Phase 2b falls back to GNN with learned embedding table weights as node features if CLS-only is insufficient.*
+*Caption: End-to-end data flow from raw PGN to trained encoder. `_make_trajectory_tokens()` runs alongside `BoardTokenizer` during preprocessing, consuming the last 2 half-moves per ply to produce a length-65 role-assignment vector. Solid lines are Phase 1 (pretraining). Dashed lines are Phase 2 (downstream, out of scope). Phase 2a uses CLS sequences only. Phase 2b falls back to GNN with learned embedding table weights as node features if CLS-only is insufficient.*
 
 ---
 
@@ -75,18 +75,18 @@ flowchart LR
     PT["piece_type<br/>0..7"] --> PE["PieceEmbedding<br/>Embedding(8, 256)"]
     COL["color<br/>0=empty, 1=player, 2=opponent"] --> CE["ColorEmbedding<br/>Embedding(3, 256)"]
     SQ["square_index<br/>0..64 (0=CLS)"] --> SE["SquareEmbedding<br/>Embedding(65, 256)"]
-    ACT["activity_index<br/>0..8 (0=CLS/inactive)"] --> AE["ActivityEmbedding<br/>Embedding(9, 256)"]
+    TRAJ["trajectory_index<br/>0..4 (0=CLS/none)"] --> TE["TrajectoryEmbedding<br/>Embedding(5, 256)"]
 
     PE --> ADD(("+"))
     CE --> ADD
     SE --> ADD
-    AE --> ADD
+    TE --> ADD
     ADD --> LN["LayerNorm(256)"]
     LN --> DROP["Dropout(0.1)"]
     DROP --> TOK["token_embedding<br/>256-dim"]
 ```
 
-*Caption: Four independent embedding tables are summed element-wise, then normalized and dropped out. CLS uses piece_type=0 (CLS token), color=0 (empty), square_index=0, activity_index=0 (always 0 — no activity applies to the CLS position). Activity vocabulary covers 0–8; 9 bins span the maximum score range of 4 moves × 2 pts/move.*
+*Caption: Four independent embedding tables are summed element-wise, then normalized and dropped out. CLS uses piece_type=0 (CLS token), color=0 (empty), square_index=0, trajectory_index=0 (always 0 — no trajectory role applies to the CLS position). Trajectory vocabulary covers 0–4: 0=none/CLS, 1=player previous source, 2=player previous target, 3=opponent previous source, 4=opponent previous target. Opponent marks overwrite player marks on collision (semantically correct for captures).*
 
 ---
 
@@ -102,8 +102,8 @@ sequenceDiagram
     participant LC as LossComputer
     participant OPT as AdamW Optimizer
 
-    DL->>ENC: batch(board_tokens, color_tokens, activity_tokens, labels)
-    ENC->>EMB: forward(board_tokens, color_tokens, activity_tokens)
+    DL->>ENC: batch(board_tokens, color_tokens, trajectory_tokens, labels)
+    ENC->>EMB: forward(board_tokens, color_tokens, trajectory_tokens)
     EMB-->>TF: embeddings [B, 65, 256]
     TF-->>ENC: encoded [B, 65, 256]
     ENC->>ENC: cls = encoded[:, 0, :]
@@ -115,7 +115,7 @@ sequenceDiagram
     OPT-->>ENC: updated parameters
 ```
 
-*Caption: Single training step sequence. `activity_tokens` flows through the batch alongside `board_tokens` and `color_tokens`. The encoder and heads share the backward pass through the combined loss.*
+*Caption: Single training step sequence. `trajectory_tokens` flows through the batch alongside `board_tokens` and `color_tokens`. The encoder and heads share the backward pass through the combined loss.*
 
 ---
 
@@ -128,19 +128,14 @@ classDiagram
         +tokenize(board: chess.Board, turn: chess.Color) TokenizedBoard
     }
 
-    class Scorable {
-        <<Protocol>>
-        +score(moves: list~chess.Move~, board: chess.Board, n: int) list~int~
-    }
-
     class Embeddable {
         <<Protocol>>
-        +embed(board_tokens: Tensor, color_tokens: Tensor, activity_tokens: Tensor) Tensor
+        +embed(board_tokens: Tensor, color_tokens: Tensor, trajectory_tokens: Tensor) Tensor
     }
 
     class Encodable {
         <<Protocol>>
-        +encode(board_tokens: Tensor, color_tokens: Tensor, activity_tokens: Tensor) EncoderOutput
+        +encode(board_tokens: Tensor, color_tokens: Tensor, trajectory_tokens: Tensor) EncoderOutput
     }
 
     class Predictable {
@@ -162,24 +157,20 @@ classDiagram
         +tokenize(board: chess.Board, turn: chess.Color) TokenizedBoard
     }
 
-    class ActivityScorer {
-        +score(moves: list~chess.Move~, board: chess.Board, n: int) list~int~
-    }
-
     class EmbeddingLayer {
         +piece_emb: Embedding
         +color_emb: Embedding
         +square_emb: Embedding
-        +activity_emb: Embedding
+        +trajectory_emb: Embedding
         +layer_norm: LayerNorm
         +dropout: Dropout
-        +embed(board_tokens: Tensor, color_tokens: Tensor, activity_tokens: Tensor) Tensor
+        +embed(board_tokens: Tensor, color_tokens: Tensor, trajectory_tokens: Tensor) Tensor
     }
 
     class ChessEncoder {
         +embedding: EmbeddingLayer
         +transformer: TransformerEncoder
-        +encode(board_tokens: Tensor, color_tokens: Tensor, activity_tokens: Tensor) EncoderOutput
+        +encode(board_tokens: Tensor, color_tokens: Tensor, trajectory_tokens: Tensor) EncoderOutput
     }
 
     class PredictionHeads {
@@ -217,7 +208,6 @@ classDiagram
     }
 
     Tokenizable <|.. BoardTokenizer
-    Scorable <|.. ActivityScorer
     Embeddable <|.. EmbeddingLayer
     Encodable <|.. ChessEncoder
     Predictable <|.. PredictionHeads
@@ -229,11 +219,10 @@ classDiagram
     Trainer --> PredictionHeads : owns
     Trainer --> LossComputer : uses
     ChessDataset --> BoardTokenizer : uses
-    ChessDataset --> ActivityScorer : uses
     StreamingPGNReader --> ReservoirSampler : feeds
 ```
 
-*Caption: Static class structure with Protocol-based interfaces. `ActivityScorer` implements the new `Scorable` protocol. `EmbeddingLayer` gains a fourth embedding table (`activity_emb`) and an updated `embed()` signature. `ChessDataset` uses both `BoardTokenizer` and `ActivityScorer` during preprocessing.*
+*Caption: Static class structure with Protocol-based interfaces. `EmbeddingLayer` has a fourth embedding table (`trajectory_emb`) and an updated `embed()` signature. `_make_trajectory_tokens()` is a module-level pure function in `scripts/train_real.py` — it is not a class and does not implement a protocol.*
 
 ---
 
@@ -248,21 +237,21 @@ flowchart TD
 
     PROC -->|"for each game"| REPLAY["Replay Moves<br/>board.push(move)"]
     REPLAY -->|"board state + turn<br/>for each move"| TOK["BoardTokenizer.tokenize()"]
-    REPLAY -->|"move history up to current ply<br/>for each move"| SCORER["ActivityScorer.score()<br/>n=4 lookback"]
+    REPLAY -->|"move history up to current ply"| TRAJ["_make_trajectory_tokens()<br/>last 2 half-moves"]
     TOK --> BT["board_tokens: int[65]"]
     TOK --> CT["color_tokens: int[65]"]
-    SCORER --> AT["activity_tokens: int[65]<br/>index 0=CLS=0, indices 1-64=squares"]
+    TRAJ --> TT["trajectory_tokens: int[65]<br/>index 0=CLS=0, values 0-4"]
     REPLAY -->|"extract from move"| LABELS["Labels:<br/>src_sq, tgt_sq,<br/>opp_src_sq, opp_tgt_sq"]
 
     BT --> SAVE["Save to disk<br/>.pt or .arrow files"]
     CT --> SAVE
-    AT --> SAVE
+    TT --> SAVE
     LABELS --> SAVE
     SAVE --> DS["ChessDataset<br/>memory-mapped"]
     DS -->|"DataLoader<br/>batch=512, shuffle=True<br/>num_workers=4"| BATCH["ChessBatch tensors"]
 ```
 
-*Caption: Data pipeline from compressed PGN to batched training tensors. `ActivityScorer.score()` is called for every move alongside `BoardTokenizer.tokenize()`, consuming the full move history up to the current ply and returning a length-65 integer vector. Preprocessing runs once; training loads from disk.*
+*Caption: Data pipeline from compressed PGN to batched training tensors. `_make_trajectory_tokens()` is called for every move alongside `BoardTokenizer.tokenize()`, consuming the move history up to (not including) the current ply and returning a length-65 integer vector with role assignments for the last 2 half-moves. Preprocessing runs once; training loads from disk.*
 
 ---
 
@@ -273,7 +262,7 @@ flowchart TD
     START["Start Training"] --> INIT["Initialize:<br/>ChessEncoder, PredictionHeads,<br/>AdamW(lr=3e-4), CosineScheduler"]
     INIT --> EPOCH["for epoch in 1..max_epochs"]
     EPOCH --> BATCH["for batch in DataLoader"]
-    BATCH --> FWD["encoder.encode(board_tokens, color_tokens, activity_tokens)"]
+    BATCH --> FWD["encoder.encode(board_tokens, color_tokens, trajectory_tokens)"]
     FWD --> CLS["cls = output.cls_embedding"]
     CLS --> PRED["heads.predict(cls)"]
     PRED --> LOSS["loss = LossComputer.compute(pred, labels)"]
@@ -288,13 +277,11 @@ flowchart TD
     BATCH -->|"epoch done"| EVAL["Evaluate on held-out set"]
     EVAL --> SAVE{"best val loss?"}
     SAVE -->|Yes| CKPT["Save checkpoint"]
-    SAVE -->|No| EARLY{"patience exhausted?"}
     CKPT --> EPOCH
-    EARLY -->|No| EPOCH
-    EARLY -->|Yes| DONE["Training complete"]
+    SAVE -->|No| EPOCH
 ```
 
-*Caption: Training loop with gradient clipping, cosine LR schedule, validation-based checkpointing, and early stopping. The `encode()` call now takes all three token streams including `activity_tokens`.*
+*Caption: Training loop with gradient clipping, cosine LR schedule, and validation-based checkpointing. The `encode()` call takes all three token streams including `trajectory_tokens`. No early stopping is wired into `Trainer` methods in the current implementation (`PATIENCE=3` is defined as a constant but unused).*
 
 ---
 
@@ -313,44 +300,51 @@ flowchart TD
 - **Square ordering:** a1=0, b1=1, ..., h8=63 (python-chess default). No board flipping — the board is always encoded from the starting perspective regardless of whose turn it is. Square semantics are stable (e4 always means e4). The color embedding stream handles the player/opponent distinction.
 - **Testability:** Pure function, no side effects. Tested with known board positions.
 
-### 1b. `ActivityScorer`
+### 1b. Utility Functions
 
-- **Responsibility:** Computes per-square activity scores from the last N moves of game history, producing a length-65 integer vector that encodes how frequently each square served as the source of a move or capture.
-- **Protocol:** `Scorable`
-- **Key interface:**
+#### `chess_sim/utils.py`
+
+- **Responsibility:** Game-level utility functions used by training and evaluation scripts.
+- **Key function:**
   ```
-  score(moves: list[chess.Move], board: chess.Board, n: int = 4) -> list[int]
+  winner_color(game: chess.pgn.Game) -> Optional[chess.Color]
   ```
-  Returns `activity_tokens` of length 65. Index 0 is CLS (always 0). Indices 1–64 map to squares a1–h8 (python-chess square index + 1). Values are integers in 0–8; any computed value above 8 is clamped to 8.
+  Returns `chess.WHITE` for `"1-0"`, `chess.BLACK` for `"0-1"`, `None` for draws (`"1/2-1/2"`) and unknown results (`"*"`). Used by `--winners-only` filtering in training and evaluation.
+
+#### `scripts/train_real.py` — `_make_trajectory_tokens()`
+
+- **Responsibility:** Pure function that converts move history into a length-65 trajectory token vector for the fourth embedding stream.
+- **Key function:**
+  ```
+  _make_trajectory_tokens(move_history: list[chess.Move]) -> list[int]
+  ```
+  Returns a list of 65 integers (values 0–4). Index 0 is CLS (always 0). Indices 1–64 map to squares a1–h8 (python-chess square index + 1).
 - **Algorithm:**
-  1. Take the last `min(n, len(moves))` moves from the move history.
-  2. Initialize `activity_tokens = [0] * 65`.
-  3. For each move in that window: add 1 to `activity_tokens[move.from_square + 1]`.
-  4. If the move was a capture — the board state *before* that move had a piece at `move.to_square` — add 1 more to `activity_tokens[move.from_square + 1]`.
-  5. Clamp all values to 8: `min(v, 8)` per element.
-- **Score vocabulary:** 0–8 (9 distinct values). Maximum score of 8 is reached when the same square executes 4 consecutive capturing moves (4 moves × 2 pts = 8).
-- **CLS position:** Always 0. No board square corresponds to the CLS token.
-- **Board parameter usage:** The `board` parameter provides pre-move state to determine whether a move was a capture. The scorer does not mutate the board.
-- **Testability:** Pure function. Tested with known move sequences and hand-computed expected outputs.
+  1. Initialize `tokens = [0] * 65`.
+  2. If `len(move_history) >= 2`: for the second-to-last move (player's last move), set `tokens[move.from_square + 1] = 1` and `tokens[move.to_square + 1] = 2`.
+  3. If `len(move_history) >= 1`: for the last move (opponent's last move), set `tokens[move.from_square + 1] = 3` and `tokens[move.to_square + 1] = 4`.
+  4. Opponent marks are written after player marks, so collision squares (e.g., captures on player's previous target) resolve to opponent role semantics.
+- **Testability:** Pure function. Tested with known move sequences (T21–T25).
 
 ### 2. `EmbeddingLayer` (nn.Module)
 
-- **Responsibility:** Composes four learned embedding streams (piece, color, square, activity) into a single token embedding per position, applies LayerNorm and Dropout.
+- **Responsibility:** Composes four learned embedding streams (piece, color, square, trajectory) into a single token embedding per position, applies LayerNorm and Dropout.
 - **Protocol:** `Embeddable`
 - **Key interface:**
   ```
-  embed(board_tokens: Tensor[B, 65], color_tokens: Tensor[B, 65], activity_tokens: Tensor[B, 65]) -> Tensor[B, 65, 256]
+  embed(board_tokens: Tensor[B, 65], color_tokens: Tensor[B, 65], trajectory_tokens: Tensor[B, 65]) -> Tensor[B, 65, 256]
   ```
 - **Internal structure:**
   - `piece_emb: nn.Embedding(8, 256)` -- vocabulary: CLS=0, EMPTY=1, PAWN=2, KNIGHT=3, BISHOP=4, ROOK=5, QUEEN=6, KING=7
   - `color_emb: nn.Embedding(3, 256)` -- EMPTY=0, PLAYER=1, OPPONENT=2
   - `square_emb: nn.Embedding(65, 256)` -- index 0 = CLS position, 1..64 = board squares
-  - `activity_emb: nn.Embedding(9, 256)` -- vocabulary 0..8; consistent with other embedding tables; 9 bins cover the full score range
+  - `trajectory_emb: nn.Embedding(5, 256)` -- vocabulary 0..4; 0=none/CLS, 1=player prev src, 2=player prev tgt, 3=opp prev src, 4=opp prev tgt
   - `layer_norm: nn.LayerNorm(256)`
   - `dropout: nn.Dropout(0.1)`
-- **Composition formula:** `LayerNorm(Dropout(piece_emb + color_emb + square_emb + activity_emb))`
-- **Square embedding initialization:** Optionally initialized with 2D coordinate encodings (`rank * 8 + file` decomposed into sin/cos) to provide a geometric prior. Allowed to drift during training.
-- **Testability:** Verified by asserting output shape and checking that different piece types produce different embeddings. Also verify that `activity_emb(0)` differs from `activity_emb(8)` after initialization.
+- **Composition formula:** `LayerNorm(Dropout(piece_emb + color_emb + square_emb + trajectory_emb))`
+- **Square embedding initialization:** `square_emb` is initialized with 2D sin/cos geometric encoding (rank/file decomposed into 4 patterns cycling over d%4). Allowed to drift during training.
+- **Piece embedding initialization:** `piece_emb` is initialized with role-feature vectors (value, mobility, linearity, diagonality, can_jump, royalty, freq_prior) tiled to 256 dims and scaled by 0.02.
+- **Testability:** Verified by asserting output shape and checking that different piece types produce different embeddings. Also verify that `trajectory_emb(0)` differs from `trajectory_emb(4)` after initialization.
 
 ### 3. `ChessEncoder` (nn.Module)
 
@@ -358,7 +352,7 @@ flowchart TD
 - **Protocol:** `Encodable`
 - **Key interface:**
   ```
-  encode(board_tokens: Tensor[B, 65], color_tokens: Tensor[B, 65], activity_tokens: Tensor[B, 65]) -> EncoderOutput
+  encode(board_tokens: Tensor[B, 65], color_tokens: Tensor[B, 65], trajectory_tokens: Tensor[B, 65]) -> EncoderOutput
   ```
   where `EncoderOutput` is a `NamedTuple(cls_embedding: Tensor[B, 256], square_embeddings: Tensor[B, 64, 256])`.
 - **Internal structure:**
@@ -420,10 +414,10 @@ flowchart TD
   __getitem__(idx: int) -> ChessBatch
   __len__() -> int
   ```
-  where `ChessBatch` is a `NamedTuple(board_tokens: Tensor[65], color_tokens: Tensor[65], activity_tokens: Tensor[65], src_sq: int, tgt_sq: int, opp_src_sq: int, opp_tgt_sq: int)`.
+  where `ChessBatch` is a `NamedTuple(board_tokens: Tensor[65], color_tokens: Tensor[65], trajectory_tokens: Tensor[65], src_sq: int, tgt_sq: int, opp_src_sq: int, opp_tgt_sq: int)`.
 - **Storage:** Preprocessed examples are saved to disk as `.pt` files (or Apache Arrow/Parquet for larger scale). The dataset memory-maps from disk at training time.
-- **Train/val split:** 95% train, 5% validation. Split at the game level (not example level) to prevent data leakage from consecutive board states.
-- **Testability:** Verified by loading a small dataset and checking tensor shapes and dtypes. Also verify that `activity_tokens` dtype is `torch.long` and values are in 0–8.
+- **Train/val split:** 90% train, 10% validation (via `ChessDataset.split(train_frac=0.9)`). Split at the game level (not example level) to prevent data leakage from consecutive board states.
+- **Testability:** Verified by loading a small dataset and checking tensor shapes and dtypes. Also verify that `trajectory_tokens` dtype is `torch.long` and values are in 0–4.
 
 ### 9. `Trainer`
 
@@ -435,13 +429,58 @@ flowchart TD
   train_epoch(loader: DataLoader) -> float  # returns avg epoch loss
   ```
 - **Optimizer:** AdamW with lr=3e-4, weight_decay=0.01.
-- **Scheduler:** Cosine annealing with warmup (1000 steps linear warmup).
+- **Scheduler:** `CosineAnnealingLR(T_max=total_steps)` where `total_steps` is passed by the caller (typically `num_epochs * batches_per_epoch`).
 - **Gradient clipping:** `clip_grad_norm_(params, max_norm=1.0)`.
 - **Checkpointing:** Saves model state when validation loss improves.
-- **Early stopping:** Patience of 3 epochs without improvement.
 - **Logging decorator:** A `@log_metrics` decorator handles metric logging (loss, per-head accuracy, learning rate) to avoid polluting the training loop with logging logic.
 - **Device management:** A `@device_aware` decorator handles `.to(device)` calls, defaulting to GPU when available, CPU for unit tests.
 - **Testability:** `train_step` is tested in isolation with a single synthetic batch, verifying that loss decreases after one step.
+
+---
+
+## Scripts
+
+### `scripts/train_real.py`
+
+End-to-end training CLI from PGN files or synthetic games.
+
+**Key functions:**
+- `stream_pgn(path: Path) -> Iterator[chess.pgn.Game]` — streams games from `.pgn` or `.pgn.zst` files
+- `game_to_examples(game, tokenizer, winners_only) -> list[TrainingExample]` — converts one game to training examples; if `winners_only=True`, only includes positions where the winning side is to move (draws return empty list)
+- `build_examples_from_file(path, winners_only) -> list[TrainingExample]` — loads all examples from PGN
+- `_make_trajectory_tokens(move_history) -> list[int]` — see Section 1b
+
+**CLI flags:**
+- `--pgn` — path to plain or `.zst` PGN file
+- `--num-games` — number of synthetic games to generate when `--pgn` is not given (default: 20)
+- `--epochs` — training epochs
+- `--batch-size` — DataLoader batch size
+- `--checkpoint` — output path for saved model
+- `--resume` — path to existing checkpoint to resume from
+- `--winners-only` — filter to winning player's positions only; skips draws
+
+**Train/val split:** 90/10 (split at the game level to prevent leakage).
+
+---
+
+### `scripts/evaluate.py`
+
+Per-move evaluation CLI with `GameEvaluator`.
+
+**Key classes and functions:**
+- `GameEvaluator` — implements `Evaluatable` protocol; loads checkpoint via `Trainer.load_checkpoint`, sets models to eval mode, iterates plies via `evaluate_step()`
+- `StepResult` (NamedTuple) — per-ply metrics: `ply`, `move_uci`, `loss_src`, `loss_tgt`, `loss_opp_src`, `loss_opp_tgt`, `total_loss`, `acc_src`, `acc_tgt`, `acc_opp_src`, `acc_opp_tgt`, `entropy_src`, `entropy_tgt`, `entropy_opp_src`, `entropy_opp_tgt`, `mean_entropy`
+- `shannon_entropy(logits: Tensor) -> float` — H(p) in nats
+- `top1_accuracy(logits: Tensor, label: int) -> int` — 1/0/-1 (correct/wrong/skip)
+- `per_head_ce(logits: Tensor, label: int) -> float` — CE loss for one head; 0.0 if label==-1
+- `evaluate_step(example, move_uci, ply, encoder, heads, device) -> StepResult` — pure per-ply evaluation decorated with `@torch.no_grad()`
+
+**CLI flags:**
+- `--checkpoint` — path to `.pt` checkpoint
+- `--pgn` — path to PGN file
+- `--game-index` — which game in the PGN to evaluate (default: 0)
+- `--top-n` — number of highest-entropy plies to print in summary
+- `--winners-only` — evaluate only winning-player positions
 
 ---
 
@@ -451,25 +490,24 @@ flowchart TD
 TokenizedBoard = NamedTuple:
     board_tokens:    list[int]  # length 65, values 0..7
     color_tokens:    list[int]  # length 65, values 0..2
-    activity_tokens: list[int]  # length 65, values 0..8; index 0 (CLS) always 0
 
 TrainingExample = NamedTuple:
-    board_tokens:    list[int]  # length 65
-    color_tokens:    list[int]  # length 65
-    activity_tokens: list[int]  # length 65, values 0..8
-    src_sq:          int        # 0..63
-    tgt_sq:          int        # 0..63
-    opp_src_sq:      int        # 0..63, or -1 if last move in game
-    opp_tgt_sq:      int        # 0..63, or -1 if last move in game
+    board_tokens:       list[int]  # length 65
+    color_tokens:       list[int]  # length 65
+    trajectory_tokens:  list[int]  # length 65, values 0..4
+    src_sq:             int        # 0..63
+    tgt_sq:             int        # 0..63
+    opp_src_sq:         int        # 0..63, or -1 if last move in game
+    opp_tgt_sq:         int        # 0..63, or -1 if last move in game
 
 ChessBatch = NamedTuple:
-    board_tokens:    Tensor[B, 65]  # torch.long
-    color_tokens:    Tensor[B, 65]  # torch.long
-    activity_tokens: Tensor[B, 65]  # torch.long, values 0..8
-    src_sq:          Tensor[B]      # torch.long
-    tgt_sq:          Tensor[B]      # torch.long
-    opp_src_sq:      Tensor[B]      # torch.long; -1 = ignore_index
-    opp_tgt_sq:      Tensor[B]      # torch.long; -1 = ignore_index
+    board_tokens:       Tensor[B, 65]  # torch.long
+    color_tokens:       Tensor[B, 65]  # torch.long
+    trajectory_tokens:  Tensor[B, 65]  # torch.long, values 0..4
+    src_sq:             Tensor[B]      # torch.long
+    tgt_sq:             Tensor[B]      # torch.long
+    opp_src_sq:         Tensor[B]      # torch.long; -1 = ignore_index
+    opp_tgt_sq:         Tensor[B]      # torch.long; -1 = ignore_index
 
 EncoderOutput = NamedTuple:
     cls_embedding:     Tensor[B, 256]
@@ -503,14 +541,50 @@ LabelTensors = NamedTuple:
 | `batch_size` | 512 | Fits in ~4GB GPU memory with this param count |
 | `learning_rate` | 3e-4 | Standard for AdamW on transformers of this scale |
 | `weight_decay` | 0.01 | Mild L2 regularization |
-| `warmup_steps` | 1000 | ~1 epoch warmup at batch_size=512 over 40M examples |
-| `max_epochs` | 10 | Early stopping at patience=3 |
+| `warmup_steps` | 1000 | Defined as constant in `trainer.py` but not wired into the scheduler in the current implementation |
+| `max_epochs` | 10 | Configurable via CLI |
 | `gradient_clip` | 1.0 | Prevents gradient explosion |
 | `num_workers` | 4 | DataLoader parallelism |
 | `reservoir_size` | 1,000,000 | Games sampled per training run |
-| `activity_vocab_size` | 9 | Scores 0–8; covers max 4 moves × 2 pts/move |
-| `lookback_window` | 4 | Plies of history used for activity scoring |
-| **Total params** | **~4,795,024** | Validated via hypothesis script (activity_emb adds 9×256=2,304 params) |
+| `trajectory_vocab_size` | 5 | Roles 0–4; encodes last 2 half-moves (player src/tgt, opp src/tgt) |
+| **Total params** | **~4,793,744** | trajectory_emb = 5×256 = 1,280 params; net Δ = −1,024 vs. old 9-bin activity_emb |
+
+---
+
+## Project Structure
+
+```
+chess-sim/
+├── chess_sim/
+│   ├── protocols.py          # Structural type protocols (Tokenizable, Embeddable, Encodable, Predictable, Trainable, Samplable)
+│   ├── types.py              # NamedTuple containers (TokenizedBoard: 2 fields, TrainingExample, ChessBatch, EncoderOutput, PredictionOutput, LabelTensors)
+│   ├── utils.py              # winner_color(): chess.pgn.Game -> Optional[chess.Color]
+│   ├── data/
+│   │   ├── tokenizer.py      # BoardTokenizer: chess.Board -> TokenizedBoard
+│   │   ├── reader.py         # StreamingPGNReader: .zst -> chess.pgn.Game iterator
+│   │   ├── sampler.py        # ReservoirSampler: uniform sampling (Vitter's Algorithm R)
+│   │   └── dataset.py        # ChessDataset: torch Dataset + split(train_frac=0.9)
+│   ├── model/
+│   │   ├── embedding.py      # EmbeddingLayer: piece + color + square + trajectory -> [B, 65, 256]
+│   │   ├── encoder.py        # ChessEncoder: BERT-style transformer (6 layers)
+│   │   └── heads.py          # PredictionHeads: 4x Linear(256, 64)
+│   └── training/
+│       ├── loss.py           # LossComputer: CrossEntropy x4 with ignore_index=-1
+│       └── trainer.py        # Trainer: AdamW + CosineAnnealingLR; decorators: @log_metrics, @device_aware, @timed
+├── scripts/
+│   ├── __init__.py
+│   ├── train_real.py         # CLI: end-to-end training from PGN or synthetic games; --winners-only
+│   └── evaluate.py           # CLI: per-move evaluation with GameEvaluator and StepResult
+├── tests/
+│   ├── utils.py              # Shared test fixtures
+│   ├── test_*.py             # Unit tests T01–T20
+│   ├── test_chess_encoder.py # Integration tests T26–T40
+│   └── test_evaluate.py      # Evaluation tests TEV01–TEV14
+├── checkpoints/              # Trained model .pt files
+├── data/                     # PGN files (gitignored)
+├── requirements.txt
+└── chess_encoder_final_design.md
+```
 
 ---
 
@@ -537,12 +611,26 @@ LabelTensors = NamedTuple:
 | T17 | Opponent label extraction | Move pair (e4, e5) at move 1 | For the board before e4: opp_src_sq=e7_index, opp_tgt_sq=e5_index | No |
 | T18 | Last move in game has no opponent label | Final move of a game | opp_src_sq and opp_tgt_sq are set to ignore_index (-1) | Yes |
 | T19 | Checkpoint save and reload | Train, save, reload, forward pass | Outputs are identical before save and after reload | No |
-| T20 | DataLoader produces correct dtypes | Load one batch | board_tokens: torch.long, color_tokens: torch.long, activity_tokens: torch.long, labels: torch.long | No |
-| T21 | ActivityScorer: no history | Empty move list | All activity_tokens = 0 (index 0 = CLS = 0; all square indices = 0) | No |
-| T22 | ActivityScorer: single non-capture move | One move from e2 to e4 | activity_tokens[e2_sq_idx] = 1, all others 0 | No |
-| T23 | ActivityScorer: capture adds bonus | One capturing move from d5 to e4 (piece at e4 before move) | activity_tokens[d5_sq_idx] = 2 | No |
-| T24 | ActivityScorer: lookback capped at 4 | 6-move history; last 4 moves all originate from d1 | activity_tokens[d1_sq_idx] = 4 (only last 4 plies counted) | No |
-| T25 | ActivityScorer: score clamped at 8 | Artificially constructed score exceeding 8 for a square | activity_tokens max value = 8 for that square | Yes |
+| T20 | DataLoader produces correct dtypes | Load one batch | board_tokens: torch.long, color_tokens: torch.long, trajectory_tokens: torch.long, labels: torch.long | No |
+| T21 | trajectory: empty history | `_make_trajectory_tokens([])` | All 65 values = 0 | No |
+| T22 | trajectory: one move in history (opp only) | One move e2→e4 in history | `tokens[13]=3, tokens[29]=4`; no values 1 or 2 | No |
+| T23 | trajectory: two-move history | `[e2e4, e7e5]` | `tokens[13]=1, tokens[29]=2, tokens[53]=3, tokens[61]=4` | No |
+| T24 | trajectory: collision (capture) | Opp move targets player's last move target | Opp marks overwrite player marks at that square | Yes |
+| T25 | trajectory embedding contributes | Same board/color, zero vs. nonzero trajectory | Encoder outputs differ | No |
+| TEV01 | Shannon entropy: uniform logits | `zeros(64)` | H ≈ log(64) ≈ 4.158 nats | No |
+| TEV02 | Shannon entropy: near-one-hot | logits=100 at index 0, rest -100 | H < 0.01 | No |
+| TEV03 | top1_accuracy: correct | logit max at label index | 1 | No |
+| TEV04 | top1_accuracy: wrong | logit max not at label | 0 | No |
+| TEV05 | top1_accuracy: skip | label = -1 | -1 | Yes |
+| TEV06 | per_head_ce: ignore | label = -1 | 0.0 | Yes |
+| TEV07 | per_head_ce: valid | label in 0..63 | finite positive | No |
+| TEV08 | evaluate_step full result | Synthetic example | All fields populated, losses finite, entropies positive | No |
+| TEV09 | evaluate_step terminal ply | opp_src/tgt=-1 | acc_opp_src==-1, opp losses==0.0 | Yes |
+| TEV10 | GameEvaluator: one result per ply | PGN game | len(results)==len(moves) | No |
+| TEV11 | GameEvaluator: mean_entropy | Any game | mean_entropy == avg of 4 head entropies | No |
+| TEV12 | winner_color() | "1-0"/"0-1"/"1/2-1/2" | WHITE/BLACK/None | No |
+| TEV13 | winners_only filtering | Decisive game / draw | Fewer examples / empty list | Yes |
+| TEV14 | GameEvaluator winners_only | Decisive game | Fewer results; ply indices reflect original game | Yes |
 
 ---
 
@@ -556,7 +644,7 @@ The engineering team adheres to these standards for all modules in this design:
   - `@device_aware` -- handles tensor device placement. Use CPU for unit tests, GPU for training/evaluation.
   - `@timed` -- optional performance decorator for profiling data pipeline stages.
 - **Typing everywhere:** All function signatures include full type annotations. Use `Tensor` with shape comments (e.g., `Tensor  # [B, 65, 256]`). No bare `Any`.
-- **Protocols over ABCs:** Use `typing.Protocol` for `Tokenizable`, `Scorable`, `Embeddable`, `Encodable`, `Predictable`, `Samplable`, `Trainable`. Concrete classes implement these implicitly (structural subtyping).
+- **Protocols over ABCs:** Use `typing.Protocol` for `Tokenizable`, `Embeddable`, `Encodable`, `Predictable`, `Samplable`, `Trainable`. Concrete classes implement these implicitly (structural subtyping).
 - **NamedTuples for data containers:** `TokenizedBoard`, `TrainingExample`, `ChessBatch`, `EncoderOutput`, `PredictionOutput`, `LabelTensors` are all `NamedTuple` types. Immutable, typed, self-documenting.
 - **Comments:** 280 characters max. If more context is needed, the code is unclear.
 - **Unit tests required:** Every component has corresponding tests. The `Trainer` is tested with synthetic data on CPU. The data pipeline is tested with a small PGN fixture.
@@ -595,7 +683,7 @@ The engineering team adheres to these standards for all modules in this design:
 
 8. **Mixed precision training:** Start with FP32 on RTX 4070 Super (12GB VRAM). At ~4.8M params and batch_size=512, memory should be comfortable. Monitor VRAM usage and switch to mixed precision only if needed.
 
-9. **Activity embedding design:** Per-square activity scores are computed from the last 4 plies by `ActivityScorer`. Scores are discretized into 9 bins (0–8) and embedded via `nn.Embedding(9, 256)` — consistent with other embedding tables. Raw integer counts are used without normalization to preserve ordinal semantics; the model learns relative importance through the embedding weights. The `activity_emb` stream is summed with the other three streams before LayerNorm. CLS position always receives score 0 because it has no corresponding board square.
+9. **Trajectory tokens replace activity scoring:** Per-square activity scoring (9 bins, 4-ply lookback, `ActivityScorer` class) was replaced with trajectory tokens encoding the role of each square in the last 2 half-moves. Vocabulary is 5 bins: 0=none/CLS, 1=player previous source, 2=player previous target, 3=opponent previous source, 4=opponent previous target. Generation is a pure function `_make_trajectory_tokens(move_history)` in `scripts/train_real.py`. The `Scorable` protocol and `ActivityScorer` class were removed. Collision semantics (opp overwrites player) are intentional: when the opponent captures the piece the player just moved, the square's dominant role is the opponent's move, not the player's.
 
 ---
 

@@ -1,5 +1,68 @@
 # setup-dev Agent Memory
 
+## Scaffolding Completed: Streaming Data Pipeline (2026-03-06)
+
+### Module Layout
+```
+chess_sim/
+├── protocols.py              # +3 Protocols: Preprocessable, ShardWritable, Cacheable
+├── data/streaming_types.py   # PreprocessConfig, ManifestInfo (frozen dataclasses)
+├── data/chunk_processor.py   # ChunkProcessor — games to dense tensors
+├── data/shard_writer.py      # ShardWriter — implements ShardWritable
+├── data/cache_manager.py     # CacheManager — implements Cacheable
+├── data/preprocessor.py      # PGNPreprocessor — implements Preprocessable
+└── data/sharded_dataset.py   # ShardedChessDataset(Dataset) — LRU shard cache
+```
+
+### Test Suite
+```
+tests/test_streaming_pipeline.py  # T1-T20 (20 tests, all self.fail)
+  - TestChunkProcessor:       T1 (shapes), T2 (tokenization match)
+  - TestShardWriter:          T3 (roundtrip), T4 (file naming)
+  - TestCacheManager:         T5 (checksum stability), T6 (miss), T7 (hit), T8 (invalidation)
+  - TestShardedChessDataset:  T9 (length), T10 (boundary), T11 (LRU eviction), T12 (ChessBatch type)
+  - TestPGNPreprocessor:      T13 (e2e), T14 (cache skip), T15 (max_games), T16 (winners_only draw)
+  - TestDataLoaderIntegration: T17 (multi-worker), T18 (empty pgn), T19 (train/val split), T20 (trainer compat)
+```
+
+### Key Decisions
+- `.gitignore` has `data/` which matches `chess_sim/data/` — must use `git add -f` for data subpackage files
+- Reuses `game_to_examples` and `_make_trajectory_tokens` from `scripts/train_real.py`
+- No new dependencies — only torch, json, hashlib, pathlib, bisect from stdlib
+- Shard file naming: `shard_{idx:06d}.pt`
+- ShardedChessDataset uses OrderedDict for LRU + bisect for O(log S) shard lookup
+
+---
+
+## Scaffolding Completed: GUI Chess Viewer (2026-03-06)
+
+### Module Layout
+```
+scripts/gui/
+├── __init__.py            # 3 Protocols: Renderable, Navigable, GameSource
+├── formatters.py          # _fmt_loss, _fmt_acc, _fmt_entropy (tkinter-free)
+├── game_controller.py     # GameController — implements GameSource (no tkinter)
+├── board_panel.py         # BoardPanel(tk.Frame) — implements Renderable, Navigable
+├── stats_panel.py         # StatsPanel(tk.Frame) — implements Renderable
+└── viewer.py              # ChessViewer — root window wiring panels
+```
+
+### Test Suite
+```
+tests/gui/__init__.py
+tests/gui/test_game_controller.py   # GC01-GC05 (requires checkpoint, skip in CI)
+tests/gui/test_stats_panel.py       # SP01-SP02 (7 tests, pure formatting)
+```
+
+### Key Decisions
+- Pure formatting helpers extracted to `scripts/gui/formatters.py` to avoid tkinter import in headless tests
+- `GameController` has zero tkinter deps — fully testable without display
+- `tkinter` not available in CI/venv — tests importing tk-dependent modules will fail
+- `matplotlib>=3.7` added to requirements.txt for embedding scatter plot
+- StepResult imported from `scripts.evaluate`, not re-defined
+
+---
+
 ## Scaffolding Completed: Chess Encoder (2026-03-05)
 
 ### Module Layout

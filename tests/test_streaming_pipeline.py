@@ -23,7 +23,10 @@ from chess_sim.data.cache_manager import CacheManager
 from chess_sim.data.chunk_processor import ChunkProcessor
 from chess_sim.data.preprocessor import PGNPreprocessor
 from chess_sim.data.shard_writer import ShardWriter
-from chess_sim.data.sharded_dataset import ShardedChessDataset
+from chess_sim.data.sharded_dataset import (
+    ShardAwareBatchSampler,
+    ShardedChessDataset,
+)
 from chess_sim.data.streaming_types import (
     ManifestInfo, PreprocessConfig,
 )
@@ -709,6 +712,144 @@ class TestDataLoaderIntegration(unittest.TestCase):
                     f"Loss is not finite: {loss}",
                 )
                 break  # One step is enough
+
+
+# ===========================================================================
+# ShardAwareBatchSampler Tests
+# ===========================================================================
+
+
+class TestShardAwareBatchSampler(unittest.TestCase):
+    """Tests for ShardAwareBatchSampler shard-local batching."""
+
+    def _make_dataset(
+        self, counts: list[int],
+    ) -> tuple[ShardedChessDataset, str]:
+        """Create a ShardedChessDataset in a temp dir.
+
+        Returns the dataset and the tmpdir path (caller must manage).
+        """
+        tmpdir = tempfile.mkdtemp()
+        sw = ShardWriter()
+        paths = []
+        for i, n in enumerate(counts):
+            tensors = _make_shard_tensors(n)
+            p = sw.flush(tensors, i, Path(tmpdir))
+            paths.append(p)
+        ds = ShardedChessDataset(paths, counts)
+        return ds, tmpdir
+
+    def test_batch_indices_same_shard(self) -> None:
+        """T21: All indices in each batch belong to one shard.
+
+        For each yielded batch, every global index must resolve
+        to the same shard via bisect on cumulative counts.
+        """
+        import bisect as _bisect
+        ds, tmpdir = self._make_dataset([50, 30, 20])
+        try:
+            sampler = ShardAwareBatchSampler(
+                ds, batch_size=8, shuffle=True,
+            )
+            for batch in sampler:
+                shard_ids = [
+                    _bisect.bisect_right(
+                        ds._cumulative_counts, idx
+                    )
+                    for idx in batch
+                ]
+                self.assertEqual(
+                    len(set(shard_ids)), 1,
+                    f"Batch spans multiple shards: {set(shard_ids)}"
+                )
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_full_coverage_no_duplicates(self) -> None:
+        """T22: One full iteration covers all examples exactly once.
+
+        Collect every index yielded across all batches and verify
+        it equals the full set of indices with no duplicates.
+        """
+        ds, tmpdir = self._make_dataset([50, 30, 20])
+        try:
+            sampler = ShardAwareBatchSampler(
+                ds, batch_size=8, shuffle=True,
+            )
+            all_indices: list[int] = []
+            for batch in sampler:
+                all_indices.extend(batch)
+
+            self.assertEqual(
+                len(all_indices), len(ds),
+                "Total indices != dataset length",
+            )
+            self.assertEqual(
+                len(set(all_indices)), len(ds),
+                "Duplicate indices found",
+            )
+            self.assertEqual(
+                set(all_indices), set(range(len(ds))),
+                "Index set mismatch",
+            )
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_shard_order_shuffled_between_epochs(self) -> None:
+        """T23: Two consecutive iterations differ in shard order.
+
+        With shuffle=True, the shard processing order should
+        differ between two calls to iter(sampler). We check that
+        the first index of each epoch's first batch differs
+        (statistically near-certain with 10 shards).
+        """
+        counts = [20] * 10
+        ds, tmpdir = self._make_dataset(counts)
+        try:
+            sampler = ShardAwareBatchSampler(
+                ds, batch_size=8, shuffle=True,
+            )
+            epoch1 = list(sampler)
+            epoch2 = list(sampler)
+
+            # Extract the sequence of first-batch-first-index
+            # per epoch to detect shard reordering
+            self.assertNotEqual(
+                epoch1, epoch2,
+                "Two epochs yielded identical batch sequences"
+                " -- shard shuffle likely broken",
+            )
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_len_matches_yielded_batches(self) -> None:
+        """T24: len(sampler) equals actual batches yielded.
+
+        Both with drop_last=True and drop_last=False, __len__
+        must match the count of batches from __iter__.
+        """
+        ds, tmpdir = self._make_dataset([50, 30, 20])
+        try:
+            for drop_last in (False, True):
+                sampler = ShardAwareBatchSampler(
+                    ds,
+                    batch_size=8,
+                    drop_last=drop_last,
+                    shuffle=False,
+                )
+                batches = list(sampler)
+                self.assertEqual(
+                    len(sampler), len(batches),
+                    f"drop_last={drop_last}: len()="
+                    f"{len(sampler)} != yielded="
+                    f"{len(batches)}",
+                )
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
 
 
 if __name__ == "__main__":

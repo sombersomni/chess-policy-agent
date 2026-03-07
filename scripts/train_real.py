@@ -22,7 +22,13 @@ import io
 import logging
 import random
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
+
+if TYPE_CHECKING:
+    from chess_sim.data.sharded_dataset import (
+        ShardAwareBatchSampler,
+        ShardedChessDataset,
+    )
 
 import chess
 import chess.pgn
@@ -233,24 +239,34 @@ def _build_streaming_datasets(
     pgn_path: Path,
     winners_only: bool,
     max_games: int,
+    batch_size: int = 128,
     train_frac: float = 0.9,
-) -> tuple[DataLoader, DataLoader, int]:
-    """Preprocess a PGN file into shards and build DataLoaders.
+) -> tuple[
+    ShardedChessDataset,
+    ShardedChessDataset,
+    int,
+    ShardAwareBatchSampler,
+]:
+    """Preprocess a PGN file into shards and build datasets.
 
     Args:
         pgn_path: Path to the PGN file.
         winners_only: Only include winning-side positions.
         max_games: Stop after N games (0 = no limit).
+        batch_size: Batch size for the train sampler.
         train_frac: Fraction of shards for training.
 
     Returns:
-        Tuple of (train_loader, val_loader, total_examples).
+        Tuple of (train_ds, val_ds, total_examples, sampler).
     """
     from chess_sim.data.cache_manager import CacheManager
     from chess_sim.data.chunk_processor import ChunkProcessor
     from chess_sim.data.preprocessor import PGNPreprocessor
     from chess_sim.data.shard_writer import ShardWriter
-    from chess_sim.data.sharded_dataset import ShardedChessDataset
+    from chess_sim.data.sharded_dataset import (
+        ShardAwareBatchSampler,
+        ShardedChessDataset,
+    )
     from chess_sim.data.streaming_types import PreprocessConfig
 
     # Cache dir sits next to the PGN file
@@ -296,7 +312,13 @@ def _build_streaming_datasets(
             info.examples_per_shard[split_idx:],
         )
 
-    return train_ds, val_ds, info.total_examples
+    train_sampler = ShardAwareBatchSampler(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+    )
+
+    return train_ds, val_ds, info.total_examples, train_sampler
 
 
 def main() -> None:
@@ -346,10 +368,13 @@ def main() -> None:
     if args.pgn:
         pgn_path = Path(args.pgn)
         logger.info("Streaming pipeline for %s ...", pgn_path)
-        train_ds, val_ds, total = _build_streaming_datasets(
-            pgn_path,
-            winners_only=args.winners_only,
-            max_games=args.max_games,
+        train_ds, val_ds, total, sampler = (
+            _build_streaming_datasets(
+                pgn_path,
+                winners_only=args.winners_only,
+                max_games=args.max_games,
+                batch_size=args.batch_size,
+            )
         )
         logger.info(
             "Total: %d  Train: %d  Val: %d",
@@ -357,11 +382,8 @@ def main() -> None:
         )
         loader = DataLoader(
             train_ds,
-            batch_size=args.batch_size,
-            shuffle=True,
-            num_workers=4,
-            prefetch_factor=2,
-            persistent_workers=True,
+            batch_sampler=sampler,
+            num_workers=2,
         )
     else:
         logger.info(

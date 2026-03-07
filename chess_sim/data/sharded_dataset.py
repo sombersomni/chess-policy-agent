@@ -3,18 +3,24 @@
 Maps a global index to a ChessBatch by resolving which shard contains
 that index via binary search on cumulative counts, loading the shard
 with LRU caching, and returning a zero-copy tensor slice.
+
+Also provides ShardAwareBatchSampler for memory-efficient multi-worker
+DataLoader usage -- batches are drawn from one shard at a time.
 """
 
 from __future__ import annotations
 
 import bisect
 import logging
+import math
+import random
 from collections import OrderedDict
 from pathlib import Path
+from typing import Iterator
 
 import torch
 from torch import Tensor
-from torch.utils.data import Dataset
+from torch.utils.data import BatchSampler, Dataset
 
 from chess_sim.types import ChessBatch
 
@@ -203,3 +209,98 @@ class ShardedChessDataset(Dataset):
 
         self._shard_cache[shard_idx] = shard_data
         return shard_data
+
+
+class ShardAwareBatchSampler(BatchSampler):
+    """Batch sampler that yields batches from one shard at a time.
+
+    Prevents cross-shard access within a single batch, ensuring each
+    DataLoader worker only needs one shard in memory. Shuffles shard
+    order and within-shard indices each epoch for stochasticity.
+
+    Reason: Eliminates shard thrashing when using shuffle=True with
+    ShardedChessDataset, enabling safe num_workers > 0.
+    """
+
+    def __init__(
+        self,
+        dataset: ShardedChessDataset,
+        batch_size: int,
+        drop_last: bool = False,
+        shuffle: bool = True,
+    ) -> None:
+        """Initialize the shard-aware batch sampler.
+
+        Args:
+            dataset: The sharded dataset to sample from.
+            batch_size: Number of examples per batch.
+            drop_last: If True, drop the last incomplete batch
+                within each shard.
+            shuffle: If True, shuffle shard order and
+                within-shard indices each epoch.
+        """
+        self._dataset = dataset
+        self._batch_size = batch_size
+        self._drop_last = drop_last
+        self._shuffle = shuffle
+
+        # Precompute global offset for each shard
+        self._shard_offsets: list[int] = []
+        for i in range(len(dataset._examples_per_shard)):
+            if i == 0:
+                self._shard_offsets.append(0)
+            else:
+                self._shard_offsets.append(
+                    dataset._cumulative_counts[i - 1]
+                )
+
+    def __iter__(self) -> Iterator[list[int]]:
+        """Yield batches of global indices, all from the same shard.
+
+        Shuffles shard order each call if shuffle=True. Within each
+        shard, shuffles local indices then yields consecutive
+        batch_size chunks as global indices.
+
+        Yields:
+            List of global indices forming one batch.
+        """
+        shard_order = list(range(
+            len(self._dataset._examples_per_shard)
+        ))
+        if self._shuffle:
+            random.shuffle(shard_order)
+
+        for shard_idx in shard_order:
+            n = self._dataset._examples_per_shard[shard_idx]
+            if n == 0:
+                continue
+            offset = self._shard_offsets[shard_idx]
+
+            local_indices = list(range(n))
+            if self._shuffle:
+                random.shuffle(local_indices)
+
+            # Yield full batches from this shard
+            for start in range(0, n, self._batch_size):
+                end = min(start + self._batch_size, n)
+                if end - start < self._batch_size and self._drop_last:
+                    continue
+                batch = [
+                    offset + local_indices[i]
+                    for i in range(start, end)
+                ]
+                yield batch
+
+    def __len__(self) -> int:
+        """Return total number of batches across all shards.
+
+        Returns:
+            Integer count of batches that __iter__ will yield.
+        """
+        total = 0
+        for n in self._dataset._examples_per_shard:
+            if self._drop_last:
+                total += n // self._batch_size
+            else:
+                total += math.ceil(n / self._batch_size)
+        return total

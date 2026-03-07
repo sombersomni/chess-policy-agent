@@ -21,6 +21,7 @@ import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 
+from chess_sim.config import ModelConfig, TrainerConfig
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.model.heads import PredictionHeads
 from chess_sim.protocols import Trainable
@@ -163,28 +164,47 @@ class Trainer:
         >>> loss = trainer.train_step(batch)
     """
 
-    def __init__(self, device: str = "cpu", total_steps: int = 10_000) -> None:
-        """Initialize encoder, heads, optimizer, and scheduler on the given device.
+    def __init__(
+        self,
+        device: str = "cpu",
+        total_steps: int = 10_000,
+        trainer_cfg: TrainerConfig | None = None,
+        model_cfg: ModelConfig | None = None,
+    ) -> None:
+        """Initialize encoder, heads, optimizer, and scheduler.
+
+        Falls back to module-level constants when trainer_cfg / model_cfg
+        are None — preserving full backward compatibility.
 
         Args:
             device: torch device string. Use 'cpu' for tests, 'cuda' for training.
-            total_steps: Total number of optimizer steps across all epochs.
-                Set this to num_epochs * batches_per_epoch so the cosine
-                schedule spans the full training run. Defaults to 10_000.
+            total_steps: Optimizer steps across all epochs (epochs * batches_per_epoch).
+                Defaults to 10_000.
+            trainer_cfg: Optional TrainerConfig for lr, weight_decay, warmup_steps,
+                and gradient_clip. When None, module constants are used.
+            model_cfg: Optional ModelConfig for encoder / heads architecture.
+                When None, the default architecture (d_model=256, 6 layers) is used.
 
         Example:
             >>> trainer = Trainer(device='cpu', total_steps=5 * 9)
+            >>> from chess_sim.config import TrainerConfig
+            >>> trainer = Trainer(trainer_cfg=TrainerConfig(learning_rate=1e-3))
         """
         self.device = device
-        self.encoder = ChessEncoder().to(device)
-        self.heads = PredictionHeads().to(device)
+        lr = trainer_cfg.learning_rate if trainer_cfg else LEARNING_RATE
+        wd = trainer_cfg.weight_decay if trainer_cfg else WEIGHT_DECAY
+        self._gradient_clip = (
+            trainer_cfg.gradient_clip if trainer_cfg else GRADIENT_CLIP
+        )
+        self.encoder = ChessEncoder(model_cfg).to(device)
+        self.heads = PredictionHeads(model_cfg).to(device)
         self.loss_fn = LossComputer()
         params = (
             list(self.encoder.parameters())
             + list(self.heads.parameters())
         )
         self.optimizer = torch.optim.AdamW(
-            params, lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
+            params, lr=lr, weight_decay=wd
         )
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=total_steps
@@ -227,7 +247,7 @@ class Trainer:
         nn.utils.clip_grad_norm_(
             list(self.encoder.parameters())
             + list(self.heads.parameters()),
-            GRADIENT_CLIP,
+            self._gradient_clip,
         )
         self.optimizer.step()
         self.scheduler.step()

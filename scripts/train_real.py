@@ -7,7 +7,13 @@ When --pgn is given, uses the streaming data pipeline: preprocesses
 the PGN into shard files on first run, then trains from cached shards.
 
 Usage:
-    # From a downloaded PGN file (plain or .zst):
+    # From a YAML config file (recommended):
+    python -m scripts.train_real --config configs/train_50k.yaml
+
+    # YAML config with CLI overrides:
+    python -m scripts.train_real --config configs/train_50k.yaml --epochs 5
+
+    # Pure CLI (backward compatible, no YAML):
     python -m scripts.train_real --pgn games.pgn --epochs 10
     python -m scripts.train_real --pgn games.pgn.zst --epochs 10
 
@@ -35,6 +41,10 @@ import chess.pgn
 import torch
 from torch.utils.data import DataLoader
 
+from chess_sim.config import (
+    TrainConfig,
+    load_train_config,
+)
 from chess_sim.data.dataset import ChessDataset
 from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.training.trainer import Trainer
@@ -241,6 +251,7 @@ def _build_streaming_datasets(
     max_games: int,
     batch_size: int = 128,
     train_frac: float = 0.9,
+    chunk_size: int = 1024,
 ) -> tuple[
     ShardedChessDataset,
     ShardedChessDataset,
@@ -255,6 +266,7 @@ def _build_streaming_datasets(
         max_games: Stop after N games (0 = no limit).
         batch_size: Batch size for the train sampler.
         train_frac: Fraction of shards for training.
+        chunk_size: Games per shard chunk.
 
     Returns:
         Tuple of (train_ds, val_ds, total_examples, sampler).
@@ -269,7 +281,6 @@ def _build_streaming_datasets(
     )
     from chess_sim.data.streaming_types import PreprocessConfig
 
-    # Cache dir sits next to the PGN file
     cache_dir = pgn_path.parent / ".shard_cache"
 
     reader = _PlainPGNReader()
@@ -280,7 +291,7 @@ def _build_streaming_datasets(
     pp = PGNPreprocessor(reader, cp, sw, cm)
 
     config = PreprocessConfig(
-        chunk_size=1024,
+        chunk_size=chunk_size,
         winners_only=winners_only,
         max_games=max_games,
     )
@@ -291,12 +302,10 @@ def _build_streaming_datasets(
         len(info.shard_paths),
     )
 
-    # Shard-level train/val split
     n_shards = len(info.shard_paths)
     split_idx = max(int(n_shards * train_frac), 1)
 
     if n_shards <= 1:
-        # Single shard: use all for training, empty val
         train_ds = ShardedChessDataset(
             info.shard_paths,
             info.examples_per_shard,
@@ -321,6 +330,88 @@ def _build_streaming_datasets(
     return train_ds, val_ds, info.total_examples, train_sampler
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser.
+
+    All overrideable args default to None so that the merge step
+    can distinguish 'explicitly set' from 'not provided'.
+    """
+    p = argparse.ArgumentParser(
+        description="Train chess encoder (with optional YAML config)."
+    )
+    p.add_argument(
+        "--config", type=str, default=None,
+        help="Path to a YAML training config file.",
+    )
+    p.add_argument(
+        "--pgn", type=str, default=None,
+        help="Path to a .pgn or .pgn.zst file (optional).",
+    )
+    p.add_argument(
+        "--num-games", type=int, default=None,
+        help="Synthetic games when --pgn is not given.",
+    )
+    p.add_argument(
+        "--max-games", type=int, default=None,
+        help="Max games to read from PGN (0 = no limit).",
+    )
+    p.add_argument(
+        "--winners-only",
+        action="store_true",
+        default=None,
+        help="Include only the winning player's positions. Skips draws.",
+    )
+    p.add_argument(
+        "--batch-size", type=int, default=None,
+        help="Training batch size.",
+    )
+    p.add_argument(
+        "--epochs", type=int, default=None,
+        help="Number of training epochs.",
+    )
+    p.add_argument(
+        "--checkpoint", type=str, default=None,
+        help="Path to save final checkpoint (.pt).",
+    )
+    p.add_argument(
+        "--resume", type=str, default=None,
+        help="Path to checkpoint to resume from (.pt).",
+    )
+    return p
+
+
+def _merge_train_config(
+    args: argparse.Namespace,
+    cfg: TrainConfig,
+) -> TrainConfig:
+    """Apply non-None CLI args on top of cfg (mutates and returns cfg).
+
+    Args:
+        args: Parsed argparse namespace (None means not provided).
+        cfg: TrainConfig loaded from YAML or default.
+
+    Returns:
+        Updated cfg with CLI overrides applied.
+    """
+    if args.pgn is not None:
+        cfg.data.pgn = args.pgn
+    if args.num_games is not None:
+        cfg.data.num_games = args.num_games
+    if args.max_games is not None:
+        cfg.data.max_games = args.max_games
+    if args.winners_only:
+        cfg.data.winners_only = True
+    if args.batch_size is not None:
+        cfg.data.batch_size = args.batch_size
+    if args.epochs is not None:
+        cfg.trainer.epochs = args.epochs
+    if args.checkpoint is not None:
+        cfg.trainer.checkpoint = args.checkpoint
+    if args.resume is not None:
+        cfg.trainer.resume = args.resume
+    return cfg
+
+
 def main() -> None:
     """Entry point for training on real or synthetic chess data."""
     logging.basicConfig(
@@ -328,52 +419,31 @@ def main() -> None:
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--pgn", type=str, default="",
-        help="Path to a .pgn or .pgn.zst file (optional)",
-    )
-    parser.add_argument(
-        "--num-games", type=int, default=20,
-        help="Synthetic games when --pgn is not given",
-    )
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument(
-        "--checkpoint", type=str, default="",
-        help="Path to save final checkpoint (.pt)",
-    )
-    parser.add_argument(
-        "--resume", type=str, default="",
-        help="Path to checkpoint to resume from (.pt)",
-    )
-    parser.add_argument(
-        "--max-games", type=int, default=0,
-        help="Max games to read from PGN (0 = no limit)",
-    )
-    parser.add_argument(
-        "--winners-only",
-        action="store_true",
-        default=False,
-        help=(
-            "Include only the winning player's positions."
-            " Skips draws."
-        ),
-    )
+    parser = _build_parser()
     args = parser.parse_args()
+
+    if args.config:
+        cfg = load_train_config(Path(args.config))
+        logger.info("Loaded config from %s", args.config)
+    else:
+        cfg = TrainConfig()
+
+    cfg = _merge_train_config(args, cfg)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info("Device: %s", device)
 
-    if args.pgn:
-        pgn_path = Path(args.pgn)
+    if cfg.data.pgn:
+        pgn_path = Path(cfg.data.pgn)
         logger.info("Streaming pipeline for %s ...", pgn_path)
         train_ds, val_ds, total, sampler = (
             _build_streaming_datasets(
                 pgn_path,
-                winners_only=args.winners_only,
-                max_games=args.max_games,
-                batch_size=args.batch_size,
+                winners_only=cfg.data.winners_only,
+                max_games=cfg.data.max_games,
+                batch_size=cfg.data.batch_size,
+                train_frac=cfg.data.train_frac,
+                chunk_size=cfg.data.chunk_size,
             )
         )
         logger.info(
@@ -383,53 +453,54 @@ def main() -> None:
         loader = DataLoader(
             train_ds,
             batch_sampler=sampler,
-            num_workers=2,
+            num_workers=cfg.data.num_workers,
         )
     else:
         logger.info(
-            "Generating %d synthetic games...", args.num_games
+            "Generating %d synthetic games...", cfg.data.num_games
         )
-        examples = build_examples_synthetic(args.num_games)
+        examples = build_examples_synthetic(cfg.data.num_games)
         logger.info("Total examples: %d", len(examples))
         train_ds, val_ds = ChessDataset.split(
-            examples, train_frac=0.9
+            examples, train_frac=cfg.data.train_frac
         )
         logger.info(
             "Train: %d  Val: %d", len(train_ds), len(val_ds)
         )
         loader = DataLoader(
             train_ds,
-            batch_size=args.batch_size,
+            batch_size=cfg.data.batch_size,
             shuffle=True,
             num_workers=0,
         )
 
-    total_steps = args.epochs * len(loader)
+    total_steps = cfg.trainer.epochs * len(loader)
     trainer = Trainer(
-        device=device, total_steps=max(total_steps, 1)
+        device=device,
+        total_steps=max(total_steps, 1),
+        trainer_cfg=cfg.trainer,
+        model_cfg=cfg.model,
     )
 
-    if args.resume:
+    if cfg.trainer.resume:
         ckpt = torch.load(
-            args.resume, map_location=device
+            cfg.trainer.resume, map_location=device
         )
-        # strict=False allows loading old 3-stream checkpoints
-        # that lack activity_emb weights.
         trainer.encoder.load_state_dict(
             ckpt['encoder'], strict=False
         )
         trainer.heads.load_state_dict(
             ckpt['heads'], strict=False
         )
-        logger.info("Resumed from %s", args.resume)
+        logger.info("Resumed from %s", cfg.trainer.resume)
 
     logger.info(
         "Training %d epochs | batches/epoch=%d | steps=%d",
-        args.epochs, len(loader), total_steps,
+        cfg.trainer.epochs, len(loader), total_steps,
     )
 
     epoch_losses: list[float] = []
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(1, cfg.trainer.epochs + 1):
         avg = trainer.train_epoch(loader)
         epoch_losses.append(avg)
         logger.info("Epoch %02d: avg_loss=%.4f", epoch, avg)
@@ -440,8 +511,8 @@ def main() -> None:
         first, last, last - first,
     )
 
-    if args.checkpoint:
-        ckpt_path = Path(args.checkpoint)
+    if cfg.trainer.checkpoint:
+        ckpt_path = Path(cfg.trainer.checkpoint)
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         trainer.save_checkpoint(ckpt_path)
         logger.info("Checkpoint saved to %s", ckpt_path)

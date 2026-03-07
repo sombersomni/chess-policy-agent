@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from chess_sim.model.embedding import D_MODEL
+from chess_sim.config import ModelConfig
 from chess_sim.protocols import Predictable
 from chess_sim.types import PredictionOutput
 
@@ -42,20 +42,26 @@ class PredictionHeads(nn.Module):
         torch.Size([4, 64])
     """
 
-    def __init__(self) -> None:
-        """Initialize two independent Linear(256, 64) prediction heads.
+    def __init__(
+        self, model_cfg: ModelConfig | None = None
+    ) -> None:
+        """Initialize two independent linear prediction heads.
 
-        Uses nn.ModuleList for DRY construction. Index mapping:
-          0 -> src_sq_head, 1 -> tgt_sq_head.
+        Falls back to d_model=256 when model_cfg is None.
+
+        Args:
+            model_cfg: Optional ModelConfig. When None, uses d_model=256.
 
         Example:
             >>> ph = PredictionHeads()
+            >>> ph = PredictionHeads(ModelConfig(d_model=128))
             >>> len(ph.heads)
             2
         """
         super().__init__()
+        d_model = model_cfg.d_model if model_cfg else 256
         self.heads = nn.ModuleList(
-            [nn.Linear(D_MODEL, N_SQUARES) for _ in range(N_HEADS)]
+            [nn.Linear(d_model, N_SQUARES) for _ in range(N_HEADS)]
         )
 
     def predict(self, cls_embedding: Tensor) -> PredictionOutput:

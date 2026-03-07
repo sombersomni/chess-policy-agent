@@ -3,3 +3,4 @@ python-chess>=1.9
 zstandard>=0.21
 parameterized
 matplotlib>=3.7
+pyyaml>=6.0

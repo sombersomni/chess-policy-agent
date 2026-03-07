@@ -65,29 +65,36 @@ class EmbeddingLayer(nn.Module):
         >>> out = layer.embed(bt, ct, tt)  # [B, 65, 256]
     """
 
-    def __init__(self) -> None:
+    def __init__(self, d_model: int = D_MODEL) -> None:
         """Initialize four embedding tables, LayerNorm, Dropout.
 
         Calls _init_square_emb() and _init_piece_emb() to apply
         geometric and role-feature priors respectively.
 
+        Args:
+            d_model: Embedding dimension. Defaults to the module constant
+                D_MODEL (256). Override via ModelConfig when training with
+                a different architecture.
+
         Example:
             >>> layer = EmbeddingLayer()
+            >>> layer = EmbeddingLayer(d_model=128)
         """
         super().__init__()
+        self.d_model = d_model
         self.piece_emb = nn.Embedding(
-            PIECE_VOCAB_SIZE, D_MODEL
+            PIECE_VOCAB_SIZE, d_model
         )
         self.color_emb = nn.Embedding(
-            COLOR_VOCAB_SIZE, D_MODEL
+            COLOR_VOCAB_SIZE, d_model
         )
         self.square_emb = nn.Embedding(
-            SQUARE_VOCAB_SIZE, D_MODEL
+            SQUARE_VOCAB_SIZE, d_model
         )
         self.trajectory_emb = nn.Embedding(
-            TRAJECTORY_VOCAB_SIZE, D_MODEL
+            TRAJECTORY_VOCAB_SIZE, d_model
         )
-        self.layer_norm = nn.LayerNorm(D_MODEL)
+        self.layer_norm = nn.LayerNorm(d_model)
         self.dropout = nn.Dropout(DROPOUT)
         self._init_square_emb()
         self._init_piece_emb()
@@ -97,38 +104,39 @@ class EmbeddingLayer(nn.Module):
 
         Index 0 (CLS): all zeros.
         For s=1..64: rank=(s-1)//8, file=(s-1)%8.
-        For d=0..255: cycle through 4 patterns based on d%4.
+        For d=0..d_model-1: cycle through 4 patterns based on d%4.
         """
-        weights = torch.zeros(SQUARE_VOCAB_SIZE, D_MODEL)
+        d = self.d_model
+        weights = torch.zeros(SQUARE_VOCAB_SIZE, d)
         for s in range(1, SQUARE_VOCAB_SIZE):
             rank = (s - 1) // 8
             file = (s - 1) % 8
-            for d in range(D_MODEL):
-                freq = 10000.0 ** (d / D_MODEL)
-                pattern = d % 4
+            for i in range(d):
+                freq = 10000.0 ** (i / d)
+                pattern = i % 4
                 if pattern == 0:
-                    weights[s, d] = math.sin(rank / freq)
+                    weights[s, i] = math.sin(rank / freq)
                 elif pattern == 1:
-                    weights[s, d] = math.cos(rank / freq)
+                    weights[s, i] = math.cos(rank / freq)
                 elif pattern == 2:
-                    weights[s, d] = math.sin(file / freq)
+                    weights[s, i] = math.sin(file / freq)
                 else:
-                    weights[s, d] = math.cos(file / freq)
+                    weights[s, i] = math.cos(file / freq)
         with torch.no_grad():
             self.square_emb.weight.copy_(weights)
 
     def _init_piece_emb(self) -> None:
         """Initialize piece_emb with tiled role-feature vectors.
 
-        Each 7-element role vector is tiled to fill 256 dims,
+        Each 7-element role vector is tiled to fill d_model dims,
         then scaled by 0.02.
         """
-        weights = torch.zeros(PIECE_VOCAB_SIZE, D_MODEL)
+        d = self.d_model
+        weights = torch.zeros(PIECE_VOCAB_SIZE, d)
         for i, features in enumerate(_ROLE_FEATURES):
             ft = torch.tensor(features, dtype=torch.float)
-            # Tile to fill D_MODEL dims
-            reps = math.ceil(D_MODEL / len(features))
-            tiled = ft.repeat(reps)[:D_MODEL]
+            reps = math.ceil(d / len(features))
+            tiled = ft.repeat(reps)[:d]
             weights[i] = tiled * _ROLE_SCALE
         with torch.no_grad():
             self.piece_emb.weight.copy_(weights)

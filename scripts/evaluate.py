@@ -7,6 +7,12 @@ for each of the two prediction heads (src, tgt).
 Each ply is evaluated from the side-to-move's perspective.
 
 Usage:
+    # From a YAML config file (recommended):
+    python -m scripts.evaluate \
+        --config configs/evaluate.yaml \
+        --checkpoint checkpoints/lichess_50k_v1.pt
+
+    # Pure CLI (backward compatible):
     python -m scripts.evaluate \
         --checkpoint checkpoints/real_run_01.pt \
         --pgn data/games.pgn \
@@ -29,6 +35,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from chess_sim.config import EvaluateConfig, load_eval_config
 from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.model.heads import PredictionHeads
@@ -418,37 +425,87 @@ def print_summary(
 # CLI
 # ------------------------------------------------------------------
 
-def main() -> None:
-    """CLI entry point for per-move game evaluation."""
-    parser = argparse.ArgumentParser(
+def _build_eval_parser() -> argparse.ArgumentParser:
+    """Build the evaluation argument parser.
+
+    All overrideable args default to None so the merge step can
+    distinguish 'explicitly set' from 'not provided'.
+    """
+    p = argparse.ArgumentParser(
         description="Evaluate a chess encoder on a PGN game."
     )
-    parser.add_argument(
-        "--checkpoint", type=str, required=True,
+    p.add_argument(
+        "--config", type=str, default=None,
+        help="Path to a YAML evaluation config file.",
+    )
+    p.add_argument(
+        "--checkpoint", type=str, default=None,
         help="Path to .pt checkpoint file.",
     )
-    parser.add_argument(
-        "--pgn", type=str, required=True,
+    p.add_argument(
+        "--pgn", type=str, default=None,
         help="Path to .pgn or .pgn.zst file.",
     )
-    parser.add_argument(
-        "--game-index", type=int, default=0,
+    p.add_argument(
+        "--game-index", type=int, default=None,
         help="Zero-based game index in the PGN file.",
     )
-    parser.add_argument(
-        "--top-n", type=int, default=3,
+    p.add_argument(
+        "--top-n", type=int, default=None,
         help="Number of top-entropy plies to show.",
     )
-    parser.add_argument(
+    p.add_argument(
         "--winners-only",
         action="store_true",
-        default=False,
-        help=(
-            "Evaluate only the winning player's"
-            " positions."
-        ),
+        default=None,
+        help="Evaluate only the winning player's positions.",
     )
+    return p
+
+
+def _merge_eval_config(
+    args: argparse.Namespace,
+    cfg: EvaluateConfig,
+) -> EvaluateConfig:
+    """Apply non-None CLI args on top of cfg (mutates and returns cfg).
+
+    Args:
+        args: Parsed argparse namespace (None means not provided).
+        cfg: EvaluateConfig loaded from YAML or default.
+
+    Returns:
+        Updated cfg with CLI overrides applied.
+    """
+    if args.checkpoint is not None:
+        cfg.eval.checkpoint = args.checkpoint
+    if args.pgn is not None:
+        cfg.data.pgn = args.pgn
+    if args.game_index is not None:
+        cfg.eval.game_index = args.game_index
+    if args.top_n is not None:
+        cfg.eval.top_n = args.top_n
+    if args.winners_only:
+        cfg.data.winners_only = True
+    return cfg
+
+
+def main() -> None:
+    """CLI entry point for per-move game evaluation."""
+    parser = _build_eval_parser()
     args = parser.parse_args()
+
+    if args.config:
+        cfg = load_eval_config(Path(args.config))
+        logger.info("Loaded config from %s", args.config)
+    else:
+        cfg = EvaluateConfig()
+
+    cfg = _merge_eval_config(args, cfg)
+
+    if not cfg.eval.checkpoint:
+        parser.error("--checkpoint is required (or set eval.checkpoint in YAML).")
+    if not cfg.data.pgn:
+        parser.error("--pgn is required (or set data.pgn in YAML).")
 
     device = (
         "cuda" if torch.cuda.is_available() else "cpu"
@@ -456,25 +513,25 @@ def main() -> None:
     logger.info("Device: %s", device)
 
     evaluator = GameEvaluator(
-        checkpoint_path=Path(args.checkpoint),
+        checkpoint_path=Path(cfg.eval.checkpoint),
         device=device,
     )
 
-    games = list(stream_pgn(Path(args.pgn)))
-    if args.game_index >= len(games):
+    games = list(stream_pgn(Path(cfg.data.pgn)))
+    if cfg.eval.game_index >= len(games):
         logger.error(
             "Game index %d out of range (%d games).",
-            args.game_index, len(games),
+            cfg.eval.game_index, len(games),
         )
         return
 
-    game = games[args.game_index]
+    game = games[cfg.eval.game_index]
     results = evaluator.evaluate_game(
-        game, winners_only=args.winners_only
+        game, winners_only=cfg.data.winners_only
     )
 
     print_table(results)
-    print_summary(results, top_n=args.top_n)
+    print_summary(results, top_n=cfg.eval.top_n)
 
 
 if __name__ == "__main__":

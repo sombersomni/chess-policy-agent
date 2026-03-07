@@ -13,7 +13,8 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from chess_sim.model.embedding import D_MODEL, EmbeddingLayer
+from chess_sim.config import ModelConfig
+from chess_sim.model.embedding import EmbeddingLayer
 from chess_sim.protocols import Encodable
 from chess_sim.types import EncoderOutput
 
@@ -42,27 +43,36 @@ class ChessEncoder(nn.Module):
         torch.Size([4, 256])
     """
 
-    def __init__(self) -> None:
-        """Initialize EmbeddingLayer and TransformerEncoder with design-doc hyperparams.
+    def __init__(
+        self, model_cfg: ModelConfig | None = None
+    ) -> None:
+        """Initialize EmbeddingLayer and TransformerEncoder.
 
-        TransformerEncoderLayer config: d_model=256, nhead=8, dim_feedforward=1024,
-        dropout=0.1, batch_first=True. Stacked 6 layers.
+        Falls back to module-level constants (d_model=256, nhead=8,
+        num_layers=6, dim_feedforward=1024, dropout=0.1) when
+        model_cfg is None — preserving backward compatibility.
+
+        Args:
+            model_cfg: Optional ModelConfig. When None, uses defaults
+                matching the original design-doc hyperparameters.
 
         Example:
             >>> enc = ChessEncoder()
+            >>> enc = ChessEncoder(ModelConfig(n_layers=4))
         """
         super().__init__()
-        self.embedding = EmbeddingLayer()
+        cfg = model_cfg or ModelConfig()
+        self.embedding = EmbeddingLayer(cfg.d_model)
         layer = nn.TransformerEncoderLayer(
-            d_model=D_MODEL,
-            nhead=N_HEADS,
-            dim_feedforward=DIM_FEEDFORWARD,
-            dropout=DROPOUT,
+            d_model=cfg.d_model,
+            nhead=cfg.n_heads,
+            dim_feedforward=cfg.dim_feedforward,
+            dropout=cfg.dropout,
             batch_first=True,
             norm_first=True,
         )
         self.transformer = nn.TransformerEncoder(
-            layer, num_layers=N_LAYERS,
+            layer, num_layers=cfg.n_layers,
             enable_nested_tensor=False,
         )
 

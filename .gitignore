@@ -34,6 +34,7 @@ Thumbs.db
 
 # Data
 data/
+*.pt
 
 # Environment variables
 .env

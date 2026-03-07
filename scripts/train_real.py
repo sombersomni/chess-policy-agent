@@ -3,6 +3,9 @@
 Accepts either a PGN file (plain or .zst compressed) via --pgn, or
 generates synthetic games with random legal moves when --pgn is omitted.
 
+When --pgn is given, uses the streaming data pipeline: preprocesses
+the PGN into shard files on first run, then trains from cached shards.
+
 Usage:
     # From a downloaded PGN file (plain or .zst):
     python -m scripts.train_real --pgn games.pgn --epochs 10
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import logging
 import random
 from pathlib import Path
 from typing import Iterator
@@ -31,6 +35,8 @@ from chess_sim.training.trainer import Trainer
 from chess_sim.types import TrainingExample
 from chess_sim.utils import winner_color
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Game sources
@@ -43,7 +49,10 @@ def stream_pgn(path: Path) -> Iterator[chess.pgn.Game]:
         dctx = zstandard.ZstdDecompressor()
         with open(path, "rb") as fh:
             with dctx.stream_reader(fh) as reader:
-                text_io = io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
+                text_io = io.TextIOWrapper(
+                    reader, encoding="utf-8",
+                    errors="replace",
+                )
                 yield from _read_games(text_io)
     else:
         with open(path, encoding="utf-8", errors="replace") as fh:
@@ -189,7 +198,9 @@ def build_examples_from_file(
     return all_examples
 
 
-def build_examples_synthetic(num_games: int, seed: int = 42) -> list[TrainingExample]:
+def build_examples_synthetic(
+    num_games: int, seed: int = 42,
+) -> list[TrainingExample]:
     random.seed(seed)
     tokenizer = BoardTokenizer()
     all_examples: list[TrainingExample] = []
@@ -206,20 +217,118 @@ def build_examples_synthetic(num_games: int, seed: int = 42) -> list[TrainingExa
 # Main
 # ---------------------------------------------------------------------------
 
+class _PlainPGNReader:
+    """Adapter that streams games from plain .pgn or .zst files.
+
+    Wraps the existing stream_pgn function to match the
+    StreamingPGNReader.stream interface expected by PGNPreprocessor.
+    """
+
+    def stream(self, path: Path) -> Iterator[chess.pgn.Game]:
+        """Yield games from a .pgn or .zst file."""
+        return stream_pgn(path)
+
+
+def _build_streaming_datasets(
+    pgn_path: Path,
+    winners_only: bool,
+    max_games: int,
+    train_frac: float = 0.9,
+) -> tuple[DataLoader, DataLoader, int]:
+    """Preprocess a PGN file into shards and build DataLoaders.
+
+    Args:
+        pgn_path: Path to the PGN file.
+        winners_only: Only include winning-side positions.
+        max_games: Stop after N games (0 = no limit).
+        train_frac: Fraction of shards for training.
+
+    Returns:
+        Tuple of (train_loader, val_loader, total_examples).
+    """
+    from chess_sim.data.cache_manager import CacheManager
+    from chess_sim.data.chunk_processor import ChunkProcessor
+    from chess_sim.data.preprocessor import PGNPreprocessor
+    from chess_sim.data.shard_writer import ShardWriter
+    from chess_sim.data.sharded_dataset import ShardedChessDataset
+    from chess_sim.data.streaming_types import PreprocessConfig
+
+    # Cache dir sits next to the PGN file
+    cache_dir = pgn_path.parent / ".shard_cache"
+
+    reader = _PlainPGNReader()
+    tokenizer = BoardTokenizer()
+    cp = ChunkProcessor(tokenizer, winners_only=winners_only)
+    sw = ShardWriter()
+    cm = CacheManager()
+    pp = PGNPreprocessor(reader, cp, sw, cm)
+
+    config = PreprocessConfig(
+        chunk_size=1024,
+        winners_only=winners_only,
+        max_games=max_games,
+    )
+    info = pp.preprocess(pgn_path, cache_dir, config)
+    logger.info(
+        "Preprocessed %d examples in %d shards",
+        info.total_examples,
+        len(info.shard_paths),
+    )
+
+    # Shard-level train/val split
+    n_shards = len(info.shard_paths)
+    split_idx = max(int(n_shards * train_frac), 1)
+
+    if n_shards <= 1:
+        # Single shard: use all for training, empty val
+        train_ds = ShardedChessDataset(
+            info.shard_paths,
+            info.examples_per_shard,
+        )
+        val_ds = ShardedChessDataset([], [])
+    else:
+        train_ds = ShardedChessDataset(
+            info.shard_paths[:split_idx],
+            info.examples_per_shard[:split_idx],
+        )
+        val_ds = ShardedChessDataset(
+            info.shard_paths[split_idx:],
+            info.examples_per_shard[split_idx:],
+        )
+
+    return train_ds, val_ds, info.total_examples
+
+
 def main() -> None:
+    """Entry point for training on real or synthetic chess data."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pgn", type=str, default="",
-                        help="Path to a .pgn or .pgn.zst file (optional)")
-    parser.add_argument("--num-games", type=int, default=20,
-                        help="Synthetic games to generate when --pgn is not given")
+    parser.add_argument(
+        "--pgn", type=str, default="",
+        help="Path to a .pgn or .pgn.zst file (optional)",
+    )
+    parser.add_argument(
+        "--num-games", type=int, default=20,
+        help="Synthetic games when --pgn is not given",
+    )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--checkpoint", type=str, default="",
-                        help="Path to save final checkpoint (.pt)")
-    parser.add_argument("--resume", type=str, default="",
-                        help="Path to checkpoint to resume from (.pt)")
-    parser.add_argument("--max-games", type=int, default=0,
-                        help="Max games to read from PGN (0 = no limit)")
+    parser.add_argument(
+        "--checkpoint", type=str, default="",
+        help="Path to save final checkpoint (.pt)",
+    )
+    parser.add_argument(
+        "--resume", type=str, default="",
+        help="Path to checkpoint to resume from (.pt)",
+    )
+    parser.add_argument(
+        "--max-games", type=int, default=0,
+        help="Max games to read from PGN (0 = no limit)",
+    )
     parser.add_argument(
         "--winners-only",
         action="store_true",
@@ -232,29 +341,51 @@ def main() -> None:
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Device: {device}")
+    logger.info("Device: %s", device)
 
     if args.pgn:
         pgn_path = Path(args.pgn)
-        print(f"\nLoading examples from {pgn_path} ...")
-        examples = build_examples_from_file(
-            pgn_path, winners_only=args.winners_only, max_games=args.max_games
+        logger.info("Streaming pipeline for %s ...", pgn_path)
+        train_ds, val_ds, total = _build_streaming_datasets(
+            pgn_path,
+            winners_only=args.winners_only,
+            max_games=args.max_games,
+        )
+        logger.info(
+            "Total: %d  Train: %d  Val: %d",
+            total, len(train_ds), len(val_ds),
+        )
+        loader = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=4,
+            prefetch_factor=2,
+            persistent_workers=True,
         )
     else:
-        print(f"\nGenerating examples from {args.num_games} synthetic games...")
+        logger.info(
+            "Generating %d synthetic games...", args.num_games
+        )
         examples = build_examples_synthetic(args.num_games)
-
-    print(f"Total examples: {len(examples)}")
-
-    train_ds, val_ds = ChessDataset.split(examples, train_frac=0.9)
-    print(f"Train: {len(train_ds)}  Val: {len(val_ds)}")
-
-    loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0
-    )
+        logger.info("Total examples: %d", len(examples))
+        train_ds, val_ds = ChessDataset.split(
+            examples, train_frac=0.9
+        )
+        logger.info(
+            "Train: %d  Val: %d", len(train_ds), len(val_ds)
+        )
+        loader = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=0,
+        )
 
     total_steps = args.epochs * len(loader)
-    trainer = Trainer(device=device, total_steps=max(total_steps, 1))
+    trainer = Trainer(
+        device=device, total_steps=max(total_steps, 1)
+    )
 
     if args.resume:
         ckpt = torch.load(
@@ -268,25 +399,30 @@ def main() -> None:
         trainer.heads.load_state_dict(
             ckpt['heads'], strict=False
         )
-        print(f"Resumed from {args.resume}")
+        logger.info("Resumed from %s", args.resume)
 
-    print(f"\nTraining {args.epochs} epochs | "
-          f"batches/epoch={len(loader)} | total_steps={total_steps}\n")
+    logger.info(
+        "Training %d epochs | batches/epoch=%d | steps=%d",
+        args.epochs, len(loader), total_steps,
+    )
 
     epoch_losses: list[float] = []
     for epoch in range(1, args.epochs + 1):
         avg = trainer.train_epoch(loader)
         epoch_losses.append(avg)
-        print(f"Epoch {epoch:02d}: avg_loss={avg:.4f}")
+        logger.info("Epoch %02d: avg_loss=%.4f", epoch, avg)
 
     first, last = epoch_losses[0], epoch_losses[-1]
-    print(f"\nLoss: {first:.4f} → {last:.4f}  (Δ={last - first:+.4f})")
+    logger.info(
+        "Loss: %.4f -> %.4f (delta=%+.4f)",
+        first, last, last - first,
+    )
 
     if args.checkpoint:
         ckpt_path = Path(args.checkpoint)
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         trainer.save_checkpoint(ckpt_path)
-        print(f"Checkpoint saved to {ckpt_path}")
+        logger.info("Checkpoint saved to %s", ckpt_path)
 
 
 if __name__ == "__main__":

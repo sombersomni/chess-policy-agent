@@ -48,3 +48,14 @@
 - `tests/test_reader.py`, `tests/test_sampler.py` - data pipeline
 - `tests/test_evaluate.py` - TEV01-TEV14
 - `tests/test_chess_encoder.py` - T26-T40: Encoder v2 tests
+- `tests/test_streaming_pipeline.py` - T1-T20: Streaming pipeline
+
+## Streaming Data Pipeline
+- Types: `chess_sim/data/streaming_types.py` (PreprocessConfig, ManifestInfo)
+- `chunk_processor.py` reuses `game_to_examples` from `scripts.train_real`
+- `shard_writer.py` saves shard_{:06d}.pt via torch.save (includes "count" key)
+- `cache_manager.py` SHA-256 of first 1MB + file size; manifest.json I/O
+- `preprocessor.py` orchestrates: stream -> chunk -> shard -> manifest
+- `sharded_dataset.py` bisect shard lookup, OrderedDict LRU cache
+- `train_real.py` uses _PlainPGNReader adapter for .pgn/.zst support
+- Shard files loaded with `weights_only=True`

@@ -1,0 +1,37 @@
+# ============================================================
+# Jenkins K8s agent pod template for chess-sim CI builds.
+#
+# Referenced by Jenkinsfile via: yamlFile 'jenkins/pod-template.yaml'
+#
+# Replace YOUR_DOCKERHUB_USER with your Docker Hub username, e.g.:
+#   image: sombersomni/chess-sim:ci
+#
+# The 'chess-sim' container runs the lint and test stages.
+# The default 'jnlp' sidecar (added automatically by the K8s plugin)
+# handles the Jenkins agent connection — no extra config needed.
+# ============================================================
+
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: chess-sim-ci
+spec:
+  containers:
+    - name: chess-sim
+      image: YOUR_DOCKERHUB_USER/chess-sim:ci
+      command: ["sleep"]
+      args: ["infinity"]
+      env:
+        # Force CPU-only mode — tests must not require a GPU
+        - name: CUDA_VISIBLE_DEVICES
+          value: ""
+        - name: TORCH_DEVICE
+          value: "cpu"
+      resources:
+        requests:
+          cpu: "2"
+          memory: "4Gi"
+        limits:
+          cpu: "4"
+          memory: "8Gi"

@@ -1,0 +1,46 @@
+# ============================================================
+# chess-sim: CI image for Jenkins/Kubernetes pipelines
+#
+# Differences from Dockerfile (dev image):
+#   - Source code is NOT baked in; Jenkins checks out fresh
+#   - No bind-mount volumes needed
+#   - Optimised for ephemeral K8s agent pods
+#
+# Build & push:
+#   docker build -f Dockerfile.ci -t <YOUR_DOCKERHUB_USER>/chess-sim:ci .
+#   docker push <YOUR_DOCKERHUB_USER>/chess-sim:ci
+# ============================================================
+
+FROM python:3.10-slim AS ci
+
+# ---- System dependencies (mirrors dev Dockerfile) ----------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 \
+        libhdf5-dev \
+        libgl1 \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Non-root user -----------------------------------------------------------
+RUN groupadd -r chess && useradd -r -g chess -m -s /bin/bash chess
+
+# ---- Virtualenv setup --------------------------------------------------------
+ENV VIRTUAL_ENV=/opt/venv
+RUN python -m venv ${VIRTUAL_ENV} && \
+    chown -R chess:chess ${VIRTUAL_ENV}
+
+# Activate venv for all subsequent RUN/CMD/ENTRYPOINT
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+# ---- Install Python dependencies ---------------------------------------------
+# Layer cached: only invalidated when requirements.txt changes
+COPY --chown=chess:chess requirements.txt /tmp/requirements.txt
+USER chess
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    python -m pip install --no-cache-dir -r /tmp/requirements.txt
+
+# ---- Working directory -------------------------------------------------------
+# Jenkins checks out source here via the K8s plugin workspace mount
+WORKDIR /workspace
+
+CMD ["/bin/bash"]

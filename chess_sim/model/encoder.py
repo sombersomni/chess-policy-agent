@@ -25,7 +25,7 @@ DROPOUT: float = 0.1
 
 
 class ChessEncoder(nn.Module):
-    """Runs the BERT-style transformer encoder over a 65-token board sequence.
+    """Runs transformer encoder over a 65-token board sequence.
 
     Implements the Encodable protocol.
 

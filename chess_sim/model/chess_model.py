@@ -19,8 +19,8 @@ from chess_sim.model.encoder import ChessEncoder
 
 
 class ChessModel(nn.Module):
-    """Top-level encoder-decoder model for chess move prediction.
-
+    """
+    Top-level encoder-decoder model for chess move prediction.
     Assembles ChessEncoder and MoveDecoder into a single nn.Module.
     The encoder produces a memory tensor from board state tokens;
     the decoder cross-attends to it while autoregressively predicting

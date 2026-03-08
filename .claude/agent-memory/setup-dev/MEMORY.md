@@ -1,5 +1,42 @@
 # setup-dev Agent Memory
 
+## Scaffolding Completed: Aim Experiment Tracking (2026-03-07)
+
+### Module Layout
+```
+chess_sim/
+├── config.py                       # +AimConfig dataclass, +aim field on ChessModelV2Config
+├── tracking/__init__.py            # Exports MetricTracker, AimTracker, NoOpTracker, make_tracker
+├── tracking/protocol.py            # MetricTracker Protocol (track_step, track_epoch, close)
+├── tracking/aim_tracker.py         # AimTracker — wraps aim.Run, stubs raise NotImplementedError
+├── tracking/noop_tracker.py        # NoOpTracker — silent pass bodies (production fallback)
+├── tracking/factory.py             # make_tracker() — stub, returns AimTracker or NoOpTracker
+├── training/phase1_trainer.py      # +tracker param, +_global_step, +_mean_entropy stub
+└── scripts/train_v2.py             # +make_tracker, +tracker=tracker, +try/finally close()
+```
+
+### Test Suite (15 tests: 6 pass, 9 fail awaiting impl)
+```
+tests/test_aim_tracking.py
+  - TestMakeTracker:    TC01-TC03 (factory returns correct type)
+  - TestAimTracker:     TC04-TC07 (log_every_n, step0 guard, epoch keys, hparams)
+  - TestNoOpTracker:    TC08 (all return None) [PASSES]
+  - TestPhase1Trainer:  TC09-TC10 (None->NoOp, global_step) [PASSES]
+  - TestEvaluateEntropy: TC11 (mean_entropy in dict) [PASSES]
+  - TestAimConfigYAML:  TC12-TC13 (YAML load, missing section) [PASSES]
+  - TestMeanEntropy:    TC14 (peaked logits < 0.001)
+  - TestTrackerClose:   TC15 (finally block) [PASSES]
+```
+
+### Key Decisions
+- `git add -f` needed for chess_sim/tracking/* (`.gitignore` `data/` pattern)
+- NoOpTracker uses `pass` not NotImplementedError — it IS the production fallback
+- AimTracker.__init__ accepts `run: Any` for MagicMock injection
+- _mean_entropy is module-level private function in phase1_trainer.py
+- aim>=3.17 in requirements.txt; optional at runtime via import guard
+
+---
+
 ## Scaffolding Completed: ChessModel v2 Encoder-Decoder (2026-03-07)
 
 ### Module Layout

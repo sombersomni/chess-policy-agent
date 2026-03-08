@@ -24,6 +24,7 @@ from chess_sim.config import (
     TrainerConfig,
 )
 from chess_sim.data.move_vocab import PAD_IDX
+from chess_sim.functional import entropy_from_logits, mean_entropy
 from chess_sim.model.chess_model import ChessModel
 from chess_sim.tracking.noop_tracker import NoOpTracker
 from chess_sim.tracking.protocol import MetricTracker
@@ -224,12 +225,10 @@ class Phase1Trainer:
                     preds[mask] == batch.target_tokens[mask]
                 ).sum().item()
                 total += mask.sum().item()
-                # Accumulate entropy per batch (weighted by valid positions)
+                # Accumulate entropy per batch (weighted)
                 n_valid = mask.sum().item()
                 if n_valid > 0:
-                    probs = torch.softmax(logits, dim=-1)
-                    log_probs = torch.log_softmax(logits, dim=-1)
-                    h = -(probs * log_probs).sum(dim=-1)
+                    h = entropy_from_logits(logits)
                     entropy_sum += h[mask].sum().item()
                     entropy_count += n_valid
         n_batches = max(len(loader), 1)
@@ -276,11 +275,13 @@ class Phase1Trainer:
         logger.info("Checkpoint loaded from %s", path)
 
 
-def _mean_entropy(logits: torch.Tensor, mask: torch.Tensor) -> float:
+def _mean_entropy(
+    logits: torch.Tensor, mask: torch.Tensor
+) -> float:
     """Compute mean prediction entropy over non-PAD positions.
 
-    Computes H = -sum(p * log(p)) per position, then averages over
-    all positions where mask is True.
+    Thin wrapper around chess_sim.functional.mean_entropy for
+    backward compatibility with existing imports.
 
     Args:
         logits: Shape (B, T, V) raw logits from the decoder.
@@ -295,14 +296,5 @@ def _mean_entropy(logits: torch.Tensor, mask: torch.Tensor) -> float:
         >>> h = _mean_entropy(logits, mask)
         >>> isinstance(h, float)
         True
-
-    Edge cases:
-        If mask has no True entries, returns 0.0.
-        For peaked distributions (one-hot), entropy is near zero.
     """
-    if not mask.any():
-        return 0.0
-    probs = torch.softmax(logits, dim=-1)
-    log_probs = torch.log_softmax(logits, dim=-1)
-    entropy = -(probs * log_probs).sum(dim=-1)  # (B, T)
-    return entropy[mask].mean().item()
+    return mean_entropy(logits, mask)

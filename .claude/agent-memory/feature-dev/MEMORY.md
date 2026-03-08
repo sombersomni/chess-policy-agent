@@ -1,5 +1,12 @@
 # Feature Dev Agent Memory
 
+## Functional Utilities
+- `chess_sim/functional.py`: reusable tensor ops (torch.nn.functional pattern)
+  - `entropy_from_logits(logits)` -> per-position entropy via `Categorical.entropy()`
+  - `mean_entropy(logits, mask)` -> masked mean entropy as float
+  - Tests: `tests/test_functional.py` (9 tests)
+- `_mean_entropy` in `phase1_trainer.py` is a thin backward-compat wrapper
+
 ## Project Structure
 - Source: `chess_sim/` with subpackages `data/`, `model/`, `training/`
 - Tests: `tests/` using `unittest` + `pytest` + `parameterized`

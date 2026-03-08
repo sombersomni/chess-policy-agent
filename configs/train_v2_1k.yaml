@@ -29,3 +29,9 @@ trainer:
   gradient_clip: 1.0
   epochs: 10
   checkpoint: checkpoints/chess_v2_1k.pt
+
+aim:
+  enabled: true
+  experiment_name: chess_v2_1k
+  repo: .aim
+  log_every_n_steps: 50

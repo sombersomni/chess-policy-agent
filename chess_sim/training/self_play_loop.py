@@ -34,6 +34,26 @@ from chess_sim.types import PlyTuple
 
 logger = logging.getLogger(__name__)
 
+_PIECE_VALUES = {
+    chess.PAWN: 1,
+    chess.KNIGHT: 3,
+    chess.BISHOP: 3,
+    chess.ROOK: 5,
+    chess.QUEEN: 9,
+}
+
+
+def _material_balance(board: chess.Board) -> float:
+    """Return white material minus black material in pawn units."""
+    score = 0.0
+    for sq in chess.SQUARES:
+        piece = board.piece_at(sq)
+        if piece is None:
+            continue
+        val = _PIECE_VALUES.get(piece.piece_type, 0)
+        score += val if piece.color == chess.WHITE else -val
+    return score
+
 
 class SelfPlayLoop:
     """Orchestrates the full Phase 2 self-play RL loop.
@@ -141,6 +161,7 @@ class SelfPlayLoop:
                     legal_ucis
                 ).to(self._device)
                 is_player_turn = board.turn == chess.WHITE
+                mat_before = _material_balance(board)
                 if is_player_turn:
                     ply = self._player_ply(
                         bt, ct, tt, move_prefix, legal_mask
@@ -149,9 +170,11 @@ class SelfPlayLoop:
                     ply = self._opponent_ply(
                         bt, ct, tt, move_prefix, legal_mask
                     )
-                self._recorder.record(ply)
                 step_info = source.step(ply.move_uci)
                 board = step_info.board
+                mat_delta = _material_balance(board) - mat_before
+                ply = ply._replace(material_delta=mat_delta)
+                self._recorder.record(ply)
                 move_history.append(
                     chess.Move.from_uci(ply.move_uci)
                 )

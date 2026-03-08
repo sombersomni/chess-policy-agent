@@ -90,3 +90,19 @@
 - `Phase2Trainer` in `chess_sim/training/phase2_trainer.py`: REINFORCE self-play with policy gradient
 - Config: `DecoderConfig` and `Phase2Config` in `chess_sim/config.py`; `ChessModelV2Config` = root config
 - Tests: `tests/test_v2_skeleton.py` - TV01-TV17 (42 tests)
+
+## Phase 2 Self-Play RL Components
+- `chess_sim/training/ema_updater.py`: EMA sync player->opponent (Updatable protocol)
+- `chess_sim/training/episode_recorder.py`: accumulates PlyTuples, softmax-normalizes player entropies in finalize()
+- `chess_sim/training/reward_computer.py`: temporal advantage + surprise reward per player ply
+  - temporal: `outcome * gamma^t` (earlier plies get higher reward, t=0 is max)
+  - surprise: `entropy * correct * reward_sign`; loss trajectory flips `correct` sign
+- `chess_sim/model/value_heads.py`: two Linear heads (v_win, v_surprise) on detached CLS embedding
+- `chess_sim/env/self_play_source.py`: mutable chess.Board implementing SimSource protocol
+- `chess_sim/training/self_play_loop.py`: orchestrates episodes, PG loss + value MSE + EMA update
+  - d_model detected via `player.encoder.embedding.d_model`
+  - `_make_trajectory_tokens` imported from `phase2_trainer.py`
+  - `MoveVocab.decode(idx)` maps action index -> UCI string
+- `scripts/train_phase2.py`: CLI entry point for Phase 2 training
+- Tests: `tests/test_phase2_self_play.py` - TC01-TC15 (15 tests)
+- Key gotcha: when testing reward correctness, `dummy_probs` argmax must match `MoveTokenizer.tokenize_move(uci)` index

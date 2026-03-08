@@ -238,6 +238,7 @@ class PlyTuple(NamedTuple):
     entropy: float
     move_uci: str
     is_player_ply: bool
+    material_delta: float = 0.0
 
 
 class EpisodeRecord(NamedTuple):

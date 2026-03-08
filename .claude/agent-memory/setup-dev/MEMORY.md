@@ -1,5 +1,50 @@
 # setup-dev Agent Memory
 
+## Scaffolding Completed: Phase 2 Self-Play RL (2026-03-08)
+
+### Module Layout
+```
+chess_sim/
+├── config.py                        # Phase2Config replaced: +ema_alpha, gamma, lambda_surprise, __post_init__ validation
+├── types.py                         # +3 NamedTuples: PlyTuple, EpisodeRecord, ValueHeadOutput
+├── protocols.py                     # +3 Protocols: Recordable, Computable, Updatable
+├── env/self_play_source.py          # SelfPlaySource — implements SimSource structurally
+├── model/value_heads.py             # ValueHeads(nn.Module) — v_win + v_surprise linear heads
+├── training/episode_recorder.py     # EpisodeRecorder — implements Recordable
+├── training/reward_computer.py      # RewardComputer — implements Computable
+├── training/ema_updater.py          # EMAUpdater — implements Updatable
+├── training/self_play_loop.py       # SelfPlayLoop — orchestrates full RL loop
+├── training/phase2_trainer.py       # (existing, unchanged — still uses old Phase2Config fields)
+configs/phase2.yaml                  # Default Phase2Config YAML
+scripts/train_phase2.py              # Entry-point stub
+```
+
+### Test Suite (15 tests, all raise NotImplementedError)
+```
+tests/test_phase2_self_play.py
+  - TC01: EMA update correctness (alpha=0.995 blend)
+  - TC02: EMA leaves player unchanged
+  - TC03-05: Surprise scores (certain correct, uncertain wrong, draw=0)
+  - TC06-07: Reward tensor shape/values, loss trajectory sign flip
+  - TC08: ValueHeads forward shape [B,1]
+  - TC09-10: Phase2Config validation (invalid alpha, invalid gamma)
+  - TC11: EpisodeRecorder.finalize
+  - TC12: SelfPlaySource terminal detection
+  - TC13: Player-only ply filtering (20 plies -> 10 rewards)
+  - TC14: Temporal discount monotonicity
+  - TC15: SelfPlayLoop no param collision
+```
+
+### Key Decisions
+- Phase2Config.__post_init__ validates ema_alpha in (0,1), gamma in (0,1], lambda_surprise >= 0, episodes_per_update >= 1
+- ValueHeads.__init__ calls super().__init__() then creates nn.Linear heads (NOT raising NotImplementedError)
+- Existing phase2_trainer.py unmodified — still imports win_reward/loss_reward/draw_reward (all kept)
+- SelfPlaySource implements SimSource structurally (no inheritance)
+- `git add -f` needed for chess_sim/env/self_play_source.py due to .gitignore `env/` pattern
+- Test imports use `# noqa: F401` since bodies are stubs
+
+---
+
 ## Scaffolding Completed: Aim Experiment Tracking (2026-03-07)
 
 ### Module Layout

@@ -89,7 +89,15 @@ class RewardComputer:
         surprise = self._surprise(
             entropies, correct, reward_sign
         )
-        return temporal + cfg.lambda_surprise * surprise
+        material = torch.tensor(
+            [p.material_delta for p in player_plies],
+            dtype=torch.float32,
+        )
+        return (
+            temporal
+            + cfg.lambda_surprise * surprise
+            + cfg.lambda_material * material
+        )
 
     def _temporal_advantage(
         self,

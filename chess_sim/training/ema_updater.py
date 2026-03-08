@@ -8,6 +8,7 @@ The opponent model always has requires_grad=False on all parameters.
 
 from __future__ import annotations
 
+import torch
 import torch.nn as nn
 
 from chess_sim.protocols import Updatable  # noqa: F401
@@ -44,4 +45,10 @@ class EMAUpdater:
             player: The learning agent model (gradients enabled).
             opponent: The EMA-frozen opponent (requires_grad=False).
         """
-        raise NotImplementedError("To be implemented")
+        with torch.no_grad():
+            for p_player, p_opp in zip(
+                player.parameters(), opponent.parameters()
+            ):
+                p_opp.data.mul_(self._alpha).add_(
+                    p_player.data, alpha=1.0 - self._alpha
+                )

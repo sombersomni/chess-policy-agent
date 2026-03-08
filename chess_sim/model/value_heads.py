@@ -47,4 +47,8 @@ class ValueHeads(nn.Module):
         Returns:
             ValueHeadOutput with v_win and v_surprise each [B, 1].
         """
-        raise NotImplementedError("To be implemented")
+        v_win = self._win_head(cls_emb)
+        v_surprise = self._surprise_head(cls_emb)
+        return ValueHeadOutput(
+            v_win=v_win, v_surprise=v_surprise
+        )

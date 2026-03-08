@@ -7,6 +7,8 @@ softmax entropy normalization over player plies before sealing.
 
 from __future__ import annotations
 
+import torch
+
 from chess_sim.protocols import Recordable  # noqa: F401
 from chess_sim.types import EpisodeRecord, PlyTuple
 
@@ -33,7 +35,7 @@ class EpisodeRecorder:
         Args:
             ply: PlyTuple for a single half-move.
         """
-        raise NotImplementedError("To be implemented")
+        self._plies.append(ply)
 
     def finalize(self, outcome: float) -> EpisodeRecord:
         """Seal the episode and return an EpisodeRecord.
@@ -50,8 +52,42 @@ class EpisodeRecorder:
             Sealed EpisodeRecord with all plies and normalized
             player entropies.
         """
-        raise NotImplementedError("To be implemented")
+        player_indices = [
+            i for i, p in enumerate(self._plies)
+            if p.is_player_ply
+        ]
+        if player_indices:
+            raw_entropies = torch.tensor(
+                [self._plies[i].entropy for i in player_indices],
+                dtype=torch.float32,
+            )
+            norm_entropies = torch.softmax(raw_entropies, dim=0)
+            new_plies = list(self._plies)
+            for idx, norm_h in zip(
+                player_indices, norm_entropies.tolist()
+            ):
+                old = new_plies[idx]
+                new_plies[idx] = PlyTuple(
+                    board_tokens=old.board_tokens,
+                    color_tokens=old.color_tokens,
+                    traj_tokens=old.traj_tokens,
+                    move_prefix=old.move_prefix,
+                    log_prob=old.log_prob,
+                    probs=old.probs,
+                    entropy=norm_h,
+                    move_uci=old.move_uci,
+                    is_player_ply=old.is_player_ply,
+                )
+        else:
+            new_plies = list(self._plies)
+        record = EpisodeRecord(
+            plies=new_plies,
+            outcome=outcome,
+            total_plies=len(new_plies),
+        )
+        self.reset()
+        return record
 
     def reset(self) -> None:
         """Clear internal buffer for a new episode."""
-        raise NotImplementedError("To be implemented")
+        self._plies = []

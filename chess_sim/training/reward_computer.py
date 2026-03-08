@@ -12,6 +12,7 @@ Surprise formula (using softmax-normalized entropy H_norm):
 
 from __future__ import annotations
 
+import torch
 from torch import Tensor
 
 from chess_sim.config import Phase2Config
@@ -47,7 +48,48 @@ class RewardComputer:
             Tensor of shape [T_player] -- one scalar reward per
             player ply.
         """
-        raise NotImplementedError("To be implemented")
+        from chess_sim.data.move_tokenizer import MoveTokenizer
+
+        tok = MoveTokenizer()
+        player_plies = [
+            p for p in record.plies if p.is_player_ply
+        ]
+        T = len(player_plies)
+        if T == 0:
+            return torch.zeros(0)
+        temporal = self._temporal_advantage(
+            record.outcome, T, cfg.gamma
+        )
+        entropies = torch.tensor(
+            [p.entropy for p in player_plies],
+            dtype=torch.float32,
+        )
+        correct_list: list[float] = []
+        for p in player_plies:
+            try:
+                vocab_idx = tok.tokenize_move(p.move_uci)
+            except (KeyError, ValueError):
+                correct_list.append(-1.0)
+                continue
+            predicted_idx = int(torch.argmax(p.probs).item())
+            correct_list.append(
+                1.0 if predicted_idx == vocab_idx else -1.0
+            )
+        correct = torch.tensor(
+            correct_list, dtype=torch.float32
+        )
+        if record.outcome > 0.5:
+            reward_sign = 1.0
+        elif record.outcome < 0.0:
+            reward_sign = -1.0
+            # Flip: correct move on loss gets partial credit
+            correct = -correct
+        else:
+            reward_sign = 0.0
+        surprise = self._surprise(
+            entropies, correct, reward_sign
+        )
+        return temporal + cfg.lambda_surprise * surprise
 
     def _temporal_advantage(
         self,
@@ -69,7 +111,10 @@ class RewardComputer:
         Returns:
             Discounted return tensor of shape [T].
         """
-        raise NotImplementedError("To be implemented")
+        return torch.tensor(
+            [outcome * (gamma ** t) for t in range(T)],
+            dtype=torch.float32,
+        )
 
     def _surprise(
         self,
@@ -92,4 +137,4 @@ class RewardComputer:
         Returns:
             Surprise score tensor of shape [T].
         """
-        raise NotImplementedError("To be implemented")
+        return entropy * correct * reward_sign

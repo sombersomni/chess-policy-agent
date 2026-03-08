@@ -286,13 +286,13 @@ def main() -> None:
         cfg.trainer.epochs, len(train_loader), total_steps,
     )
 
-    epoch_train_losses: list[float] = []
+    epoch_train_metrics: list[dict[str, float]] = []
     epoch_val_metrics: list[dict[str, float]] = []
 
     try:
         for epoch in range(1, cfg.trainer.epochs + 1):
-            avg_loss = trainer.train_epoch(train_loader)
-            epoch_train_losses.append(avg_loss)
+            train_metrics = trainer.train_epoch(train_loader)
+            epoch_train_metrics.append(train_metrics)
 
             val_metrics = trainer.evaluate(val_loader)
             epoch_val_metrics.append(val_metrics)
@@ -300,20 +300,26 @@ def main() -> None:
             lr = trainer.optimizer.param_groups[0]["lr"]
             tracker.track_epoch(val_metrics, epoch, lr)
 
+            train_acc = train_metrics["train_accuracy"]
+            val_acc = val_metrics["val_accuracy"]
+            gap = val_acc - train_acc
             logger.info(
-                "Epoch %02d: train_loss=%.4f | "
-                "val_loss=%.4f | val_acc=%.4f",
+                "Epoch %02d: train_loss=%.4f train_acc=%.4f | "
+                "val_loss=%.4f val_acc=%.4f | gap=%+.4f",
                 epoch,
-                avg_loss,
+                train_metrics["train_loss"],
+                train_acc,
                 val_metrics["val_loss"],
-                val_metrics["val_accuracy"],
+                val_acc,
+                gap,
             )
 
         # Summary
-        first, last = epoch_train_losses[0], epoch_train_losses[-1]
+        first_loss = epoch_train_metrics[0]["train_loss"]
+        last_loss = epoch_train_metrics[-1]["train_loss"]
         logger.info(
             "Train loss: %.4f -> %.4f (delta=%+.4f)",
-            first, last, last - first,
+            first_loss, last_loss, last_loss - first_loss,
         )
         if epoch_val_metrics:
             best_val = min(
@@ -322,9 +328,14 @@ def main() -> None:
             best_acc = max(
                 m["val_accuracy"] for m in epoch_val_metrics
             )
+            final_gap = (
+                epoch_val_metrics[-1]["val_accuracy"]
+                - epoch_train_metrics[-1]["train_accuracy"]
+            )
             logger.info(
-                "Best val_loss=%.4f | Best val_acc=%.4f",
-                best_val, best_acc,
+                "Best val_loss=%.4f | Best val_acc=%.4f | "
+                "Final gap(val-train)=%+.4f",
+                best_val, best_acc, final_gap,
             )
 
         # Save checkpoint

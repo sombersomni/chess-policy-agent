@@ -9,8 +9,9 @@
 - `scripts/evaluate_v2.py` -- v2 evaluation script (val_loss, val_accuracy, mean_entropy)
 - Virtual env: `.venv/` at project root
 
-## v2 Architecture
-- d_model=256, encoder 6-layer, decoder 4-layer, 8-head, vocab=1971
+## v2 Architecture (current: d_model=128)
+- d_model=128, encoder 6-layer, decoder 4-layer, 8-head, ff=512, vocab=1971, ~2.83M params
+- Previous: d_model=256, ff=1024, ~10.1M params
 
 ## Training Run: 10k Real Games (2026-03-07)
 - **Config**: `configs/train_v2_10k.yaml`
@@ -28,29 +29,32 @@
 - Smooth convergence, no overfitting, ~9 min/epoch on CPU
 - Checkpoint: `checkpoints/chess_v2_10k.pt` (saved at end)
 
-## Training Run: 1k Real Games (2026-03-08)
+## Training Run: 1k Games, d_model=256, 10 epochs (2026-03-08, SUPERSEDED)
+- 10.1M params, ~61k samples, final: train_loss=0.216, val_loss=0.137, val_acc=95.6%
+
+## Training Run: 1k Games, d_model=128, 20 epochs (2026-03-08, CURRENT)
 - **Config**: `configs/train_v2_1k.yaml`
-- **Data**: 1k lichess games -> 61,169 samples (55,052 train / 6,117 val), bs=64, 861 steps/epoch
-- **LR**: LinearLR warmup 200 steps + CosineAnnealingLR, base LR 3e-4
-- **Device**: CUDA, ~48s/epoch, total ~8min
+- **Data**: 1k lichess games -> 60,060 samples (54,054 train / 6,006 val), bs=64, winners_only
+- **Params**: 2,830,899 (~3.6x fewer than d_model=256)
+- **Device**: CUDA (RTX 4070 SUPER), ~30s/epoch, total ~10min
 
 | Epoch | Train Loss | Val Loss | Val Acc |
 |-------|-----------|----------|---------|
-| 1     | 4.299     | 2.068    | 59.4%   |
-| 2     | 1.686     | 0.647    | 85.7%   |
-| 3     | 0.830     | 0.346    | 91.0%   |
-| 4     | 0.529     | 0.254    | 92.7%   |
-| 5     | 0.391     | 0.206    | 93.7%   |
-| 6     | 0.314     | 0.176    | 94.5%   |
-| 7     | 0.268     | 0.157    | 95.0%   |
-| 8     | 0.239     | 0.144    | 95.4%   |
-| 9     | 0.223     | 0.139    | 95.6%   |
-| 10    | 0.216     | 0.137    | 95.6%   |
+| 1     | 5.179     | 3.854    | 26.7%   |
+| 5     | 1.604     | 0.819    | 82.2%   |
+| 10    | 0.844     | 0.336    | 92.1%   |
+| 15    | 0.622     | 0.232    | 94.5%   |
+| 20    | 0.575     | 0.215    | 94.9%   |
 
+- **Eval**: val_loss=0.229, val_acc=95.42%, mean_entropy=0.213 nats
 - Val loss still lower than train loss (no overfitting)
-- Accuracy plateaus ~95.6% by epoch 9-10
+- Accuracy plateau ~94.9% vs 95.6% for d_model=256 (only -0.7% with 3.6x fewer params)
 - Checkpoint: `checkpoints/chess_v2_1k.pt`
-- LR decayed to ~0 by final epoch (cosine T_max = total_steps)
+
+## Scaling Insight: d_model=128 vs 256 on 1k games
+- 3.6x param reduction (10.1M -> 2.8M) costs only ~0.7% accuracy
+- Smaller model needs ~2x more epochs to converge but trains faster per epoch
+- For 1k games, d_model=128 is likely capacity-appropriate; d_model=256 was overparameterized
 
 ## Eval: chess_v2_50games.pt on data/games.pgn (2026-03-08)
 - val_loss=7.17, val_accuracy=0.52%, mean_entropy=5.92 nats
@@ -79,6 +83,10 @@
   - Entropy by phase: early=0.76, mid=0.98, late=1.62 nats
   - Model very confident on common patterns (e2e4 70%, Nc3/Bg7/O-O 99%+)
 - **Critical hook trick**: Must call `torch.backends.mha.set_fastpath_enabled(False)` when monkey-patching encoder self_attn.forward in no_grad mode, otherwise `torch._transformer_encoder_layer_fwd` fastpath bypasses `self_attn.forward` entirely
+
+## Bug Fix: evaluate_v2.py max_games (2026-03-08)
+- Was hardcoded to `max_games=0` (loads ALL games from file)
+- Fixed to use `cfg.data.max_games` from YAML config
 
 ## Key Patterns
 - `log_metrics` decorator logs per-step loss/LR (verbose output)

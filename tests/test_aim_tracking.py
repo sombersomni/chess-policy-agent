@@ -346,7 +346,7 @@ class TestTrackerCloseInFinally(unittest.TestCase):
             # Make trainer.train_epoch raise on second call
             trainer_inst = MockTrainer.return_value
             trainer_inst.train_epoch.side_effect = [
-                0.5,
+                {"train_loss": 0.5, "train_accuracy": 0.8},
                 RuntimeError("boom"),
             ]
             trainer_inst.evaluate.return_value = {

@@ -159,27 +159,42 @@ class Phase1Trainer:
         loss_val = loss.detach().item()
         self._global_step += 1
         self._tracker.track_step(loss_val, self._global_step)
+        with torch.no_grad():
+            preds = logits.detach().argmax(-1)
+            mask = batch.target_tokens != PAD_IDX
+            self._step_correct: int = (
+                preds[mask] == batch.target_tokens[mask]
+            ).sum().item()
+            self._step_total: int = mask.sum().item()
         return loss_val
 
-    @log_metrics
-    def train_epoch(self, loader: DataLoader) -> float:
-        """Run one full epoch and return the mean loss.
+    def train_epoch(self, loader: DataLoader) -> dict[str, float]:
+        """Run one full epoch, returning mean loss and top-1 train accuracy.
 
         Args:
             loader: DataLoader yielding GameTurnBatch instances.
 
         Returns:
-            Mean loss across all batches in the epoch.
+            Dict with keys 'train_loss' and 'train_accuracy'.
 
         Example:
-            >>> avg_loss = trainer.train_epoch(loader)
+            >>> metrics = trainer.train_epoch(loader)
+            >>> metrics['train_loss']
+            2.5
         """
         total_loss = 0.0
+        correct = 0
+        total = 0
         steps = 0
         for batch in loader:
             total_loss += self.train_step(batch)
+            correct += getattr(self, "_step_correct", 0)
+            total += getattr(self, "_step_total", 0)
             steps += 1
-        return total_loss / max(steps, 1)
+        return {
+            "train_loss": total_loss / max(steps, 1),
+            "train_accuracy": correct / max(total, 1),
+        }
 
     def evaluate(self, loader: DataLoader) -> dict[str, float]:
         """Evaluate the model on a validation DataLoader.

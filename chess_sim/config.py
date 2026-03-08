@@ -57,7 +57,8 @@ class TrainerConfig:
 
     learning_rate: float = 3e-4
     weight_decay: float = 0.01
-    warmup_fraction: float = 0.25
+    warmup_fraction: float = 0.05
+    decay_start_fraction: float = 0.5
     min_lr: float = 1e-5
     label_smoothing: float = 0.0
     gradient_clip: float = 1.0
@@ -65,6 +66,14 @@ class TrainerConfig:
     epochs: int = 10
     resume: str = ""
     checkpoint: str = ""
+
+    def __post_init__(self) -> None:
+        """Validate schedule fractions are logically ordered."""
+        if not (0 < self.warmup_fraction < self.decay_start_fraction < 1):
+            raise ValueError(
+                f"Must satisfy 0 < warmup_fraction ({self.warmup_fraction}) "
+                f"< decay_start_fraction ({self.decay_start_fraction}) < 1"
+            )
 
 
 @dataclass

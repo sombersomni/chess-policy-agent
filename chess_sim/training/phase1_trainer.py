@@ -54,7 +54,7 @@ class Phase1Trainer:
     Owns:
       model:     ChessModel (encoder + decoder)
       optimizer: AdamW
-      scheduler: LinearLR warmup (warmup_fraction of total_steps) + CosineAnnealingLR (eta_min=min_lr)
+      scheduler: LinearLR warmup → ConstantLR plateau → CosineAnnealingLR decay (eta_min=min_lr)
       criterion: CrossEntropyLoss (ignore_index=PAD_IDX, label_smoothing)
 
     Example:
@@ -96,12 +96,22 @@ class Phase1Trainer:
         warmup_steps = max(
             int(cfg.trainer.warmup_fraction * total_steps), 1
         )
-        cosine_steps = max(total_steps - warmup_steps, 1)
+        decay_start = max(
+            int(cfg.trainer.decay_start_fraction * total_steps),
+            warmup_steps + 1,
+        )
+        constant_steps = decay_start - warmup_steps
+        cosine_steps = max(total_steps - decay_start, 1)
         warmup = torch.optim.lr_scheduler.LinearLR(
             self.optimizer,
             start_factor=1e-4,
             end_factor=1.0,
             total_iters=warmup_steps,
+        )
+        constant = torch.optim.lr_scheduler.ConstantLR(
+            self.optimizer,
+            factor=1.0,
+            total_iters=constant_steps,
         )
         cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer,
@@ -110,8 +120,8 @@ class Phase1Trainer:
         )
         self.scheduler = torch.optim.lr_scheduler.SequentialLR(
             self.optimizer,
-            schedulers=[warmup, cosine],
-            milestones=[warmup_steps],
+            schedulers=[warmup, constant, cosine],
+            milestones=[warmup_steps, decay_start],
         )
         self.criterion = nn.CrossEntropyLoss(
             ignore_index=PAD_IDX,

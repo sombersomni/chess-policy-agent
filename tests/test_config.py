@@ -122,14 +122,15 @@ class TestTrainerConfig(unittest.TestCase):
         self.assertEqual(len(enc.transformer.layers), 2)
 
     def test_tc11_warmup_fraction_computed_correctly(self) -> None:
-        """TC11: Phase1Trainer computes warmup_steps from warmup_fraction."""
+        """TC11: Phase1Trainer first milestone equals warmup_steps."""
         from chess_sim.config import ChessModelV2Config
         from chess_sim.training.phase1_trainer import Phase1Trainer
         cfg = ChessModelV2Config()
-        cfg.trainer.warmup_fraction = 0.25
+        cfg.trainer.warmup_fraction = 0.05
+        cfg.trainer.decay_start_fraction = 0.5
         trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
-        milestone = trainer.scheduler._milestones[0]
-        self.assertEqual(milestone, 250)
+        warmup_milestone = trainer.scheduler._milestones[0]
+        self.assertEqual(warmup_milestone, 50)  # int(0.05 * 1000)
 
     def test_tc12_min_lr_wired_to_cosine(self) -> None:
         """TC12: Phase1Trainer passes min_lr as eta_min to CosineAnnealingLR."""
@@ -138,8 +139,26 @@ class TestTrainerConfig(unittest.TestCase):
         cfg = ChessModelV2Config()
         cfg.trainer.min_lr = 1e-6
         trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
-        eta_min = trainer.scheduler._schedulers[1].eta_min
+        # 3-phase schedule: [warmup, constant, cosine] — cosine is index 2
+        eta_min = trainer.scheduler._schedulers[2].eta_min
         self.assertAlmostEqual(eta_min, 1e-6, places=10)
+
+    def test_tc12b_decay_start_milestone_correct(self) -> None:
+        """TC12b: Phase1Trainer second milestone equals decay_start step."""
+        from chess_sim.config import ChessModelV2Config
+        from chess_sim.training.phase1_trainer import Phase1Trainer
+        cfg = ChessModelV2Config()
+        cfg.trainer.warmup_fraction = 0.05
+        cfg.trainer.decay_start_fraction = 0.5
+        trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
+        decay_milestone = trainer.scheduler._milestones[1]
+        self.assertEqual(decay_milestone, 500)  # int(0.5 * 1000)
+
+    def test_tc12c_invalid_fractions_raise(self) -> None:
+        """TC12c: TrainerConfig raises when warmup_fraction >= decay_start_fraction."""
+        from chess_sim.config import TrainerConfig
+        with self.assertRaises(ValueError):
+            TrainerConfig(warmup_fraction=0.5, decay_start_fraction=0.3)
 
     def test_tc13_label_smoothing_wired_to_criterion(self) -> None:
         """TC13: Phase1Trainer passes label_smoothing to CrossEntropyLoss."""

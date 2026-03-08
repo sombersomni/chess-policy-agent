@@ -32,23 +32,23 @@
 ## Training Run: 1k Games, d_model=256, 10 epochs (2026-03-08, SUPERSEDED)
 - 10.1M params, ~61k samples, final: train_loss=0.216, val_loss=0.137, val_acc=95.6%
 
-## Training Run: 1k Games, d_model=128, 20 epochs (2026-03-08, CURRENT)
+## Training Run: 1k Games, d_model=128, 20 epochs (2026-03-08, CURRENT, with gap tracking)
 - **Config**: `configs/train_v2_1k.yaml`
 - **Data**: 1k lichess games -> 60,060 samples (54,054 train / 6,006 val), bs=64, winners_only
 - **Params**: 2,830,899 (~3.6x fewer than d_model=256)
-- **Device**: CUDA (RTX 4070 SUPER), ~30s/epoch, total ~10min
+- **Device**: CUDA (RTX 4070 SUPER), ~30s/epoch, total ~10.5min
 
-| Epoch | Train Loss | Val Loss | Val Acc |
-|-------|-----------|----------|---------|
-| 1     | 5.179     | 3.854    | 26.7%   |
-| 5     | 1.604     | 0.819    | 82.2%   |
-| 10    | 0.844     | 0.336    | 92.1%   |
-| 15    | 0.622     | 0.232    | 94.5%   |
-| 20    | 0.575     | 0.215    | 94.9%   |
+| Epoch | Train Loss | Train Acc | Val Loss | Val Acc | Gap (val-train) |
+|-------|-----------|-----------|----------|---------|-----------------|
+| 1     | 5.179     | 13.7%     | 3.855    | 26.7%   | +13.0%          |
+| 5     | 1.604     | 64.2%     | 0.817    | 82.2%   | +18.1%          |
+| 10    | 0.842     | 79.0%     | 0.337    | 92.2%   | +13.2%          |
+| 15    | 0.621     | 83.9%     | 0.230    | 94.6%   | +10.7%          |
+| 20    | 0.573     | 85.1%     | 0.214    | 95.0%   | +9.9%           |
 
-- **Eval**: val_loss=0.229, val_acc=95.42%, mean_entropy=0.213 nats
-- Val loss still lower than train loss (no overfitting)
-- Accuracy plateau ~94.9% vs 95.6% for d_model=256 (only -0.7% with 3.6x fewer params)
+- **Gap trend**: peaks at epoch 3 (+20.5%), then monotonically decreases to +9.9%
+- **Positive gap** (val > train) is due to dropout/regularization active during train metric computation
+- No overfitting; gap stabilizes at epochs 18-20
 - Checkpoint: `checkpoints/chess_v2_1k.pt`
 
 ## Scaling Insight: d_model=128 vs 256 on 1k games

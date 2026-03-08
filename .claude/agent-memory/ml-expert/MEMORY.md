@@ -7,7 +7,7 @@
 - `chess_sim/config.py` -- ChessModelV2Config, load_v2_config()
 - `scripts/train_v2.py` -- Phase 1 training (supports real PGN via --pgn and synthetic)
 - `scripts/evaluate_v2.py` -- v2 evaluation script (val_loss, val_accuracy, mean_entropy)
-- Virtual env: `venv/` at project root
+- Virtual env: `.venv/` at project root
 
 ## v2 Architecture
 - d_model=256, encoder 6-layer, decoder 4-layer, 8-head, vocab=1971
@@ -65,6 +65,20 @@
 ## Bug Fix: Phase1Trainer.evaluate() variable-length concat (2026-03-08)
 - torch.cat on all_logits failed when batches had different seq lens T
 - Fix: compute entropy per-batch with weighted sum, avoid cat entirely
+
+## Deep Inspection: chess_v2_1k.pt (2026-03-08)
+- **Script**: `scripts/inspect_v2.py` + `configs/inspect_v2.yaml`
+- **Run**: `source .venv/bin/activate && python -m scripts.inspect_v2`
+- **Virtual env**: `.venv/` (not `venv/`)
+- **Findings**:
+  - Weight sparsity <0.4% everywhere (no dead weights)
+  - Piece embedding cosine sims: ROOK-QUEEN=0.81, BISHOP-ROOK=0.80, BISHOP-QUEEN=0.78
+  - PAWN anti-correlated with all pieces (-0.74 to -0.86)
+  - QUEEN L2 norm=2.09 (highest), EMPTY=0.23 (lowest) -- norm ~ piece value
+  - PLAYER vs OPPONENT nearly orthogonal (cos=-0.03)
+  - Entropy by phase: early=0.76, mid=0.98, late=1.62 nats
+  - Model very confident on common patterns (e2e4 70%, Nc3/Bg7/O-O 99%+)
+- **Critical hook trick**: Must call `torch.backends.mha.set_fastpath_enabled(False)` when monkey-patching encoder self_attn.forward in no_grad mode, otherwise `torch._transformer_encoder_layer_fwd` fastpath bypasses `self_attn.forward` entirely
 
 ## Key Patterns
 - `log_metrics` decorator logs per-step loss/LR (verbose output)

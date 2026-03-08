@@ -29,4 +29,17 @@ def make_tracker(cfg: AimConfig) -> MetricTracker:
         If aim package is not installed, returns NoOpTracker and logs
         a warning instead of raising ImportError.
     """
-    raise NotImplementedError("To be implemented")
+    from chess_sim.tracking.noop_tracker import NoOpTracker
+
+    if not cfg.enabled:
+        return NoOpTracker()
+    try:
+        import aim  # noqa: F401
+    except ImportError:
+        logger.warning(
+            "aim not installed; falling back to NoOpTracker"
+        )
+        return NoOpTracker()
+
+    from chess_sim.tracking.aim_tracker import AimTracker
+    return AimTracker(cfg)

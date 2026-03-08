@@ -40,7 +40,22 @@ class AimTracker:
         Raises:
             NotImplementedError: Stub — to be implemented.
         """
-        raise NotImplementedError("To be implemented")
+        self._log_every_n: int = cfg.log_every_n_steps
+        if run is not None:
+            self._run = run
+        else:
+            import aim
+            self._run = aim.Run(
+                experiment=cfg.experiment_name,
+                repo=cfg.repo,
+                log_system_params=False,
+                capture_terminal_logs=False,
+            )
+        self._run["hparams"] = {
+            "experiment": cfg.experiment_name,
+            "repo": cfg.repo,
+            "log_every_n_steps": cfg.log_every_n_steps,
+        }
 
     def track_step(self, loss: float, step: int) -> None:
         """Log train_loss at step if step > 0 and step % N == 0.
@@ -58,7 +73,8 @@ class AimTracker:
         Edge cases:
             Step 0 is never logged (pre-training guard).
         """
-        raise NotImplementedError("To be implemented")
+        if step > 0 and step % self._log_every_n == 0:
+            self._run.track(loss, name="train_loss", step=step)
 
     def track_epoch(
         self, metrics: dict[str, float], epoch: int, lr: float
@@ -76,7 +92,9 @@ class AimTracker:
         Example:
             >>> tracker.track_epoch({"val_loss": 2.1}, epoch=1, lr=3e-4)
         """
-        raise NotImplementedError("To be implemented")
+        for k, v in metrics.items():
+            self._run.track(v, name=k, epoch=epoch)
+        self._run.track(lr, name="lr", epoch=epoch)
 
     def close(self) -> None:
         """Flush and seal the aim Run.
@@ -87,4 +105,4 @@ class AimTracker:
         Example:
             >>> tracker.close()
         """
-        raise NotImplementedError("To be implemented")
+        self._run.close()

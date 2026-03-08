@@ -1,0 +1,36 @@
+# Simulation configuration for scripts/simulate.py
+#
+# mode: pgn | random | agent
+#   pgn    -- replay a recorded game; no model required
+#   random -- random-legal-move game; no model required
+#   agent  -- load checkpoint and show predictions before each move
+#
+# For pgn / agent modes: set pgn to your PGN or PGN.zst file path.
+# For agent mode:        also set checkpoint to your .pt file path.
+
+mode: pgn
+pgn: ""                                    # e.g. data/lichess_db_standard_rated_2013-01.pgn.zst
+game_index: 0                              # zero-based game index within the PGN file
+checkpoint: ""                             # e.g. checkpoints/chess_v2_1k.pt
+tick_rate: 0.5                             # seconds to pause between plies
+top_n: 3                                   # number of agent predictions to display
+max_plies: 200                             # truncation limit for random mode
+use_unicode: true                          # false = ASCII piece symbols (P N B R Q K)
+
+# Encoder architecture -- must match the checkpoint being loaded.
+model:
+  d_model: 128
+  n_heads: 8
+  n_layers: 6
+  dim_feedforward: 512
+  dropout: 0.1
+
+# Decoder architecture -- must match the checkpoint being loaded.
+decoder:
+  d_model: 128
+  n_heads: 8
+  n_layers: 4
+  dim_feedforward: 512
+  dropout: 0.1
+  max_seq_len: 512
+  move_vocab_size: 1971

@@ -20,7 +20,6 @@ from typing import Any
 
 import yaml
 
-
 # ---------------------------------------------------------------------------
 # Sub-configs (mirror the top-level YAML sections exactly)
 # ---------------------------------------------------------------------------
@@ -310,6 +309,72 @@ class PreprocessV2Config:
     split: SplitConfig = field(default_factory=SplitConfig)
     processing: ProcessingConfig = field(
         default_factory=ProcessingConfig
+    )
+
+
+# ---------------------------------------------------------------------------
+# Simulation config
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SimulateConfig:
+    """Root config for scripts/simulate.py.
+
+    Controls simulation mode, data sources, model architecture, and display.
+
+    Attributes:
+        mode: "pgn" | "random" | "agent".
+        pgn: Path to PGN or PGN.zst file (required for pgn/agent modes).
+        game_index: Zero-based game index within the PGN file.
+        checkpoint: Path to .pt model checkpoint (required for agent mode).
+        tick_rate: Seconds to pause between plies.
+        top_n: Number of agent predictions to display.
+        max_plies: Maximum plies for random mode before truncation.
+        use_unicode: Use Unicode piece symbols when True.
+        model: Encoder architecture hyperparameters.
+        decoder: Decoder architecture hyperparameters.
+    """
+
+    mode: str = "pgn"
+    pgn: str = ""
+    game_index: int = 0
+    checkpoint: str = ""
+    tick_rate: float = 0.5
+    top_n: int = 3
+    max_plies: int = 200
+    use_unicode: bool = True
+    model: ModelConfig = field(default_factory=ModelConfig)
+    decoder: DecoderConfig = field(default_factory=DecoderConfig)
+
+
+def load_simulate_config(path: Path) -> SimulateConfig:
+    """Load SimulateConfig from a YAML file.
+
+    Unknown keys raise TypeError immediately (no silent misconfiguration).
+
+    Args:
+        path: Path to the YAML config file.
+
+    Returns:
+        Fully populated SimulateConfig.
+
+    Raises:
+        FileNotFoundError: If path does not exist.
+        TypeError: If YAML contains unknown keys for any section.
+
+    Example:
+        >>> cfg = load_simulate_config(Path("configs/simulate.yaml"))
+        >>> cfg.mode
+        'pgn'
+    """
+    raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
+    model_raw = raw.pop("model", {})
+    decoder_raw = raw.pop("decoder", {})
+    return SimulateConfig(
+        model=ModelConfig(**model_raw),
+        decoder=DecoderConfig(**decoder_raw),
+        **raw,
     )
 
 

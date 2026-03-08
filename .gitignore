@@ -6,6 +6,10 @@ venv
 env/
 env
 
+# Python package directories named 'env' inside the project are NOT ignored.
+!chess_sim/env/
+!tests/env/
+
 # Python
 __pycache__/
 *.py[cod]

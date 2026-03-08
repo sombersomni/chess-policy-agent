@@ -200,8 +200,8 @@ class Phase1Trainer:
         total_loss = 0.0
         correct = 0
         total = 0
-        all_logits: list[Tensor] = []
-        all_masks: list[Tensor] = []
+        entropy_sum = 0.0
+        entropy_count = 0
         with torch.no_grad():
             for batch in loader:
                 batch = _to_device(batch, self.device)
@@ -224,16 +224,16 @@ class Phase1Trainer:
                     preds[mask] == batch.target_tokens[mask]
                 ).sum().item()
                 total += mask.sum().item()
-                all_logits.append(logits)
-                all_masks.append(mask)
+                # Accumulate entropy per batch (weighted by valid positions)
+                n_valid = mask.sum().item()
+                if n_valid > 0:
+                    probs = torch.softmax(logits, dim=-1)
+                    log_probs = torch.log_softmax(logits, dim=-1)
+                    h = -(probs * log_probs).sum(dim=-1)
+                    entropy_sum += h[mask].sum().item()
+                    entropy_count += n_valid
         n_batches = max(len(loader), 1)
-        # Compute mean entropy over all validation logits
-        if all_logits:
-            cat_logits = torch.cat(all_logits, dim=0)
-            cat_masks = torch.cat(all_masks, dim=0)
-            mean_h = _mean_entropy(cat_logits, cat_masks)
-        else:
-            mean_h = 0.0
+        mean_h = entropy_sum / max(entropy_count, 1)
         metrics = {
             "val_loss": total_loss / n_batches,
             "val_accuracy": correct / max(total, 1),

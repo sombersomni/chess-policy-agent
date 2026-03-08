@@ -1,0 +1,49 @@
+# Virtual environments — rebuilt inside the container
+venv/
+.venv/
+env/
+
+# Python bytecode — regenerated at runtime
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Large data files — mounted as volumes instead
+data/.shard_cache/
+data/processed/
+data/*.zst
+data/*.pgn
+checkpoints/
+*.pt
+
+# Experiment tracking state — mounted or regenerated
+.aim/
+
+# Git history not needed in build context
+.git/
+.gitignore
+
+# IDE and OS artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Testing artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment variables
+.env
+.env.*
+
+# Docker files themselves
+Dockerfile
+docker-compose.yml

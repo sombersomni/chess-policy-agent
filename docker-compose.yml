@@ -1,0 +1,73 @@
+# ============================================================
+# chess-sim: Docker Compose for local development
+#
+# Services:
+#   dev-gpu  — GPU-enabled container for training/evaluation
+#   dev-cpu  — CPU-only container for unit tests and scripting
+#
+# Usage:
+#   # GPU training (requires nvidia-container-toolkit):
+#   docker-compose up dev-gpu
+#   docker-compose run dev-gpu python -m scripts.train_real --config configs/train_50k.yaml
+#
+#   # CPU unit tests:
+#   docker-compose run dev-cpu python -m unittest discover -s tests -p "test_*.py"
+#
+#   # Interactive shell:
+#   docker-compose run dev-cpu
+#   docker-compose run dev-gpu
+#
+#   # Rebuild after requirements.txt changes:
+#   docker-compose build
+# ============================================================
+
+services:
+  # ---- GPU service: training and evaluation --------------------------------
+  dev-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chess-sim:dev
+    container_name: chess-sim-gpu
+    stdin_open: true
+    tty: true
+    # Source code mounted read-write so edits on host are live
+    volumes:
+      - .:/workspace
+      - ./checkpoints:/workspace/checkpoints
+      - ./data:/workspace/data
+    working_dir: /workspace
+    # Shared memory for PyTorch DataLoader (default 64MB is too small)
+    shm_size: "2g"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      # Force PyTorch to see the GPU
+      - TORCH_DEVICE=cuda
+
+  # ---- CPU service: unit tests and development -----------------------------
+  dev-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chess-sim:dev
+    container_name: chess-sim-cpu
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/workspace
+      - ./checkpoints:/workspace/checkpoints
+      - ./data:/workspace/data
+    working_dir: /workspace
+    shm_size: "512m"
+    environment:
+      # Force CPU-only mode even if GPU is available
+      - CUDA_VISIBLE_DEVICES=""
+      - TORCH_DEVICE=cpu

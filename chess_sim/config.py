@@ -185,6 +185,25 @@ class Phase2Config:
 
 
 @dataclass
+class AimConfig:
+    """Configuration for aim experiment tracking.
+
+    When enabled=False (default), the training pipeline uses NoOpTracker
+    and aim is never imported. This keeps aim as an optional dependency.
+
+    Example:
+        >>> cfg = AimConfig(enabled=True, experiment_name="sweep_lr")
+        >>> cfg.log_every_n_steps
+        50
+    """
+
+    enabled: bool = False
+    experiment_name: str = "chess_v2"
+    repo: str = ".aim"
+    log_every_n_steps: int = 50
+
+
+@dataclass
 class ChessModelV2Config:
     """Root config for the v2 encoder-decoder chess model."""
 
@@ -193,6 +212,7 @@ class ChessModelV2Config:
     decoder: DecoderConfig = field(default_factory=DecoderConfig)
     trainer: TrainerConfig = field(default_factory=TrainerConfig)
     phase2: Phase2Config = field(default_factory=Phase2Config)
+    aim: AimConfig = field(default_factory=AimConfig)
 
 
 def load_v2_config(path: Path) -> ChessModelV2Config:
@@ -223,6 +243,7 @@ def load_v2_config(path: Path) -> ChessModelV2Config:
         decoder=DecoderConfig(**raw.get("decoder", {})),
         trainer=TrainerConfig(**raw.get("trainer", {})),
         phase2=Phase2Config(**raw.get("phase2", {})),
+        aim=AimConfig(**raw.get("aim", {})),
     )
 
 

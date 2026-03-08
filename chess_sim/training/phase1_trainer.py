@@ -25,6 +25,8 @@ from chess_sim.config import (
 )
 from chess_sim.data.move_vocab import PAD_IDX
 from chess_sim.model.chess_model import ChessModel
+from chess_sim.tracking.noop_tracker import NoOpTracker
+from chess_sim.tracking.protocol import MetricTracker
 from chess_sim.training.trainer import log_metrics
 from chess_sim.types import GameTurnBatch
 
@@ -64,6 +66,7 @@ class Phase1Trainer:
         device: str = "cpu",
         total_steps: int = 10_000,
         v2_cfg: ChessModelV2Config | None = None,
+        tracker: MetricTracker | None = None,
     ) -> None:
         """Initialize model, optimizer, scheduler, and loss function.
 
@@ -71,6 +74,8 @@ class Phase1Trainer:
             device: Torch device string. Use 'cpu' for tests.
             total_steps: Total optimizer steps for scheduler.
             v2_cfg: Optional ChessModelV2Config. When None, uses defaults.
+            tracker: Optional MetricTracker for experiment logging.
+                     When None, uses NoOpTracker (silent fallback).
 
         Example:
             >>> trainer = Phase1Trainer(device="cpu")
@@ -107,6 +112,8 @@ class Phase1Trainer:
             ignore_index=PAD_IDX
         )
         self._gradient_clip = cfg.trainer.gradient_clip
+        self._tracker: MetricTracker = tracker or NoOpTracker()
+        self._global_step: int = 0
 
     @log_metrics
     def train_step(self, batch: GameTurnBatch) -> float:
@@ -148,7 +155,10 @@ class Phase1Trainer:
         )
         self.optimizer.step()
         self.scheduler.step()
-        return loss.detach().item()
+        loss_val = loss.detach().item()
+        self._global_step += 1
+        self._tracker.track_step(loss_val, self._global_step)
+        return loss_val
 
     @log_metrics
     def train_epoch(self, loader: DataLoader) -> float:
@@ -213,10 +223,13 @@ class Phase1Trainer:
                 ).sum().item()
                 total += mask.sum().item()
         n_batches = max(len(loader), 1)
-        return {
+        metrics = {
             "val_loss": total_loss / n_batches,
             "val_accuracy": correct / max(total, 1),
         }
+        # TODO: compute mean_entropy using _mean_entropy(); include in metrics dict
+        metrics["mean_entropy"] = float("nan")  # stub; replace in feature-dev
+        return metrics
 
     def save_checkpoint(self, path: Path) -> None:
         """Save model state_dict to a checkpoint file.
@@ -251,3 +264,30 @@ class Phase1Trainer:
         self.model.load_state_dict(ckpt["model"])
         self.optimizer.load_state_dict(ckpt["optimizer"])
         logger.info("Checkpoint loaded from %s", path)
+
+
+def _mean_entropy(logits: torch.Tensor, mask: torch.Tensor) -> float:
+    """Compute mean prediction entropy over non-PAD positions.
+
+    Computes H = -sum(p * log(p)) per position, then averages over
+    all positions where mask is True.
+
+    Args:
+        logits: Shape (B, T, V) raw logits from the decoder.
+        mask: Boolean mask (B, T); True = valid (non-PAD) position.
+
+    Returns:
+        Mean entropy in nats as a Python float.
+
+    Example:
+        >>> logits = torch.randn(2, 10, 1971)
+        >>> mask = torch.ones(2, 10, dtype=torch.bool)
+        >>> h = _mean_entropy(logits, mask)
+        >>> isinstance(h, float)
+        True
+
+    Edge cases:
+        If mask has no True entries, returns 0.0.
+        For peaked distributions (one-hot), entropy is near zero.
+    """
+    raise NotImplementedError("To be implemented")

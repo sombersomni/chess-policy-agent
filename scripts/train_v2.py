@@ -36,6 +36,7 @@ from chess_sim.data.pgn_sequence_dataset import (
     PGNSequenceCollator,
     PGNSequenceDataset,
 )
+from chess_sim.tracking import make_tracker
 from chess_sim.training.phase1_trainer import Phase1Trainer
 from scripts.train_real import generate_random_game
 
@@ -263,12 +264,14 @@ def main() -> None:
             num_workers=0,
         )
 
-    # Build trainer
+    # Build tracker and trainer
+    tracker = make_tracker(cfg.aim)
     total_steps = cfg.trainer.epochs * len(train_loader)
     trainer = Phase1Trainer(
         device=device,
         total_steps=max(total_steps, 1),
         v2_cfg=cfg,
+        tracker=tracker,
     )
 
     # Count parameters
@@ -286,47 +289,57 @@ def main() -> None:
     epoch_train_losses: list[float] = []
     epoch_val_metrics: list[dict[str, float]] = []
 
-    for epoch in range(1, cfg.trainer.epochs + 1):
-        avg_loss = trainer.train_epoch(train_loader)
-        epoch_train_losses.append(avg_loss)
+    try:
+        for epoch in range(1, cfg.trainer.epochs + 1):
+            avg_loss = trainer.train_epoch(train_loader)
+            epoch_train_losses.append(avg_loss)
 
-        val_metrics = trainer.evaluate(val_loader)
-        epoch_val_metrics.append(val_metrics)
+            val_metrics = trainer.evaluate(val_loader)
+            epoch_val_metrics.append(val_metrics)
 
+            lr = trainer.optimizer.param_groups[0]["lr"]
+            tracker.track_epoch(val_metrics, epoch, lr)
+
+            logger.info(
+                "Epoch %02d: train_loss=%.4f | "
+                "val_loss=%.4f | val_acc=%.4f",
+                epoch,
+                avg_loss,
+                val_metrics["val_loss"],
+                val_metrics["val_accuracy"],
+            )
+
+        # Summary
+        first, last = epoch_train_losses[0], epoch_train_losses[-1]
         logger.info(
-            "Epoch %02d: train_loss=%.4f | "
-            "val_loss=%.4f | val_acc=%.4f",
-            epoch,
-            avg_loss,
-            val_metrics["val_loss"],
-            val_metrics["val_accuracy"],
+            "Train loss: %.4f -> %.4f (delta=%+.4f)",
+            first, last, last - first,
         )
+        if epoch_val_metrics:
+            best_val = min(
+                m["val_loss"] for m in epoch_val_metrics
+            )
+            best_acc = max(
+                m["val_accuracy"] for m in epoch_val_metrics
+            )
+            logger.info(
+                "Best val_loss=%.4f | Best val_acc=%.4f",
+                best_val, best_acc,
+            )
 
-    # Summary
-    first, last = epoch_train_losses[0], epoch_train_losses[-1]
-    logger.info(
-        "Train loss: %.4f -> %.4f (delta=%+.4f)",
-        first, last, last - first,
-    )
-    if epoch_val_metrics:
-        best_val = min(m["val_loss"] for m in epoch_val_metrics)
-        best_acc = max(m["val_accuracy"] for m in epoch_val_metrics)
-        logger.info(
-            "Best val_loss=%.4f | Best val_acc=%.4f",
-            best_val, best_acc,
-        )
+        # Save checkpoint
+        if cfg.trainer.checkpoint:
+            ckpt_path = Path(cfg.trainer.checkpoint)
+            ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+            trainer.save_checkpoint(ckpt_path)
+            logger.info("Checkpoint saved to %s", ckpt_path)
 
-    # Save checkpoint
-    if cfg.trainer.checkpoint:
-        ckpt_path = Path(cfg.trainer.checkpoint)
-        ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        trainer.save_checkpoint(ckpt_path)
-        logger.info("Checkpoint saved to %s", ckpt_path)
-
-    # Cleanup temp PGN (only if synthetic)
-    if is_synthetic:
-        pgn_path.unlink(missing_ok=True)
-        logger.info("Cleaned up temp PGN: %s", pgn_path)
+        # Cleanup temp PGN (only if synthetic)
+        if is_synthetic:
+            pgn_path.unlink(missing_ok=True)
+            logger.info("Cleaned up temp PGN: %s", pgn_path)
+    finally:
+        tracker.close()
 
 
 if __name__ == "__main__":

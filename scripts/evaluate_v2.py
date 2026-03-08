@@ -101,7 +101,7 @@ def main() -> None:
     logger.info("Loading dataset from %s ...", cfg.data.pgn)
     dataset = PGNSequenceDataset(
         pgn_path=cfg.data.pgn,
-        max_games=0,
+        max_games=cfg.data.max_games,
         winners_only=cfg.data.winners_only,
     )
     collator = PGNSequenceCollator()

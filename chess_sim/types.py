@@ -104,3 +104,81 @@ class LabelTensors(NamedTuple):
 
     src_sq: Tensor      # [B] long
     tgt_sq: Tensor      # [B] long
+
+
+# ---------------------------------------------------------------------------
+# v2 Encoder-Decoder types
+# ---------------------------------------------------------------------------
+
+
+class GameTurnSample(NamedTuple):
+    """A single game-turn sample for the encoder-decoder model.
+
+    Represents one ply: the board state plus the decoder's input/target
+    move-token sequences up to that point.
+
+    Attributes:
+        board_tokens:      Length-65 long tensor. CLS + 64 squares.
+        color_tokens:      Length-65 long tensor. Color indices.
+        trajectory_tokens: Length-65 long tensor. Trajectory roles 0-4.
+        move_tokens:       Length-T long tensor. Decoder input (SOS + prior moves).
+        target_tokens:     Length-T long tensor. Shifted targets (m_1, ..., m_t).
+        move_pad_mask:     Length-T bool tensor. True = PAD position.
+    """
+
+    board_tokens: Tensor        # [65] long
+    color_tokens: Tensor        # [65] long
+    trajectory_tokens: Tensor   # [65] long
+    move_tokens: Tensor         # [T] long — decoder input (SOS + prior moves)
+    target_tokens: Tensor       # [T] long — shifted targets
+    move_pad_mask: Tensor       # [T] bool — True = PAD
+
+
+class GameTurnBatch(NamedTuple):
+    """A collated batch of game-turn samples for the encoder-decoder model.
+
+    All tensors are padded to the maximum sequence length T in the batch.
+
+    Attributes:
+        board_tokens:      [B, 65] long. Piece-type indices.
+        color_tokens:      [B, 65] long. Color indices.
+        trajectory_tokens: [B, 65] long. Trajectory roles 0-4.
+        move_tokens:       [B, T] long. Decoder input sequences.
+        target_tokens:     [B, T] long. Shifted target sequences.
+        move_pad_mask:     [B, T] bool. True at PAD positions.
+    """
+
+    board_tokens: Tensor        # [B, 65] long
+    color_tokens: Tensor        # [B, 65] long
+    trajectory_tokens: Tensor   # [B, 65] long
+    move_tokens: Tensor         # [B, T] long
+    target_tokens: Tensor       # [B, T] long
+    move_pad_mask: Tensor       # [B, T] bool
+
+
+class DecoderOutput(NamedTuple):
+    """Output of MoveDecoder.forward().
+
+    Attributes:
+        logits: Float tensor [B, T, MOVE_VOCAB_SIZE]. Raw move logits per step.
+    """
+
+    logits: Tensor              # [B, T, MOVE_VOCAB_SIZE]
+
+
+class SelfPlayGame(NamedTuple):
+    """Record of a single self-play game for Phase 2 REINFORCE training.
+
+    Attributes:
+        moves:             UCI move strings in game order.
+        board_tokens:      One [65] long tensor per move.
+        color_tokens:      One [65] long tensor per move.
+        trajectory_tokens: One [65] long tensor per move.
+        outcome:           +1.0 for win, -1.0 for loss, 0.0 for draw.
+    """
+
+    moves: list[str]                    # UCI strings in game order
+    board_tokens: list[Tensor]          # one [65] per move
+    color_tokens: list[Tensor]          # one [65] per move
+    trajectory_tokens: list[Tensor]     # one [65] per move
+    outcome: float                      # +1.0 win / -1.0 loss / 0.0 draw

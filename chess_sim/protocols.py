@@ -262,3 +262,106 @@ class Cacheable(Protocol):
             False
         """
         ...
+
+
+# ---------------------------------------------------------------------------
+# v2 Encoder-Decoder protocols
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class MoveTokenizable(Protocol):
+    """Converts UCI move strings to integer vocabulary indices."""
+
+    def tokenize_move(self, uci: str) -> int:
+        """Convert a single UCI move string to its vocabulary index.
+
+        Args:
+            uci: UCI move string, e.g. "e2e4" or "e7e8q".
+
+        Returns:
+            Integer vocabulary index for the move.
+
+        Example:
+            >>> tok = MoveTokenizer()
+            >>> tok.tokenize_move("e2e4")
+            42
+        """
+        ...
+
+    def tokenize_game(self, moves: list[str]) -> Tensor:
+        """Convert a list of UCI moves to a LongTensor with SOS/EOS tokens.
+
+        Args:
+            moves: List of UCI move strings in game order.
+
+        Returns:
+            LongTensor of shape [T+2] with SOS prepended and EOS appended.
+
+        Example:
+            >>> tok.tokenize_game(["e2e4", "e7e5"])
+            tensor([1, 42, 57, 2])
+        """
+        ...
+
+    def build_legal_mask(self, legal_moves: list[str]) -> Tensor:
+        """Build a boolean mask over the move vocabulary for legal moves.
+
+        Args:
+            legal_moves: List of legal UCI move strings.
+
+        Returns:
+            BoolTensor of shape [VOCAB_SIZE]. True = legal, False = illegal.
+
+        Example:
+            >>> mask = tok.build_legal_mask(["e2e4", "d2d4"])
+            >>> mask.shape
+            torch.Size([1971])
+        """
+        ...
+
+
+@runtime_checkable
+class Decodable(Protocol):
+    """Autoregressive move decoder with cross-attention to encoder memory."""
+
+    def decode(
+        self,
+        move_tokens: Tensor,
+        memory: Tensor,
+        tgt_key_padding_mask: Tensor | None,
+    ) -> "DecoderOutput":
+        """Decode move tokens autoregressively using encoder memory.
+
+        Args:
+            move_tokens: LongTensor [B, T] of move token indices.
+            memory: FloatTensor [B, 65, d_model] encoder output.
+            tgt_key_padding_mask: Optional BoolTensor [B, T]. True = PAD.
+
+        Returns:
+            DecoderOutput with logits [B, T, MOVE_VOCAB_SIZE].
+
+        Example:
+            >>> out = decoder.decode(move_tok, memory, pad_mask)
+        """
+        ...
+
+
+@runtime_checkable
+class MoveEmbeddable(Protocol):
+    """Embeds move token sequences with positional encoding."""
+
+    def embed_moves(self, move_tokens: Tensor) -> Tensor:
+        """Embed a batch of move token sequences.
+
+        Args:
+            move_tokens: LongTensor [B, T] of move vocabulary indices.
+
+        Returns:
+            FloatTensor [B, T, d_model] of embedded move tokens.
+
+        Example:
+            >>> emb = MoveEmbedding()
+            >>> out = emb.embed_moves(tokens)  # [B, T, 256]
+        """
+        ...

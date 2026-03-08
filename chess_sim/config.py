@@ -149,3 +149,77 @@ def load_eval_config(path: Path) -> EvaluateConfig:
         data=DataConfig(**raw.get("data", {})),
         eval=EvalConfig(**raw.get("eval", {})),
     )
+
+
+# ---------------------------------------------------------------------------
+# v2 Encoder-Decoder configs
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DecoderConfig:
+    """Transformer decoder architecture hyperparameters."""
+
+    d_model: int = 256
+    n_heads: int = 8
+    n_layers: int = 4
+    dim_feedforward: int = 1024
+    dropout: float = 0.1
+    max_seq_len: int = 512
+    move_vocab_size: int = 1971
+
+
+@dataclass
+class Phase2Config:
+    """REINFORCE self-play training hyperparameters."""
+
+    delta_novelty: float = 0.05
+    delta_decay: float = 0.999
+    top_k_human: int = 5
+    win_reward: float = 1.0
+    loss_reward: float = -1.0
+    draw_reward: float = 0.0
+    min_win_rate: float = 0.55
+    self_play_games: int = 100
+    pretrained_ckpt: str = ""
+
+
+@dataclass
+class ChessModelV2Config:
+    """Root config for the v2 encoder-decoder chess model."""
+
+    data: DataConfig = field(default_factory=DataConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    decoder: DecoderConfig = field(default_factory=DecoderConfig)
+    trainer: TrainerConfig = field(default_factory=TrainerConfig)
+    phase2: Phase2Config = field(default_factory=Phase2Config)
+
+
+def load_v2_config(path: Path) -> ChessModelV2Config:
+    """Load ChessModelV2Config from a YAML file.
+
+    Parses data, model, decoder, trainer, and phase2 sections.
+    Unknown keys raise TypeError immediately.
+
+    Args:
+        path: Path to the YAML config file.
+
+    Returns:
+        Fully populated ChessModelV2Config.
+
+    Raises:
+        FileNotFoundError: If path does not exist.
+        TypeError: If YAML contains unknown keys for any section.
+
+    Example:
+        >>> cfg = load_v2_config(Path("configs/train_v2.yaml"))
+        >>> cfg.decoder.n_layers
+        4
+    """
+    raw: dict[str, Any] = yaml.safe_load(path.read_text()) or {}
+    return ChessModelV2Config(
+        data=DataConfig(**raw.get("data", {})),
+        model=ModelConfig(**raw.get("model", {})),
+        decoder=DecoderConfig(**raw.get("decoder", {})),
+        trainer=TrainerConfig(**raw.get("trainer", {})),
+        phase2=Phase2Config(**raw.get("phase2", {})),
+    )

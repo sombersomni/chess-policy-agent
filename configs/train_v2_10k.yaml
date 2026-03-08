@@ -1,0 +1,37 @@
+data:
+  pgn: data/lichess_db_standard_rated_2013-01.pgn.zst
+  max_games: 10000
+  batch_size: 64
+  train_frac: 0.9
+  winners_only: true
+  num_workers: 2
+
+model:
+  d_model: 128
+  n_heads: 8
+  n_layers: 6
+  dim_feedforward: 512
+  dropout: 0.1
+
+decoder:
+  d_model: 128
+  n_heads: 8
+  n_layers: 4
+  dim_feedforward: 512
+  dropout: 0.1
+  max_seq_len: 512
+  move_vocab_size: 1971
+
+trainer:
+  learning_rate: 0.0003
+  weight_decay: 0.01
+  warmup_steps: 500
+  gradient_clip: 1.0
+  epochs: 20
+  checkpoint: checkpoints/chess_v2_10k.pt
+
+aim:
+  enabled: true
+  experiment_name: chess_v2_10k
+  repo: .aim
+  log_every_n_steps: 50

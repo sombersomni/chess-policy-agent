@@ -3,21 +3,21 @@ data:
   max_games: 1000
   batch_size: 64
   train_frac: 0.9
-  winners_only: false
+  winners_only: true
   num_workers: 2
 
 model:
-  d_model: 256
+  d_model: 128
   n_heads: 8
   n_layers: 6
-  dim_feedforward: 1024
+  dim_feedforward: 512
   dropout: 0.1
 
 decoder:
-  d_model: 256
+  d_model: 128
   n_heads: 8
   n_layers: 4
-  dim_feedforward: 1024
+  dim_feedforward: 512
   dropout: 0.1
   max_seq_len: 512
   move_vocab_size: 1971
@@ -27,7 +27,7 @@ trainer:
   weight_decay: 0.01
   warmup_steps: 200
   gradient_clip: 1.0
-  epochs: 10
+  epochs: 20
   checkpoint: checkpoints/chess_v2_1k.pt
 
 aim:

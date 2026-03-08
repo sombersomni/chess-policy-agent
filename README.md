@@ -62,6 +62,39 @@ pip install -e .
 
 ---
 
+## Linting
+
+This project uses [ruff](https://docs.astral.sh/ruff/) for linting. Configuration lives in `pyproject.toml`.
+
+### Rules enforced
+
+| Code | Category | What it catches |
+|------|----------|----------------|
+| `E` | pycodestyle errors | Line too long (>88 chars), bad whitespace, indentation |
+| `W` | pycodestyle warnings | Trailing whitespace on lines |
+| `F` | pyflakes | Unused imports, undefined names |
+| `ANN` | flake8-annotations | Missing type annotations on args and return types |
+| `I` | isort | Unsorted or ungrouped imports |
+
+`tests/` is exempt from `ANN` rules.
+
+### Run the linter
+
+```bash
+source .venv/bin/activate
+
+# Check for violations
+python -m ruff check .
+
+# Auto-fix safe issues (unused imports, import ordering)
+python -m ruff check . --fix
+
+# Summary by rule code
+python -m ruff check . --statistics
+```
+
+---
+
 ## Running Tests
 
 All tests are CPU-only and deterministic.

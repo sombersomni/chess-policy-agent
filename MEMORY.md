@@ -23,6 +23,14 @@
 - **`itertools`** is preferred for iteration patterns.
 - Use **fixed arrays** when the number of items N is known and fixed.
 
+## Linting
+
+- **Tool**: `ruff>=0.4` (configured in `pyproject.toml`)
+- **Run**: `python -m ruff check .` / `python -m ruff check . --fix` for auto-fixes
+- **Rules**: `E` (line length/whitespace), `W` (trailing whitespace), `F` (unused imports/undefined names), `ANN` (missing type annotations), `I` (import ordering)
+- **Line limit**: 88 characters
+- `tests/*` exempt from `ANN` rules
+
 ## Typing
 
 - Use typing as strictly as you would in a statically typed language.

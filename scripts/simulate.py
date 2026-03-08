@@ -44,6 +44,44 @@ from chess_sim.env.terminal_renderer import TerminalRenderer
 # ---------------------------------------------------------------------------
 
 
+def _infer_configs_from_state(
+    state: dict,
+    model_cfg: ModelConfig,
+    decoder_cfg: DecoderConfig,
+) -> tuple[ModelConfig, DecoderConfig]:
+    """Override ModelConfig/DecoderConfig with dimensions read from state dict.
+
+    Args:
+        state: Model state dict loaded from checkpoint.
+        model_cfg: Baseline encoder config (n_heads/dropout kept from here).
+        decoder_cfg: Baseline decoder config (n_heads/dropout/etc kept).
+
+    Returns:
+        Tuple of (ModelConfig, DecoderConfig) matching the checkpoint.
+    """
+    from dataclasses import replace
+
+    enc_d = state["encoder.embedding.piece_emb.weight"].shape[1]
+    enc_ff = state["encoder.transformer.layers.0.linear1.weight"].shape[0]
+    enc_n = sum(
+        1 for k in state if k.startswith("encoder.transformer.layers.")
+        and k.endswith(".norm1.weight")
+    )
+    dec_d = state["decoder.move_embedding.token_emb.weight"].shape[1]
+    dec_ff = state["decoder.transformer.layers.0.linear1.weight"].shape[0]
+    dec_n = sum(
+        1 for k in state if k.startswith("decoder.transformer.layers.")
+        and k.endswith(".norm1.weight")
+    )
+    model_cfg = replace(
+        model_cfg, d_model=enc_d, n_layers=enc_n, dim_feedforward=enc_ff
+    )
+    decoder_cfg = replace(
+        decoder_cfg, d_model=dec_d, n_layers=dec_n, dim_feedforward=dec_ff
+    )
+    return model_cfg, decoder_cfg
+
+
 def _load_agent(
     checkpoint: str,
     model_cfg: ModelConfig,
@@ -53,10 +91,13 @@ def _load_agent(
 ) -> Policy:
     """Load ChessModel from checkpoint and wrap in ChessModelAgent.
 
+    Architecture dimensions are inferred from the checkpoint's state dict,
+    so the config does not need to match exactly.
+
     Args:
         checkpoint: Path to .pt checkpoint file.
-        model_cfg: Encoder architecture config.
-        decoder_cfg: Decoder architecture config.
+        model_cfg: Encoder architecture config (n_heads/dropout used as-is).
+        decoder_cfg: Decoder architecture config (n_heads/dropout used as-is).
         tokenizer: BoardTokenizer instance.
         vocab: MoveVocab instance.
 
@@ -73,9 +114,11 @@ def _load_agent(
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    model = ChessModel(model_cfg, decoder_cfg)
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state = ckpt.get("model", ckpt)
+    model_cfg, decoder_cfg = _infer_configs_from_state(state, model_cfg, decoder_cfg)
+
+    model = ChessModel(model_cfg, decoder_cfg)
     model.load_state_dict(state)
     model.eval()
 

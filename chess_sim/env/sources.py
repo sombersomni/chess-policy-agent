@@ -137,21 +137,22 @@ def _stream_pgn(pgn_path: Path) -> Iterator[chess.pgn.Game]:
 
         import zstandard
 
-        ctx = zstandard.ZstdDecompressor()
+        dctx = zstandard.ZstdDecompressor()
         with open(pgn_path, "rb") as fh:
-            text = ctx.decompress(fh.read()).decode("utf-8", errors="replace")
-        stream = io.StringIO(text)
+            with dctx.stream_reader(fh) as reader:
+                text_io = io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
+                while True:
+                    game = chess.pgn.read_game(text_io)
+                    if game is None:
+                        break
+                    yield game
     else:
-        stream = open(pgn_path, encoding="utf-8", errors="replace")  # noqa: SIM115
-
-    try:
-        while True:
-            game = chess.pgn.read_game(stream)
-            if game is None:
-                break
-            yield game
-    finally:
-        stream.close()
+        with open(pgn_path, encoding="utf-8", errors="replace") as fh:  # noqa: SIM115
+            while True:
+                game = chess.pgn.read_game(fh)
+                if game is None:
+                    break
+                yield game
 
 
 # ---------------------------------------------------------------------------
@@ -202,8 +203,15 @@ class PGNSource:
         Raises:
             IndexError: If game_index is out of range.
         """
-        games = list(_stream_pgn(self._pgn_path))
-        game = games[self._game_index]
+        game = None
+        for i, g in enumerate(_stream_pgn(self._pgn_path)):
+            if i == self._game_index:
+                game = g
+                break
+        if game is None:
+            raise IndexError(
+                f"game_index {self._game_index} exceeds the number of games in the file."
+            )
         self._game_moves = [
             move.uci() for move in game.mainline_moves()
         ]

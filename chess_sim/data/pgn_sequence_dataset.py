@@ -81,6 +81,7 @@ class PGNSequenceDataset(Dataset[GameTurnSample]):
         pgn_path: str,
         max_games: int = 0,
         winners_only: bool = False,
+        winners_side: bool = False,
     ) -> None:
         """Load and preprocess games from a PGN file.
 
@@ -91,6 +92,9 @@ class PGNSequenceDataset(Dataset[GameTurnSample]):
             pgn_path: Path to a PGN file (plain text or .zst).
             max_games: Maximum number of games to load. 0 = all.
             winners_only: If True, only include games with decisive result.
+            winners_side: If True, only include plies played by the
+                non-losing side. In decisive games this means the winner's
+                plies only; in drawn games all plies are kept.
 
         Example:
             >>> ds = PGNSequenceDataset("games.pgn", max_games=100)
@@ -98,7 +102,7 @@ class PGNSequenceDataset(Dataset[GameTurnSample]):
         super().__init__()
         self._samples: list[GameTurnSample] = []
         self._build(
-            Path(pgn_path), max_games, winners_only
+            Path(pgn_path), max_games, winners_only, winners_side
         )
 
     def _build(
@@ -106,6 +110,7 @@ class PGNSequenceDataset(Dataset[GameTurnSample]):
         pgn_path: Path,
         max_games: int,
         winners_only: bool,
+        winners_side: bool,
     ) -> None:
         """Parse PGN and build per-ply samples."""
         board_tok = BoardTokenizer()
@@ -121,6 +126,18 @@ class PGNSequenceDataset(Dataset[GameTurnSample]):
             ):
                 continue
 
+            # Determine the losing color (None for draws or unknown results).
+            # winners_side skips the loser's plies; draws have no loser.
+            if winners_side:
+                if result == "1-0":
+                    losing_color: chess.Color | None = chess.BLACK
+                elif result == "0-1":
+                    losing_color = chess.WHITE
+                else:
+                    losing_color = None  # draw — keep all plies
+            else:
+                losing_color = None
+
             board = game.board()
             moves = list(game.mainline_moves())
             if not moves:
@@ -130,6 +147,11 @@ class PGNSequenceDataset(Dataset[GameTurnSample]):
             uci_history: list[str] = []
 
             for t, move in enumerate(moves):
+                if losing_color is not None and board.turn == losing_color:
+                    uci_history.append(move.uci())
+                    move_history.append(move)
+                    board.push(move)
+                    continue
                 # Board state BEFORE this move
                 tb = board_tok.tokenize(board, board.turn)
                 traj = _make_trajectory_tokens(move_history)

@@ -112,6 +112,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only include games with decisive result.",
     )
     p.add_argument(
+        "--winners-side", action="store_true", default=False,
+        help="Only include plies by the non-losing side.",
+    )
+    p.add_argument(
         "--epochs", type=int, default=None,
         help="Number of training epochs.",
     )
@@ -155,6 +159,8 @@ def _merge_v2_config(
         cfg.data.max_games = args.max_games
     if args.winners_only:
         cfg.data.winners_only = True
+    if args.winners_side:
+        cfg.data.winners_side = True
     if args.batch_size is not None:
         cfg.data.batch_size = args.batch_size
     if args.epochs is not None:
@@ -246,6 +252,7 @@ def main() -> None:
             pgn_path=str(pgn_path),
             max_games=max_games,
             winners_only=cfg.data.winners_only,
+            winners_side=cfg.data.winners_side,
         )
         logger.info("Total samples: %d", len(full_ds))
 

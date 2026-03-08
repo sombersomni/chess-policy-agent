@@ -121,6 +121,54 @@ class TestTrainerConfig(unittest.TestCase):
         enc = ChessEncoder(ModelConfig(n_layers=2))
         self.assertEqual(len(enc.transformer.layers), 2)
 
+    def test_tc11_warmup_fraction_computed_correctly(self) -> None:
+        """TC11: Phase1Trainer computes warmup_steps from warmup_fraction."""
+        from chess_sim.config import ChessModelV2Config
+        from chess_sim.training.phase1_trainer import Phase1Trainer
+        cfg = ChessModelV2Config()
+        cfg.trainer.warmup_fraction = 0.25
+        trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
+        milestone = trainer.scheduler._milestones[0]
+        self.assertEqual(milestone, 250)
+
+    def test_tc12_min_lr_wired_to_cosine(self) -> None:
+        """TC12: Phase1Trainer passes min_lr as eta_min to CosineAnnealingLR."""
+        from chess_sim.config import ChessModelV2Config
+        from chess_sim.training.phase1_trainer import Phase1Trainer
+        cfg = ChessModelV2Config()
+        cfg.trainer.min_lr = 1e-6
+        trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
+        eta_min = trainer.scheduler._schedulers[1].eta_min
+        self.assertAlmostEqual(eta_min, 1e-6, places=10)
+
+    def test_tc13_label_smoothing_wired_to_criterion(self) -> None:
+        """TC13: Phase1Trainer passes label_smoothing to CrossEntropyLoss."""
+        from chess_sim.config import ChessModelV2Config
+        from chess_sim.training.phase1_trainer import Phase1Trainer
+        cfg = ChessModelV2Config()
+        cfg.trainer.label_smoothing = 0.1
+        trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
+        self.assertAlmostEqual(
+            trainer.criterion.label_smoothing, 0.1, places=6
+        )
+
+    def test_tc14_warmup_steps_yaml_raises(self) -> None:
+        """TC14: YAML with deprecated warmup_steps raises TypeError."""
+        import tempfile, textwrap
+        from pathlib import Path
+        from chess_sim.config import load_v2_config
+        yaml_str = textwrap.dedent("""\
+            trainer:
+              warmup_steps: 500
+        """)
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".yaml", delete=False
+        ) as f:
+            f.write(yaml_str)
+            tmp = Path(f.name)
+        with self.assertRaises(TypeError):
+            load_v2_config(tmp)
+
 
 if __name__ == "__main__":
     unittest.main()

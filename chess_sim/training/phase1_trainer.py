@@ -54,8 +54,8 @@ class Phase1Trainer:
     Owns:
       model:     ChessModel (encoder + decoder)
       optimizer: AdamW
-      scheduler: LinearLR warmup + CosineAnnealingLR
-      criterion: CrossEntropyLoss (ignore_index=PAD_IDX)
+      scheduler: LinearLR warmup (warmup_fraction of total_steps) + CosineAnnealingLR (eta_min=min_lr)
+      criterion: CrossEntropyLoss (ignore_index=PAD_IDX, label_smoothing)
 
     Example:
         >>> trainer = Phase1Trainer(device="cpu")
@@ -93,7 +93,9 @@ class Phase1Trainer:
             lr=cfg.trainer.learning_rate,
             weight_decay=cfg.trainer.weight_decay,
         )
-        warmup_steps = cfg.trainer.warmup_steps
+        warmup_steps = max(
+            int(cfg.trainer.warmup_fraction * total_steps), 1
+        )
         cosine_steps = max(total_steps - warmup_steps, 1)
         warmup = torch.optim.lr_scheduler.LinearLR(
             self.optimizer,
@@ -102,7 +104,9 @@ class Phase1Trainer:
             total_iters=warmup_steps,
         )
         cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=cosine_steps,
+            self.optimizer,
+            T_max=cosine_steps,
+            eta_min=cfg.trainer.min_lr,
         )
         self.scheduler = torch.optim.lr_scheduler.SequentialLR(
             self.optimizer,
@@ -110,7 +114,8 @@ class Phase1Trainer:
             milestones=[warmup_steps],
         )
         self.criterion = nn.CrossEntropyLoss(
-            ignore_index=PAD_IDX
+            ignore_index=PAD_IDX,
+            label_smoothing=cfg.trainer.label_smoothing,
         )
         self._gradient_clip = cfg.trainer.gradient_clip
         self._tracker: MetricTracker = tracker or NoOpTracker()

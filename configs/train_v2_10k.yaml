@@ -3,7 +3,8 @@ data:
   max_games: 10000
   batch_size: 64
   train_frac: 0.9
-  winners_only: true
+  winners_only: false
+  winners_side: true
   num_workers: 2
 
 model:
@@ -25,7 +26,9 @@ decoder:
 trainer:
   learning_rate: 0.0003
   weight_decay: 0.01
-  warmup_steps: 500
+  warmup_fraction: 0.25
+  min_lr: 0.00001
+  label_smoothing: 0.1
   gradient_clip: 1.0
   epochs: 20
   checkpoint: checkpoints/chess_v2_10k.pt

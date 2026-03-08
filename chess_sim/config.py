@@ -32,6 +32,7 @@ class DataConfig:
     num_games: int = 20
     max_games: int = 0
     winners_only: bool = False
+    winners_side: bool = False
     chunk_size: int = 1024
     num_workers: int = 2
     train_frac: float = 0.9
@@ -56,7 +57,9 @@ class TrainerConfig:
 
     learning_rate: float = 3e-4
     weight_decay: float = 0.01
-    warmup_steps: int = 1000
+    warmup_fraction: float = 0.25
+    min_lr: float = 1e-5
+    label_smoothing: float = 0.0
     gradient_clip: float = 1.0
     patience: int = 3
     epochs: int = 10

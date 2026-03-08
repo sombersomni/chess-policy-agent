@@ -1,0 +1,10 @@
+phase2:
+  ema_alpha:           0.995
+  gamma:               0.99
+  lambda_surprise:     0.5
+  draw_reward:         0.1
+  episodes_per_update: 1
+  max_episode_steps:   200
+  win_reward:          1.0
+  loss_reward:         -1.0
+  pretrained_ckpt:     checkpoints/chess_v2_1k.pt

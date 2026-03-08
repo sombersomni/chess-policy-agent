@@ -213,3 +213,52 @@ class RawTurnRecord(NamedTuple):
     outcome: int
     turn: int
     game_id: int
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 Self-Play types
+# ---------------------------------------------------------------------------
+
+
+class PlyTuple(NamedTuple):
+    """Per-ply record for one half-move during a self-play episode.
+
+    Recorded for both player and opponent plies; is_player_ply
+    distinguishes them. entropy is raw Shannon entropy H(probs) in
+    nats over the legal-masked distribution; EpisodeRecorder.finalize
+    applies softmax normalization.
+    """
+
+    board_tokens: Tensor
+    color_tokens: Tensor
+    traj_tokens: Tensor
+    move_prefix: Tensor
+    log_prob: Tensor
+    probs: Tensor
+    entropy: float
+    move_uci: str
+    is_player_ply: bool
+
+
+class EpisodeRecord(NamedTuple):
+    """Sealed record of a completed self-play episode.
+
+    plies contains all half-moves (player and opponent) in game order.
+    outcome is +1.0 win / -1.0 loss / draw_reward for draws.
+    Normalized entropies for player plies sum to 1.0 (softmax
+    applied in finalize).
+    """
+
+    plies: list[PlyTuple]
+    outcome: float
+    total_plies: int
+
+
+class ValueHeadOutput(NamedTuple):
+    """Output from ValueHeads.forward.
+
+    Both tensors have shape [B, 1].
+    """
+
+    v_win: Tensor
+    v_surprise: Tensor

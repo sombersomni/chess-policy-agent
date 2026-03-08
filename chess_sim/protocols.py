@@ -11,20 +11,22 @@ from typing import TYPE_CHECKING, Iterator, Protocol, runtime_checkable
 
 import chess
 import chess.pgn
-import torch
+import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 
 from chess_sim.types import (
     ChessBatch,
     EncoderOutput,
+    EpisodeRecord,
+    PlyTuple,
     PredictionOutput,
     RawTurnRecord,
     TokenizedBoard,
 )
 
 if TYPE_CHECKING:
-    from chess_sim.config import PreprocessV2Config
+    from chess_sim.config import Phase2Config, PreprocessV2Config
     from chess_sim.data.streaming_types import ManifestInfo, PreprocessConfig
 
 
@@ -452,4 +454,52 @@ class HDF5Preprocessable(Protocol):
 
     def run(self, config: "PreprocessV2Config") -> None:
         """Execute the complete preprocessing pipeline."""
+        ...
+
+
+# -------------------------------------------------------------------
+# Phase 2 Self-Play Protocols
+# -------------------------------------------------------------------
+
+
+@runtime_checkable
+class Recordable(Protocol):
+    """Accumulates per-ply data during a self-play episode."""
+
+    def record(self, ply: PlyTuple) -> None:
+        """Append a single ply (player or opponent) to the buffer."""
+        ...
+
+    def finalize(self, outcome: float) -> EpisodeRecord:
+        """Seal the episode, apply entropy normalization."""
+        ...
+
+    def reset(self) -> None:
+        """Clear internal buffer for a new episode."""
+        ...
+
+
+@runtime_checkable
+class Computable(Protocol):
+    """Converts an EpisodeRecord into a per-player-ply reward tensor."""
+
+    def compute(
+        self,
+        record: EpisodeRecord,
+        cfg: "Phase2Config",
+    ) -> Tensor:
+        """Return reward tensor of shape [T_player]."""
+        ...
+
+
+@runtime_checkable
+class Updatable(Protocol):
+    """Performs EMA parameter sync from player to opponent model."""
+
+    def step(
+        self,
+        player: nn.Module,
+        opponent: nn.Module,
+    ) -> None:
+        """Update opponent: theta_opp <- alpha*theta_opp + (1-alpha)*theta_player."""
         ...

@@ -182,17 +182,38 @@ class DecoderConfig:
 
 @dataclass
 class Phase2Config:
-    """REINFORCE self-play training hyperparameters."""
+    """Hyperparameters for Phase 2 self-play reinforcement learning."""
 
-    delta_novelty: float = 0.05
-    delta_decay: float = 0.999
-    top_k_human: int = 5
+    ema_alpha: float = 0.995
+    gamma: float = 0.99
+    lambda_surprise: float = 0.5
+    draw_reward: float = 0.1
+    episodes_per_update: int = 1
+    max_episode_steps: int = 200
     win_reward: float = 1.0
     loss_reward: float = -1.0
-    draw_reward: float = 0.0
-    min_win_rate: float = 0.55
-    self_play_games: int = 100
     pretrained_ckpt: str = ""
+
+    def __post_init__(self) -> None:
+        """Validate hyperparameter ranges."""
+        if not (0 < self.ema_alpha < 1):
+            raise ValueError(
+                f"ema_alpha must be in (0, 1), got {self.ema_alpha}"
+            )
+        if not (0 < self.gamma <= 1):
+            raise ValueError(
+                f"gamma must be in (0, 1], got {self.gamma}"
+            )
+        if self.lambda_surprise < 0:
+            raise ValueError(
+                "lambda_surprise must be >= 0, "
+                f"got {self.lambda_surprise}"
+            )
+        if self.episodes_per_update < 1:
+            raise ValueError(
+                "episodes_per_update must be >= 1, "
+                f"got {self.episodes_per_update}"
+            )
 
 
 @dataclass

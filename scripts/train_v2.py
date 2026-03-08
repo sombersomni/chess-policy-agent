@@ -23,6 +23,7 @@ import random
 import tempfile
 from pathlib import Path
 
+import chess
 import chess.pgn
 import torch
 from torch.utils.data import DataLoader, random_split
@@ -38,7 +39,6 @@ from chess_sim.data.pgn_sequence_dataset import (
 )
 from chess_sim.tracking import AimLogHandler, make_tracker
 from chess_sim.training.phase1_trainer import Phase1Trainer
-from scripts.train_real import generate_random_game
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Synthetic PGN generation
 # ---------------------------------------------------------------------------
+
+def generate_random_game(max_moves: int = 80) -> chess.pgn.Game:
+    """Play a game with uniformly random legal moves up to max_moves plies."""
+    board = chess.Board()
+    game = chess.pgn.Game()
+    node = game
+    while not board.is_game_over() and board.fullmove_number <= max_moves:
+        move = random.choice(list(board.legal_moves))
+        node = node.add_variation(move)
+        board.push(move)
+    game.headers["Result"] = board.result()
+    return game
+
 
 def write_synthetic_pgn(num_games: int, seed: int = 42) -> Path:
     """Generate random-legal-move games and write to a temp PGN file.

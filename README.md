@@ -1,21 +1,89 @@
 # chess-sim
 
-A BERT-style transformer encoder for chess position understanding. The model encodes board states as token sequences and predicts the current player's move (source and target squares) from the side-to-move's perspective.
+An encoder-decoder transformer for chess move prediction. The model treats move generation as a sequence-to-sequence translation problem: a 6-layer encoder reads the board state as a 65-token sequence (CLS + 64 squares, three parallel streams), producing a 65×d_model memory; a 4-layer autoregressive decoder cross-attends to that memory while generating the game's move sequence token-by-token from a 1971-token vocabulary. Trained with teacher forcing and cross-entropy loss.
 
 ## Architecture Overview
 
+### Token Construction
+
 ```mermaid
-graph TD
-    PGN[".zst PGN File"] --> Reader["StreamingPGNReader"]
-    Reader --> Sampler["ReservoirSampler"]
-    Sampler --> Tokenizer["BoardTokenizer"]
-    Tokenizer --> Trajectory["_make_trajectory_tokens()"]
-    Trajectory --> Dataset["ChessDataset"]
-    Dataset --> Loader["DataLoader"]
-    Loader --> Encoder["ChessEncoder (6-layer BERT)"]
-    Encoder --> Heads["PredictionHeads (2x Linear)"]
-    Heads --> Loss["LossComputer (CrossEntropy x2)"]
-    Loss --> Trainer["Trainer (AdamW + CosineAnnealingLR)"]
+flowchart LR
+    PGN[".pgn / .pgn.zst"]
+    Board["Board State\n(chess.Board)"]
+
+    subgraph BoardTokens["Board Tokens — length 65 (CLS + a1…h8)"]
+        direction TB
+        BT["board_tokens\nvocab 8: CLS / empty / P N B R Q K"]
+        CT["color_tokens\nvocab 3: CLS / player / opponent"]
+        TT["trajectory_tokens\nvocab 5: none / player prev-src / player prev-tgt\n         / opp prev-src / opp prev-tgt"]
+    end
+
+    subgraph MoveSeq["Move Sequence (per ply t)"]
+        direction TB
+        MS["move_tokens  [T]\nSOS + moves 0 … t-1  (decoder input)"]
+        MT["target_tokens [T]\nmoves 0 … t          (teacher-forcing targets)"]
+    end
+
+    PGN --> Board
+    Board --> BT & CT & TT
+    PGN --> MS & MT
+```
+
+### Model Architecture & Training Objective
+
+```mermaid
+flowchart TB
+    subgraph Inputs["Encoder Inputs  [B, 65]"]
+        direction LR
+        BT2["board_tokens"]
+        CT2["color_tokens"]
+        TT2["trajectory_tokens"]
+    end
+
+    subgraph EmbLayer["EmbeddingLayer"]
+        direction LR
+        PE["piece_emb\n(8 → d)"]
+        CE2["color_emb\n(3 → d)"]
+        SE["square_emb\n(65 → d)\nsin/cos init"]
+        TE["traj_emb\n(5 → d)"]
+        SUM["element-wise sum\n+ LayerNorm → [B, 65, d]"]
+        PE & CE2 & SE & TE --> SUM
+    end
+
+    subgraph EncBlock["ChessEncoder — 6-layer Transformer Encoder"]
+        direction TB
+        SA["Bidirectional Self-Attention\n8 heads · Pre-LN · × 6 layers"]
+        MEM["memory  [B, 65, d_model]"]
+        SA --> MEM
+    end
+
+    subgraph DecInput["Decoder Input"]
+        direction TB
+        MT2["move_tokens  [B, T]\n(SOS + prior moves)"]
+        ME["MoveEmbedding\ntoken emb + positional emb\n→ [B, T, d]"]
+        MT2 --> ME
+    end
+
+    subgraph DecBlock["MoveDecoder — 4-layer Transformer Decoder"]
+        direction TB
+        CSA["Causal Self-Attention\n8 heads · autoregressive mask"]
+        XA["Cross-Attention\n← memory [B, 65, d]"]
+        PROJ["Linear projection\n→ [B, T, 1971]"]
+        CSA --> XA --> PROJ
+    end
+
+    subgraph Task["Training Objective"]
+        direction TB
+        LOSS["CrossEntropyLoss\n(teacher forcing · ignore PAD)\npredict next move token"]
+        TGT["target_tokens [B, T]"]
+        TGT --> LOSS
+        PROJ --> LOSS
+    end
+
+    BT2 & CT2 & TT2 --> EmbLayer
+    EmbLayer --> EncBlock
+    EncBlock --> DecBlock
+    DecInput --> DecBlock
 ```
 
 ### Token Sequence

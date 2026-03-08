@@ -19,7 +19,9 @@ from chess_sim.model.embedding import D_MODEL, EmbeddingLayer
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.protocols import Embeddable, Encodable
 from chess_sim.types import ChessBatch, TrainingExample
-from scripts.train_real import _make_trajectory_tokens
+from chess_sim.data.tokenizer_utils import (
+    make_trajectory_tokens as _make_trajectory_tokens,
+)
 from tests.utils import make_training_examples
 
 
@@ -252,41 +254,6 @@ class TestChessBatchTrajectoryTokens(unittest.TestCase):
         item = ds[0]
         self.assertTrue((item.trajectory_tokens >= 0).all())
         self.assertTrue((item.trajectory_tokens <= 4).all())
-
-
-# ------------------------------------------------------------------
-# T38: evaluate_step accepts trajectory_tokens
-# ------------------------------------------------------------------
-
-class TestEvaluateStepTrajectory(unittest.TestCase):
-    """T38: evaluate_step returns finite StepResult with trajectory."""
-
-    def test_t38_evaluate_step_with_trajectory(self) -> None:
-        """T38: evaluate_step accepts trajectory_tokens in example."""
-        from scripts.evaluate import StepResult, evaluate_step
-        torch.manual_seed(42)
-        encoder = ChessEncoder().to("cpu")
-        from chess_sim.model.heads import PredictionHeads
-        heads = PredictionHeads().to("cpu")
-        encoder.eval()
-        heads.eval()
-        ex = TrainingExample(
-            board_tokens=[0] + [1] * 64,
-            color_tokens=[0] + [0] * 64,
-            trajectory_tokens=[0] * 65,
-            src_sq=12,
-            tgt_sq=28,
-        )
-        result = evaluate_step(
-            example=ex,
-            move_uci="e2e4",
-            ply=0,
-            encoder=encoder,
-            heads=heads,
-            device="cpu",
-        )
-        self.assertIsInstance(result, StepResult)
-        self.assertTrue(math.isfinite(result.total_loss))
 
 
 # ------------------------------------------------------------------

@@ -1,33 +1,71 @@
 """ChunkProcessor: converts a list of PGN games into dense tensors.
 
-Reuses BoardTokenizer and game_to_examples logic from train_real.py to
-produce pre-tensorized shard data. Each call to process_chunk returns a
-dict of torch.long tensors ready for ShardWriter.flush.
+Walks each game's mainline and emits one row per ply. Each call to
+process_chunk returns a dict of torch.long tensors ready for ShardWriter.flush.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
 
+import chess
 import chess.pgn
 import torch
 from torch import Tensor
 
+from chess_sim.data.tokenizer_utils import (
+    make_trajectory_tokens as _make_trajectory_tokens,
+)
 from chess_sim.protocols import Tokenizable
-
-if TYPE_CHECKING:
-    pass
+from chess_sim.types import TrainingExample
+from chess_sim.utils import winner_color
 
 logger = logging.getLogger(__name__)
+
+
+def _game_to_examples(
+    game: chess.pgn.Game,
+    tokenizer: Tokenizable,
+    winners_only: bool = False,
+) -> list[TrainingExample]:
+    """Walk every ply of a game and emit one TrainingExample per position."""
+    winner = winner_color(game) if winners_only else None
+    if winners_only and winner is None:
+        return []
+
+    examples: list[TrainingExample] = []
+    board = game.board()
+    moves = list(game.mainline_moves())
+    move_history: list[chess.Move] = []
+
+    for move in moves:
+        if winners_only and board.turn != winner:
+            move_history.append(move)
+            board.push(move)
+            continue
+
+        tokenized = tokenizer.tokenize(board, board.turn)
+        trajectory_tokens = _make_trajectory_tokens(move_history)
+
+        examples.append(TrainingExample(
+            board_tokens=tokenized.board_tokens,
+            color_tokens=tokenized.color_tokens,
+            trajectory_tokens=trajectory_tokens,
+            src_sq=move.from_square,
+            tgt_sq=move.to_square,
+        ))
+        move_history.append(move)
+        board.push(move)
+
+    return examples
 
 
 class ChunkProcessor:
     """Converts a chunk of PGN games into a dict of dense torch.long tensors.
 
     Uses the existing BoardTokenizer (via the Tokenizable protocol) and
-    game_to_examples logic to walk each game's mainline and emit one row
-    per ply. The output dict is suitable for direct serialization by
+    Walks each game's mainline and emits one row per ply. The output dict
+    is suitable for direct serialization by
     ShardWriter.
 
     Attributes:
@@ -65,9 +103,6 @@ class ChunkProcessor:
     ) -> dict[str, Tensor]:
         """Convert a list of games into dense torch.long tensors.
 
-        Reuses game_to_examples from train_real to avoid duplicating
-        tokenization logic.
-
         Args:
             games: List of chess.pgn.Game objects to process.
 
@@ -84,9 +119,6 @@ class ChunkProcessor:
             >>> tensors["src_sq"].shape[0]
             8
         """
-        # Import here to avoid circular imports; reuse existing logic
-        from scripts.train_real import game_to_examples
-
         all_board: list[list[int]] = []
         all_color: list[list[int]] = []
         all_traj: list[list[int]] = []
@@ -94,7 +126,7 @@ class ChunkProcessor:
         all_tgt: list[int] = []
 
         for game in games:
-            examples = game_to_examples(
+            examples = _game_to_examples(
                 game,
                 self._tokenizer,
                 winners_only=self._winners_only,

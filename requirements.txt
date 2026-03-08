@@ -6,3 +6,4 @@ matplotlib>=3.7
 pyyaml>=6.0
 h5py>=3.9  # HDF5 dataset storage for V2 preprocess pipeline
 aim>=3.17  # aim: experiment tracking UI; optional at runtime (NoOpTracker fallback)
+ruff>=0.4

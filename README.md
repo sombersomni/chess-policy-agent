@@ -127,6 +127,7 @@ Test coverage spans T01–T20 (core components), T26–T40 (trajectory/encoder i
 | `tests/test_sampler.py` | ReservoirSampler uniform sampling |
 | `tests/test_chess_encoder.py` | T26–T40: trajectory tokens, embedding init priors, gradient flow, structural subtyping |
 | `tests/test_evaluate.py` | TEV01–TEV14: Shannon entropy, top-1 accuracy, per_head_ce, GameEvaluator integration, winner_color, winners_only filtering |
+| `tests/env/test_chess_sim_env.py` | T1–T12: PGNSource, RandomSource, ChessSimEnv spaces, ChessModelAgent, TerminalRenderer, gymnasium env_checker |
 
 ---
 
@@ -396,6 +397,88 @@ python -m scripts.train_real --pgn data/games.pgn --winners-only --checkpoint ch
 python -m scripts.train_real --num-games 100 --epochs 5 --checkpoint checkpoints/synthetic_run.pt
 ```
 
+### Simulate a game in the terminal
+
+Replay a recorded game, generate a random playthrough, or watch the model predict moves in real time — all in the terminal without a display server.
+
+```mermaid
+flowchart LR
+    CLI["scripts/simulate.py"] --> mode{mode?}
+    mode -->|pgn| PGN["PGNSource\nreplay recorded game"]
+    mode -->|random| RND["RandomSource\nrandom legal moves"]
+    mode -->|agent| AGT["PGNSource + ChessModelAgent\npredictions before each move"]
+    PGN --> Env["ChessSimEnv\ngym.Env (obs 65×3, action 1971)"]
+    RND --> Env
+    AGT --> Env
+    Env --> Renderer["TerminalRenderer\nUnicode board + ANSI highlights"]
+```
+
+**Three modes:**
+
+| Mode | Requires | What you see |
+|------|----------|--------------|
+| `pgn` | PGN file | Board after each recorded move |
+| `random` | — | Board after each random legal move |
+| `agent` | PGN + checkpoint | Agent's top-N predictions *before* each move, then the actual move |
+
+**Sample terminal output (agent mode):**
+
+```
+8 ♜ ♞ ♝ ♛ ♚ ♝ ♞ ♜   Ply 2  -  e7e5
+7 ♟ ♟ ♟ ♟ . ♟ ♟ ♟   Phase: opening
+6 . . . . . . . .   Material: 0
+5 . . . . ♟ . . .
+4 . . . . ♙ . . .   Move history:
+3 . . . . . . . .     1. e2e4
+2 ♙ ♙ ♙ ♙ . ♙ ♙ ♙     2. e7e5
+1 ♖ ♘ ♗ ♕ ♔ ♗ ♘ ♖
+  a b c d e f g h   -- Agent Predictions --
+                      1. e7e5    42.1%  ✓ correct
+                      2. c7c5    18.3%
+                      3. g8f6     9.7%
+```
+
+Yellow highlight = source square · Cyan highlight = target square
+
+```bash
+source .venv/bin/activate
+
+# PGN replay (no model needed)
+python -m scripts.simulate --mode pgn \
+    --pgn data/lichess_db_standard_rated_2013-01.pgn.zst \
+    --game-index 0 \
+    --tick-rate 0.5
+
+# Random playthrough
+python -m scripts.simulate --mode random --tick-rate 0.3
+
+# Agent prediction mode (shows top-3 before each move)
+python -m scripts.simulate --mode agent \
+    --pgn data/lichess_db_standard_rated_2013-01.pgn.zst \
+    --checkpoint checkpoints/chess_v2_1k.pt \
+    --tick-rate 1.0 \
+    --top-n 3
+
+# Use ASCII pieces instead of Unicode (e.g. for narrow terminals)
+python -m scripts.simulate --mode random --no-unicode
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | — | Path to `configs/simulate.yaml` (all flags below override it) |
+| `--mode` | — | `pgn` \| `random` \| `agent` (required) |
+| `--pgn` | — | Path to `.pgn` or `.pgn.zst` file |
+| `--game-index` | `0` | Zero-based game index in the PGN |
+| `--checkpoint` | — | Path to `.pt` checkpoint (agent mode only) |
+| `--tick-rate` | `0.5` | Seconds to pause between plies |
+| `--top-n` | `3` | Number of agent predictions to show |
+| `--max-plies` | `200` | Truncation limit for random mode |
+| `--no-unicode` | — | Use ASCII piece symbols (`P N B R Q K`) |
+
+The environment also satisfies the `gymnasium.Env` interface (`obs=(65,3) float32`, `action=Discrete(1971)`) so any compatible policy can be plugged in directly.
+
+---
+
 ### Launch the GUI viewer
 
 Visually step through a game with a split-panel window: left = animated board, right = per-ply loss/accuracy/entropy stats and a PCA scatter of the model's learned piece embeddings.
@@ -460,12 +543,19 @@ chess-sim/
 │   │   ├── embedding.py      # EmbeddingLayer: piece + color + square + trajectory -> [B, 65, 256]
 │   │   ├── encoder.py        # ChessEncoder: BERT-style transformer (6 layers)
 │   │   └── heads.py          # PredictionHeads: 2x Linear(256, 64)
+│   ├── env/
+│   │   ├── __init__.py       # Protocols: SimSource, Policy, TerminalRenderable; NamedTuples: StepInfo, MovePrediction, RenderContext
+│   │   ├── sources.py        # PGNSource (PGN replay) and RandomSource (random legal moves)
+│   │   ├── chess_sim_env.py  # ChessSimEnv(gym.Env): obs=(65,3) float32, action=Discrete(1971)
+│   │   ├── terminal_renderer.py # TerminalRenderer: Unicode board + ANSI highlights + prediction panel
+│   │   └── agent_adapter.py  # ChessModelAgent: wraps ChessModel into Policy protocol
 │   └── training/
 │       ├── loss.py           # LossComputer: CrossEntropy x2 (src + tgt)
 │       └── trainer.py        # Trainer: AdamW + CosineAnnealingLR; decorators: @log_metrics, @device_aware, @timed
 ├── scripts/
 │   ├── __init__.py
 │   ├── preprocess.py         # CLI: PGN → HDF5 (run once before V2 training)
+│   ├── simulate.py           # CLI: terminal game simulation (pgn / random / agent modes)
 │   ├── train_v2.py           # CLI: V2 encoder-decoder training (--hdf5 or --pgn)
 │   ├── train_real.py         # CLI: V1 encoder training from PGN or synthetic games
 │   ├── evaluate.py           # CLI: per-move evaluation with GameEvaluator

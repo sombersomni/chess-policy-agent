@@ -9,6 +9,7 @@ All tests run on CPU only (per project convention).
 
 from __future__ import annotations
 
+import logging
 import math
 import tempfile
 import textwrap
@@ -21,7 +22,6 @@ import torch
 from chess_sim.config import AimConfig, ChessModelV2Config, load_v2_config
 from chess_sim.tracking.aim_tracker import AimTracker
 from chess_sim.tracking.noop_tracker import NoOpTracker
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -365,6 +365,85 @@ class TestTrackerCloseInFinally(unittest.TestCase):
                     main()
 
         mock_tracker.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# TC16-TC19: AimLogHandler
+# ---------------------------------------------------------------------------
+
+class TestAimLogHandler(unittest.TestCase):
+    """Tests for the AimLogHandler logging integration."""
+
+    def test_tc16_emit_calls_log_text(self) -> None:
+        """TC16: AimLogHandler.emit() calls tracker.log_text."""
+        from chess_sim.tracking.log_handler import AimLogHandler
+
+        mock_tracker = MagicMock()
+        handler = AimLogHandler(mock_tracker)
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="hello %s",
+            args=("world",),
+            exc_info=None,
+        )
+        handler.emit(record)
+        mock_tracker.log_text.assert_called_once()
+        call_msg = mock_tracker.log_text.call_args[0][0]
+        self.assertIn("hello world", call_msg)
+
+    def test_tc17_emit_handles_tracker_exception(self) -> None:
+        """TC17: emit() calls handleError when log_text raises."""
+        from chess_sim.tracking.log_handler import AimLogHandler
+
+        mock_tracker = MagicMock()
+        mock_tracker.log_text.side_effect = RuntimeError(
+            "aim down"
+        )
+        handler = AimLogHandler(mock_tracker)
+        record = logging.LogRecord(
+            name="test",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="msg",
+            args=(),
+            exc_info=None,
+        )
+        with patch.object(
+            handler, "handleError"
+        ) as mock_handle_err:
+            handler.emit(record)
+            mock_handle_err.assert_called_once_with(record)
+
+    def test_tc18_noop_log_text_returns_none(self) -> None:
+        """TC18: NoOpTracker.log_text() silently discards."""
+        tracker = NoOpTracker()
+        result = tracker.log_text("some message", step=5)
+        self.assertIsNone(result)
+
+    def test_tc19_aim_tracker_log_text_tracks_text(self) -> None:
+        """TC19: AimTracker.log_text calls run.track with aim.Text."""
+        try:
+            import aim
+        except ImportError:
+            self.skipTest("aim not installed")
+
+        cfg = AimConfig(enabled=True)
+        mock_run = MagicMock()
+        tracker = AimTracker(cfg, run=mock_run)
+        tracker.log_text("epoch started", step=1)
+        mock_run.track.assert_called_once()
+        tracked_obj = mock_run.track.call_args[0][0]
+        self.assertIsInstance(tracked_obj, aim.Text)
+        self.assertEqual(
+            mock_run.track.call_args[1]["name"], "logs"
+        )
+        self.assertEqual(
+            mock_run.track.call_args[1]["step"], 1
+        )
 
 
 if __name__ == "__main__":

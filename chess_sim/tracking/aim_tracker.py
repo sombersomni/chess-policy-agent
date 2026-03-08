@@ -96,6 +96,21 @@ class AimTracker:
             self._run.track(v, name=k, epoch=epoch)
         self._run.track(lr, name="lr", epoch=epoch)
 
+    def log_text(
+        self, message: str, step: int | None = None
+    ) -> None:
+        """Track a text log entry in the aim run.
+
+        Args:
+            message: Formatted log line.
+            step: Optional global step index.
+        """
+        import aim
+
+        self._run.track(
+            aim.Text(message), name="logs", step=step
+        )
+
     def close(self) -> None:
         """Flush and seal the aim Run.
 

@@ -36,7 +36,7 @@ from chess_sim.data.pgn_sequence_dataset import (
     PGNSequenceCollator,
     PGNSequenceDataset,
 )
-from chess_sim.tracking import make_tracker
+from chess_sim.tracking import AimLogHandler, make_tracker
 from chess_sim.training.phase1_trainer import Phase1Trainer
 from scripts.train_real import generate_random_game
 
@@ -266,6 +266,8 @@ def main() -> None:
 
     # Build tracker and trainer
     tracker = make_tracker(cfg.aim)
+    aim_log_handler = AimLogHandler(tracker)
+    logging.getLogger().addHandler(aim_log_handler)
     total_steps = cfg.trainer.epochs * len(train_loader)
     trainer = Phase1Trainer(
         device=device,
@@ -350,6 +352,7 @@ def main() -> None:
             pgn_path.unlink(missing_ok=True)
             logger.info("Cleaned up temp PGN: %s", pgn_path)
     finally:
+        logging.getLogger().removeHandler(aim_log_handler)
         tracker.close()
 
 

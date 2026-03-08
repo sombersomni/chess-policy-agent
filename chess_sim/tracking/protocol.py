@@ -37,6 +37,19 @@ class MetricTracker(Protocol):
         """
         ...
 
+    def log_text(
+        self, message: str, step: int | None = None
+    ) -> None:
+        """Send a human-readable log message to the tracker.
+
+        Args:
+            message: Formatted log string to display in the
+                tracker UI.
+            step: Optional global step to associate with the
+                message.
+        """
+        ...
+
     def close(self) -> None:
         """Flush pending data and seal the tracking run."""
         ...

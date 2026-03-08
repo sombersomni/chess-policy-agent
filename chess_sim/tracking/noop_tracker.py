@@ -25,6 +25,12 @@ class NoOpTracker:
         """Accept and discard epoch-level metrics."""
         pass
 
+    def log_text(
+        self, message: str, step: int | None = None
+    ) -> None:
+        """Accept and discard log text."""
+        pass
+
     def close(self) -> None:
         """No-op close; nothing to flush."""
         pass

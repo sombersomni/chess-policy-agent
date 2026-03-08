@@ -42,3 +42,6 @@ data/
 # Environment variables
 .env
 .env.*
+
+# Aim experiment tracking
+.aim/

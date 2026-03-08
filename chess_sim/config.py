@@ -344,6 +344,7 @@ class SimulateConfig:
     top_n: int = 3
     max_plies: int = 200
     use_unicode: bool = True
+    winners_side: bool = False
     model: ModelConfig = field(default_factory=ModelConfig)
     decoder: DecoderConfig = field(default_factory=DecoderConfig)
 

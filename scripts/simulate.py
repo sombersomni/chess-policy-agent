@@ -208,14 +208,26 @@ def run_loop(
     env.render()
     time.sleep(cfg.tick_rate)
 
+    # Resolve winner color once (None when source is not PGN or game is a draw).
+    source = env._source  # type: ignore[attr-defined]
+    winner_color = getattr(source, "winner_color", lambda: None)()
+
     done = False
     while not done:
         legal = env.legal_uci_moves()
         if not legal:
             break
 
+        # Determine whether to show predictions this ply.
+        board = getattr(source, "_board", None)
+        is_winners_ply = (
+            not cfg.winners_side
+            or winner_color is None
+            or (board is not None and board.turn == winner_color)
+        )
+
         predictions = []
-        if policy is not None:
+        if policy is not None and is_winners_ply:
             predictions = policy.top_n_predictions(obs, legal, n=cfg.top_n)  # type: ignore[attr-defined]
             env.set_predictions(predictions)
             env.render()
@@ -296,6 +308,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="no_unicode",
         help="Use ASCII piece symbols instead of Unicode.",
     )
+    parser.add_argument(
+        "--winners-side",
+        action="store_true",
+        dest="winners_side",
+        help="Only show agent predictions on the winner's plies.",
+    )
     return parser.parse_args(argv)
 
 
@@ -333,6 +351,8 @@ def _merge_config(
         cfg.top_n = args.top_n
     if args.no_unicode:
         cfg.use_unicode = False
+    if args.winners_side:
+        cfg.winners_side = True
 
     return cfg
 

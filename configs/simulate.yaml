@@ -16,6 +16,7 @@ tick_rate: 0.5                             # seconds to pause between plies
 top_n: 3                                   # number of agent predictions to display
 max_plies: 200                             # truncation limit for random mode
 use_unicode: true                          # false = ASCII piece symbols (P N B R Q K)
+winners_side: true                         # true = only show agent predictions on winner's plies
 
 # Encoder architecture -- must match the checkpoint being loaded.
 model:

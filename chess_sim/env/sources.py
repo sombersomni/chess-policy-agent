@@ -193,6 +193,15 @@ class PGNSource:
         self._board: chess.Board = chess.Board()
         self._history: list[str] = []
         self._ply: int = 0
+        self._winner_color: chess.Color | None = None
+
+    def winner_color(self) -> chess.Color | None:
+        """Return the color of the game's winner after reset(), or None for draws.
+
+        Returns:
+            chess.WHITE, chess.BLACK, or None.
+        """
+        return self._winner_color
 
     def reset(self) -> chess.Board:
         """Load the target game and return the initial board.
@@ -210,8 +219,16 @@ class PGNSource:
                 break
         if game is None:
             raise IndexError(
-                f"game_index {self._game_index} exceeds the number of games in the file."
+                f"game_index {self._game_index} exceeds "
+                "the number of games in the file."
             )
+        result = game.headers.get("Result", "*")
+        if result == "1-0":
+            self._winner_color = chess.WHITE
+        elif result == "0-1":
+            self._winner_color = chess.BLACK
+        else:
+            self._winner_color = None
         self._game_moves = [
             move.uci() for move in game.mainline_moves()
         ]

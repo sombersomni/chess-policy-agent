@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors (line length, whitespace, indentation)
+    "W",    # pycodestyle warnings (trailing whitespace)
+    "F",    # pyflakes (undefined names, unused imports)
+    "ANN",  # flake8-annotations (missing type annotations)
+    "I",    # isort (import ordering)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ANN"]

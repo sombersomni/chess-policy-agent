@@ -136,12 +136,12 @@ result = tok.tokenize(board, chess.WHITE)
 ### 3b. Generate trajectory tokens
 
 ```python
-from scripts.train_real import _make_trajectory_tokens
+from chess_sim.data.tokenizer_utils import make_trajectory_tokens
 import chess
 
 # move_history is populated as the game is replayed with board.push(move)
 move_history: list[chess.Move] = []
-trajectory_tokens = _make_trajectory_tokens(move_history)
+trajectory_tokens = make_trajectory_tokens(move_history)
 
 # trajectory_tokens: list[int] of length 65
 # index 0 = CLS = 0 (always)
@@ -161,6 +161,108 @@ train_ds, val_ds = ChessDataset.split(examples, train_frac=0.95)
 
 loader = DataLoader(train_ds, batch_size=256, shuffle=True, num_workers=4)
 ```
+
+---
+
+## Data Preparation (V2 — HDF5 preprocessing)
+
+Training from raw PGN is slow because every run re-parses and tokenizes games on the CPU.
+Run the preprocessor **once** to write all tokenized turn records into an HDF5 file;
+subsequent training runs read pre-baked integer arrays directly.
+
+```mermaid
+flowchart LR
+    PGN[".pgn / .pgn.zst"] --> Pre["scripts/preprocess.py\none-time run"]
+    Pre --> HDF5["data/processed/chess_dataset.h5"]
+    HDF5 --> Train["scripts/train_v2.py\n--hdf5 flag"]
+```
+
+### Step 1 — Edit the config
+
+Copy and edit `configs/preprocess_v2.yaml`:
+
+```yaml
+input:
+  pgn_path: data/raw/lichess_db_standard_rated_2013-01.pgn.zst
+  max_games: 0          # 0 = all games; set e.g. 10000 to cap for testing
+
+output:
+  hdf5_path:        data/processed/chess_dataset.h5
+  chunk_size:       1000   # write-buffer flush threshold (rows)
+  compression:      gzip
+  compression_opts: 4      # 1=fast, 9=smallest
+  max_seq_len:      512    # padded move sequence length
+
+filter:
+  min_elo:      0     # skip games where both players are below this Elo
+  min_moves:    5     # skip very short/incomplete games
+  max_moves:    512   # skip abnormally long games
+  winners_only: false # true = skip draws, include only decisive games
+
+split:
+  train: 0.95
+  val:   0.05
+
+processing:
+  workers: 4   # parallel game-parser processes
+```
+
+### Step 2 — Run preprocessing (once)
+
+```bash
+source .venv/bin/activate
+
+# Full dataset
+python -m scripts.preprocess --config configs/preprocess_v2.yaml
+
+# Quick smoke test (100 games, custom output)
+python -m scripts.preprocess \
+    --config configs/preprocess_v2.yaml \
+    --pgn data/raw/lichess_db_standard_rated_2013-01.pgn.zst \
+    --max-games 100 \
+    --output data/processed/chess_dataset_small.h5
+```
+
+| Flag | Description |
+|------|-------------|
+| `--config` | Path to `preprocess_v2.yaml` (required) |
+| `--pgn` | Override `input.pgn_path` |
+| `--output` | Override `output.hdf5_path` |
+| `--max-games` | Override `input.max_games` |
+
+The script prints progress every 10 000 games and runs `HDF5Validator` automatically
+on completion. It will raise a `ValueError` and exit non-zero if the output file fails
+schema validation.
+
+### Step 3 — Train from HDF5
+
+```bash
+python -m scripts.train_v2 \
+    --config configs/train_v2_10k.yaml \
+    --hdf5 data/processed/chess_dataset.h5
+```
+
+The `--hdf5` flag (or `data.hdf5_path` in YAML) switches the DataLoader from
+`PGNSequenceDataset` to `ChessHDF5Dataset`. Omit the flag and training falls back to
+on-the-fly PGN parsing as before.
+
+### HDF5 file schema
+
+Each row is one board state at a specific game ply.
+
+| Dataset | Shape | Dtype | Description |
+|---------|-------|-------|-------------|
+| `board_tokens` | `[N, 65]` | `uint8` | Piece type per square (CLS at index 0) |
+| `color_tokens` | `[N, 65]` | `uint8` | Piece ownership per square |
+| `trajectory_tokens` | `[N, 65]` | `uint8` | Last-2-move trajectory roles |
+| `move_tokens` | `[N, 512]` | `uint16` | Decoder input: SOS + prior moves (padded) |
+| `target_tokens` | `[N, 512]` | `uint16` | Decoder targets (padded) |
+| `move_lengths` | `[N]` | `uint16` | Actual sequence length before padding |
+| `outcome` | `[N]` | `int8` | +1 win / 0 draw / -1 loss (player-to-move) |
+| `turn` | `[N]` | `uint16` | 0-indexed ply within the game |
+| `game_id` | `[N]` | `uint32` | Parent game index |
+
+Split groups: `train/` and `val/` (default 95/5 split, deterministic by `game_id`).
 
 ---
 
@@ -230,7 +332,19 @@ tgt_sq = preds.tgt_sq_logits.argmax(dim=-1)   # predicted target square
 
 ## Scripts
 
-### Train from a PGN file
+### Preprocess PGN to HDF5 (run once before V2 training)
+
+```bash
+source .venv/bin/activate
+
+python -m scripts.preprocess --config configs/preprocess_v2.yaml
+```
+
+See [Data Preparation](#data-preparation-v2--hdf5-preprocessing) above for full options.
+
+---
+
+### Train from a PGN file (V1)
 
 ```bash
 # Activate virtual environment first
@@ -297,10 +411,18 @@ chess-sim/
 │   ├── types.py              # NamedTuple containers: TokenizedBoard (board_tokens, color_tokens), TrainingExample, ChessBatch, EncoderOutput, PredictionOutput, LabelTensors
 │   ├── utils.py              # winner_color(): chess.pgn.Game -> Optional[chess.Color]
 │   ├── data/
-│   │   ├── tokenizer.py      # BoardTokenizer: chess.Board -> TokenizedBoard
-│   │   ├── reader.py         # StreamingPGNReader: .zst -> chess.pgn.Game iterator
-│   │   ├── sampler.py        # ReservoirSampler: uniform sampling (Vitter's Algorithm R)
-│   │   └── dataset.py        # ChessDataset: torch Dataset + split(train_frac=0.9)
+│   │   ├── tokenizer.py          # BoardTokenizer: chess.Board -> TokenizedBoard
+│   │   ├── tokenizer_utils.py    # make_trajectory_tokens(): shared trajectory helper
+│   │   ├── reader.py             # StreamingPGNReader: .zst -> chess.pgn.Game iterator
+│   │   ├── sampler.py            # ReservoirSampler: uniform sampling (Vitter's Algorithm R)
+│   │   ├── dataset.py            # ChessDataset: torch Dataset + split(train_frac=0.9)
+│   │   ├── pgn_sequence_dataset.py # PGNSequenceDataset + PGNSequenceCollator (V2 on-the-fly)
+│   │   └── hdf5_dataset.py       # ChessHDF5Dataset: reads pre-baked HDF5; hdf5_worker_init
+│   ├── preprocess/
+│   │   ├── parse.py          # GameParser: chess.pgn.Game -> list[RawTurnRecord]
+│   │   ├── writer.py         # HDF5Writer: buffers + flushes to resizable h5py datasets
+│   │   ├── validate.py       # HDF5Validator: post-write schema + value-range checks
+│   │   └── preprocess.py     # HDF5Preprocessor: multiprocessing orchestrator
 │   ├── model/
 │   │   ├── embedding.py      # EmbeddingLayer: piece + color + square + trajectory -> [B, 65, 256]
 │   │   ├── encoder.py        # ChessEncoder: BERT-style transformer (6 layers)
@@ -310,7 +432,9 @@ chess-sim/
 │       └── trainer.py        # Trainer: AdamW + CosineAnnealingLR; decorators: @log_metrics, @device_aware, @timed
 ├── scripts/
 │   ├── __init__.py
-│   ├── train_real.py         # CLI: end-to-end training from PGN or synthetic games
+│   ├── preprocess.py         # CLI: PGN → HDF5 (run once before V2 training)
+│   ├── train_v2.py           # CLI: V2 encoder-decoder training (--hdf5 or --pgn)
+│   ├── train_real.py         # CLI: V1 encoder training from PGN or synthetic games
 │   ├── evaluate.py           # CLI: per-move evaluation with GameEvaluator
 │   └── gui/
 │       ├── __init__.py       # Protocols: Renderable, Navigable, GameSource

@@ -19,10 +19,12 @@ from chess_sim.types import (
     ChessBatch,
     EncoderOutput,
     PredictionOutput,
+    RawTurnRecord,
     TokenizedBoard,
 )
 
 if TYPE_CHECKING:
+    from chess_sim.config import PreprocessV2Config
     from chess_sim.data.streaming_types import ManifestInfo, PreprocessConfig
 
 
@@ -364,4 +366,90 @@ class MoveEmbeddable(Protocol):
             >>> emb = MoveEmbedding()
             >>> out = emb.embed_moves(tokens)  # [B, T, 256]
         """
+        ...
+
+
+# ---------------------------------------------------------------------------
+# HDF5 preprocessing pipeline protocols
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class HDF5Parseable(Protocol):
+    """Parses a PGN game into RawTurnRecord list."""
+
+    def parse_game(
+        self, game: chess.pgn.Game, game_id: int
+    ) -> list[RawTurnRecord]:
+        """Parse one game into per-ply records.
+
+        Args:
+            game: A parsed PGN game object.
+            game_id: Sequential index of this game.
+
+        Returns:
+            List of RawTurnRecord, one per ply. Empty if filtered.
+        """
+        ...
+
+
+@runtime_checkable
+class HDF5Writable(Protocol):
+    """Writes RawTurnRecord batches to HDF5."""
+
+    def open(self, path: Path, mode: str) -> None:
+        """Open or create HDF5 file for writing."""
+        ...
+
+    def write_batch(
+        self, records: list[RawTurnRecord], split: str
+    ) -> None:
+        """Buffer records and flush when chunk_size reached."""
+        ...
+
+    def close(self) -> None:
+        """Flush remaining buffers and close the file."""
+        ...
+
+
+@runtime_checkable
+class HDF5Readable(Protocol):
+    """Reads individual samples from an HDF5 dataset."""
+
+    def open(self, path: Path) -> None:
+        """Open HDF5 file for reading."""
+        ...
+
+    def read_sample(
+        self, split: str, idx: int
+    ) -> RawTurnRecord:
+        """Read a single sample by split and index."""
+        ...
+
+    def split_len(self, split: str) -> int:
+        """Return the number of samples in a split."""
+        ...
+
+    def close(self) -> None:
+        """Close the HDF5 file handle."""
+        ...
+
+
+@runtime_checkable
+class HDF5Validatable(Protocol):
+    """Validates HDF5 file schema and value ranges."""
+
+    def validate(
+        self, path: Path, config: "PreprocessV2Config"
+    ) -> None:
+        """Raise ValueError on any schema violation."""
+        ...
+
+
+@runtime_checkable
+class HDF5Preprocessable(Protocol):
+    """Orchestrates full PGN-to-HDF5 preprocessing."""
+
+    def run(self, config: "PreprocessV2Config") -> None:
+        """Execute the complete preprocessing pipeline."""
         ...

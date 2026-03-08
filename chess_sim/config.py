@@ -37,6 +37,7 @@ class DataConfig:
     num_workers: int = 2
     train_frac: float = 0.9
     batch_size: int = 128
+    hdf5_path: str = ""
 
 
 @dataclass
@@ -222,4 +223,108 @@ def load_v2_config(path: Path) -> ChessModelV2Config:
         decoder=DecoderConfig(**raw.get("decoder", {})),
         trainer=TrainerConfig(**raw.get("trainer", {})),
         phase2=Phase2Config(**raw.get("phase2", {})),
+    )
+
+
+# ---------------------------------------------------------------------------
+# HDF5 preprocess pipeline configs
+# ---------------------------------------------------------------------------
+
+@dataclass
+class InputConfig:
+    """PGN input settings for preprocessing."""
+
+    pgn_path: str = ""
+    max_games: int = 0  # 0 = all
+
+
+@dataclass
+class OutputConfig:
+    """HDF5 output settings for preprocessing."""
+
+    hdf5_path: str = "data/processed/chess_dataset.h5"
+    chunk_size: int = 1000
+    compression: str = "gzip"
+    compression_opts: int = 4
+    max_seq_len: int = 512
+
+
+@dataclass
+class FilterConfig:
+    """Game filtering settings for preprocessing."""
+
+    min_elo: int = 0
+    min_moves: int = 5
+    max_moves: int = 512
+    winners_only: bool = False
+
+
+@dataclass
+class SplitConfig:
+    """Train/val split settings."""
+
+    train: float = 0.95
+    val: float = 0.05
+    seed: int = 42
+
+
+@dataclass
+class ProcessingConfig:
+    """Multiprocessing settings for preprocessing."""
+
+    workers: int = 4
+
+
+@dataclass
+class PreprocessV2Config:
+    """Root config for scripts/preprocess.py."""
+
+    input: InputConfig = field(default_factory=InputConfig)
+    output: OutputConfig = field(
+        default_factory=OutputConfig
+    )
+    filter: FilterConfig = field(
+        default_factory=FilterConfig
+    )
+    split: SplitConfig = field(default_factory=SplitConfig)
+    processing: ProcessingConfig = field(
+        default_factory=ProcessingConfig
+    )
+
+
+def load_preprocess_v2_config(
+    path: Path,
+) -> PreprocessV2Config:
+    """Load PreprocessV2Config from a YAML file.
+
+    Unknown keys raise TypeError immediately.
+
+    Args:
+        path: Path to the YAML config file.
+
+    Returns:
+        Fully populated PreprocessV2Config.
+
+    Raises:
+        FileNotFoundError: If path does not exist.
+        TypeError: If YAML contains unknown keys.
+
+    Example:
+        >>> cfg = load_preprocess_v2_config(
+        ...     Path("configs/preprocess_v2.yaml")
+        ... )
+        >>> cfg.output.hdf5_path
+        'data/processed/chess_dataset.h5'
+    """
+    raw: dict[str, Any] = (
+        yaml.safe_load(path.read_text()) or {}
+    )
+    return PreprocessV2Config(
+        input=InputConfig(**raw.get("input", {})),
+        output=OutputConfig(**raw.get("output", {})),
+        filter=FilterConfig(**raw.get("filter", {})),
+        split=SplitConfig(**raw.get("split", {})),
+        processing=ProcessingConfig(
+            **raw.get("processing", {})
+        ),
     )

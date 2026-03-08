@@ -28,6 +28,10 @@ import torch
 from torch.utils.data import DataLoader, random_split
 
 from chess_sim.config import ChessModelV2Config, load_v2_config
+from chess_sim.data.hdf5_dataset import (
+    ChessHDF5Dataset,
+    hdf5_worker_init,
+)
 from chess_sim.data.pgn_sequence_dataset import (
     PGNSequenceCollator,
     PGNSequenceDataset,
@@ -109,6 +113,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--seed", type=int, default=42,
         help="Random seed for reproducibility.",
     )
+    p.add_argument(
+        "--hdf5", type=str, default=None,
+        help="Path to preprocessed HDF5 dataset file.",
+    )
     return p
 
 
@@ -139,6 +147,8 @@ def _merge_v2_config(
         cfg.trainer.epochs = args.epochs
     if args.checkpoint is not None:
         cfg.trainer.checkpoint = args.checkpoint
+    if args.hdf5 is not None:
+        cfg.data.hdf5_path = args.hdf5
     return cfg
 
 
@@ -171,54 +181,87 @@ def main() -> None:
     # Set seeds for reproducibility
     torch.manual_seed(args.seed)
 
-    # Determine PGN source: real file or synthetic
-    is_synthetic = False
-    if cfg.data.pgn:
-        pgn_path = Path(cfg.data.pgn)
-        logger.info("Using real PGN: %s", pgn_path)
-        max_games = cfg.data.max_games
-    else:
-        pgn_path = write_synthetic_pgn(
-            cfg.data.num_games, seed=args.seed
-        )
-        max_games = cfg.data.num_games
-        is_synthetic = True
-
-    # Build dataset
-    logger.info("Building PGNSequenceDataset from %s ...", pgn_path)
-    full_ds = PGNSequenceDataset(
-        pgn_path=str(pgn_path),
-        max_games=max_games,
-        winners_only=cfg.data.winners_only,
-    )
-    logger.info("Total samples: %d", len(full_ds))
-
-    # Train/val split
-    n_total = len(full_ds)
-    n_train = int(n_total * cfg.data.train_frac)
-    n_val = n_total - n_train
-    train_ds, val_ds = random_split(
-        full_ds, [n_train, n_val],
-        generator=torch.Generator().manual_seed(args.seed),
-    )
-    logger.info("Train: %d  Val: %d", len(train_ds), len(val_ds))
-
-    # Build data loaders
+    # Build dataset: HDF5 path takes precedence over PGN
     collator = PGNSequenceCollator()
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=cfg.data.batch_size,
-        shuffle=True,
-        collate_fn=collator,
-        num_workers=0,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=cfg.data.batch_size,
-        shuffle=False,
-        collate_fn=collator,
-        num_workers=0,
-    )
+    is_synthetic = False
+
+    if cfg.data.hdf5_path:
+        hdf5_p = Path(cfg.data.hdf5_path)
+        logger.info("Using HDF5 dataset: %s", hdf5_p)
+        train_ds = ChessHDF5Dataset(hdf5_p, "train")
+        val_ds = ChessHDF5Dataset(hdf5_p, "val")
+        logger.info(
+            "Train: %d  Val: %d",
+            len(train_ds), len(val_ds),
+        )
+        wk_init = hdf5_worker_init
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=cfg.data.batch_size,
+            shuffle=True,
+            collate_fn=collator,
+            num_workers=cfg.data.num_workers,
+            worker_init_fn=wk_init,
+        )
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=cfg.data.batch_size,
+            shuffle=False,
+            collate_fn=collator,
+            num_workers=cfg.data.num_workers,
+            worker_init_fn=wk_init,
+        )
+    else:
+        # Determine PGN source: real file or synthetic
+        if cfg.data.pgn:
+            pgn_path = Path(cfg.data.pgn)
+            logger.info("Using real PGN: %s", pgn_path)
+            max_games = cfg.data.max_games
+        else:
+            pgn_path = write_synthetic_pgn(
+                cfg.data.num_games, seed=args.seed
+            )
+            max_games = cfg.data.num_games
+            is_synthetic = True
+
+        logger.info(
+            "Building PGNSequenceDataset from %s ...",
+            pgn_path,
+        )
+        full_ds = PGNSequenceDataset(
+            pgn_path=str(pgn_path),
+            max_games=max_games,
+            winners_only=cfg.data.winners_only,
+        )
+        logger.info("Total samples: %d", len(full_ds))
+
+        n_total = len(full_ds)
+        n_train = int(n_total * cfg.data.train_frac)
+        n_val = n_total - n_train
+        train_ds, val_ds = random_split(
+            full_ds, [n_train, n_val],
+            generator=torch.Generator().manual_seed(
+                args.seed
+            ),
+        )
+        logger.info(
+            "Train: %d  Val: %d",
+            len(train_ds), len(val_ds),
+        )
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=cfg.data.batch_size,
+            shuffle=True,
+            collate_fn=collator,
+            num_workers=0,
+        )
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=cfg.data.batch_size,
+            shuffle=False,
+            collate_fn=collator,
+            num_workers=0,
+        )
 
     # Build trainer
     total_steps = cfg.trainer.epochs * len(train_loader)

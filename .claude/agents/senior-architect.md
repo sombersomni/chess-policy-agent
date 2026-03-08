@@ -64,7 +64,6 @@ deactivate && rm -rf .venv    # clean up when done
 
 **Script rules:**
 - Write a `unittest.TestCase` *before* writing the hypothesis code.
-- Keep scripts under 50 lines.
 - Avoid third-party packages unless the hypothesis specifically requires them like `numpy` for array math
 - Delete scripts after the hypothesis is confirmed.
 

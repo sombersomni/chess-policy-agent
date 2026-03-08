@@ -3,7 +3,7 @@
 ## Project Structure
 - Source: `chess_sim/` with subpackages `data/`, `model/`, `training/`
 - Tests: `tests/` using `unittest` + `pytest` + `parameterized`
-- Types: `chess_sim/types.py` (all NamedTuples: TokenizedBoard, TrainingExample, ChessBatch, EncoderOutput, PredictionOutput, LabelTensors)
+- Types: `chess_sim/types.py` (all NamedTuples: TokenizedBoard, TrainingExample, ChessBatch, EncoderOutput, PredictionOutput, LabelTensors, GameTurnSample, GameTurnBatch, DecoderOutput, SelfPlayGame)
 - Protocols: `chess_sim/protocols.py` (Tokenizable, Embeddable, Encodable, Predictable, Trainable, Samplable, Scorable)
 - Test utils: `tests/utils.py` (make_synthetic_batch, make_prediction_output, make_training_examples, etc.)
 
@@ -59,3 +59,27 @@
 - `sharded_dataset.py` bisect shard lookup, OrderedDict LRU cache
 - `train_real.py` uses _PlainPGNReader adapter for .pgn/.zst support
 - Shard files loaded with `weights_only=True`
+
+## HDF5 Preprocessing Pipeline
+- `chess_sim/preprocess/` package: `parse.py`, `writer.py`, `validate.py`, `preprocess.py`
+- `chess_sim/data/hdf5_dataset.py`: `ChessHDF5Dataset` + `hdf5_worker_init`
+- `chess_sim/data/tokenizer_utils.py`: extracted `make_trajectory_tokens` (shared)
+- Config: `PreprocessV2Config` + sub-configs in `chess_sim/config.py`
+- `DataConfig.hdf5_path` field; `scripts/train_v2.py` branches on it
+- Tests: `tests/test_preprocess_v2.py` — T1-T25 (27 tests)
+- `scripts/preprocess.py` + `configs/preprocess_v2.yaml`
+- Protocols: HDF5Parseable, HDF5Writable, HDF5Readable, HDF5Validatable, HDF5Preprocessable
+- New type: `RawTurnRecord` in `chess_sim/types.py`
+
+## ChessModel v2 (Encoder-Decoder)
+- `MoveVocab` in `chess_sim/data/move_vocab.py`: 1968 piece-reachable UCI moves + 3 special (PAD=0, SOS=1, EOS=2) = 1971 total
+- Vocab enumerates only piece-reachable moves (not all 64*63 pairs): knight, king, rook/queen lines, bishop/queen diags, pawn moves with promotions
+- `MoveTokenizer` in `chess_sim/data/move_tokenizer.py`: wraps MoveVocab, provides tokenize_game (SOS+moves+EOS) and build_legal_mask
+- `MoveEmbedding` in `chess_sim/model/move_embedding.py`: token_emb + pos_emb, uses DecoderConfig
+- `MoveDecoder` in `chess_sim/model/decoder.py`: TransformerDecoder + causal mask + output projection
+- `ChessModel` in `chess_sim/model/chess_model.py`: encoder-decoder assembly, memory = CLS+squares [B,65,d_model]
+- `PGNSequenceDataset` in `chess_sim/data/pgn_sequence_dataset.py`: per-ply samples, PGNSequenceCollator for padding
+- `Phase1Trainer` in `chess_sim/training/phase1_trainer.py`: CE loss with teacher forcing, uses _to_device helper (not device_aware decorator)
+- `Phase2Trainer` in `chess_sim/training/phase2_trainer.py`: REINFORCE self-play with policy gradient
+- Config: `DecoderConfig` and `Phase2Config` in `chess_sim/config.py`; `ChessModelV2Config` = root config
+- Tests: `tests/test_v2_skeleton.py` - TV01-TV17 (42 tests)

@@ -1,5 +1,47 @@
 # setup-dev Agent Memory
 
+## Scaffolding Completed: ChessModel v2 Encoder-Decoder (2026-03-07)
+
+### Module Layout
+```
+chess_sim/
+├── protocols.py                    # +3 Protocols: MoveTokenizable, Decodable, MoveEmbeddable
+├── types.py                        # +4 NamedTuples: GameTurnSample, GameTurnBatch, DecoderOutput, SelfPlayGame
+├── config.py                       # +3 dataclasses: DecoderConfig, Phase2Config, ChessModelV2Config + load_v2_config()
+├── data/move_vocab.py              # MoveVocab — UCI string <-> int index, PAD=0/SOS=1/EOS=2, ~1971 total
+├── data/move_tokenizer.py          # MoveTokenizer — implements MoveTokenizable
+├── data/pgn_sequence_dataset.py    # PGNSequenceDataset(Dataset) + PGNSequenceCollator
+├── model/move_embedding.py         # MoveEmbedding(nn.Module) — implements MoveEmbeddable
+├── model/decoder.py                # MoveDecoder(nn.Module) — implements Decodable, wraps nn.TransformerDecoder
+├── model/chess_model.py            # ChessModel(nn.Module) — encoder + decoder assembly
+├── training/phase1_trainer.py      # Phase1Trainer — supervised CE on move sequences
+└── training/phase2_trainer.py      # Phase2Trainer — REINFORCE self-play
+```
+
+### Test Suite
+```
+tests/test_v2_skeleton.py  # 42 tests (25 pass structural, 17 fail awaiting impl)
+  - TestMoveVocab:         TV01 (size), TV02 (roundtrip x3), TV03 (special), TV04 (promo x4)
+  - TestMoveTokenizer:     TV05 (shape), TV06 (SOS/EOS), TV07 (mask shape), TV08 (mask values)
+  - TestMoveEmbedding:     TV09 (output shape)
+  - TestMoveDecoder:       TV10 (mask shape), TV11 (upper-tri), TV12 (forward shape)
+  - TestChessModel:        TV13 (e2e shape)
+  - TestGameTurnSample:    TV14 (5 field checks across 4 NamedTuples)
+  - TestDecoderConfig:     TV15 (7 default checks)
+  - TestPhase2Config:      TV16 (9 default checks)
+  - TestLoadV2Config:      TV17 (yaml load, empty yaml, unknown key)
+```
+
+### Key Decisions
+- Appended to existing protocols.py, types.py, config.py — no existing code modified
+- `git add -f` needed for chess_sim/data/* files due to .gitignore `data/` pattern
+- Decorators `@log_metrics` and `@device_aware` imported from existing `chess_sim.training.trainer`
+- MoveVocab: 3 special tokens + ~1968 moves = ~1971 total vocab
+- DecoderConfig defaults: d_model=256, n_heads=8, n_layers=4, max_seq_len=512
+- All nn.Module stubs raise NotImplementedError in __init__ (consistent with v1 pattern)
+
+---
+
 ## Scaffolding Completed: Streaming Data Pipeline (2026-03-06)
 
 ### Module Layout

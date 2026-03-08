@@ -182,3 +182,34 @@ class SelfPlayGame(NamedTuple):
     color_tokens: list[Tensor]          # one [65] per move
     trajectory_tokens: list[Tensor]     # one [65] per move
     outcome: float                      # +1.0 win / -1.0 loss / 0.0 draw
+
+
+# ---------------------------------------------------------------------------
+# HDF5 preprocessing types
+# ---------------------------------------------------------------------------
+
+
+class RawTurnRecord(NamedTuple):
+    """One preprocessed game turn for HDF5 serialization.
+
+    Immutable container passed between GameParser and HDF5Writer.
+
+    Attributes:
+        board_tokens:      len 65, CLS at index 0, values 0-7.
+        color_tokens:      len 65, values 0-2.
+        trajectory_tokens: len 65, values 0-4.
+        move_tokens:       variable len (SOS + prior moves).
+        target_tokens:     variable len (prior moves + current).
+        outcome:           -1 / 0 / +1 from player-to-move perspective.
+        turn:              0-indexed ply within the game.
+        game_id:           parent game index.
+    """
+
+    board_tokens: list[int]
+    color_tokens: list[int]
+    trajectory_tokens: list[int]
+    move_tokens: list[int]
+    target_tokens: list[int]
+    outcome: int
+    turn: int
+    game_id: int

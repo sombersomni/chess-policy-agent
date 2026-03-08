@@ -22,30 +22,12 @@ from torch.utils.data import Dataset
 from chess_sim.data.move_tokenizer import MoveTokenizer
 from chess_sim.data.move_vocab import EOS_IDX, PAD_IDX, SOS_IDX
 from chess_sim.data.tokenizer import BoardTokenizer
+from chess_sim.data.tokenizer_utils import (
+    make_trajectory_tokens as _make_trajectory_tokens,
+)
 from chess_sim.types import GameTurnBatch, GameTurnSample
 
 logger = logging.getLogger(__name__)
-
-
-def _make_trajectory_tokens(
-    move_history: list[chess.Move],
-) -> list[int]:
-    """Return trajectory_tokens len-65 from last two half-moves.
-
-    Index 0 is CLS (always 0). Indices 1-64 map to squares a1-h8.
-    Values: 0=none, 1=player prev loc, 2=player curr loc,
-            3=opp prev loc, 4=opp curr loc.
-    """
-    tokens: list[int] = [0] * 65
-    if len(move_history) >= 2:
-        pl = move_history[-2]
-        tokens[pl.from_square + 1] = 1
-        tokens[pl.to_square + 1] = 2
-    if len(move_history) >= 1:
-        opp = move_history[-1]
-        tokens[opp.from_square + 1] = 3
-        tokens[opp.to_square + 1] = 4
-    return tokens
 
 
 def _stream_pgn(path: Path) -> Iterator[chess.pgn.Game]:

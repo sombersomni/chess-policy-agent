@@ -78,8 +78,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to a YAML v2 config file.",
     )
     p.add_argument(
+        "--pgn", type=str, default=None,
+        help="Path to a real PGN file (.pgn or .pgn.zst).",
+    )
+    p.add_argument(
         "--num-games", type=int, default=None,
         help="Number of synthetic games to generate.",
+    )
+    p.add_argument(
+        "--max-games", type=int, default=None,
+        help="Max games to load from PGN file.",
+    )
+    p.add_argument(
+        "--winners-only", action="store_true", default=False,
+        help="Only include games with decisive result.",
     )
     p.add_argument(
         "--epochs", type=int, default=None,
@@ -113,8 +125,14 @@ def _merge_v2_config(
     Returns:
         Updated cfg with CLI overrides applied.
     """
+    if args.pgn is not None:
+        cfg.data.pgn = args.pgn
     if args.num_games is not None:
         cfg.data.num_games = args.num_games
+    if args.max_games is not None:
+        cfg.data.max_games = args.max_games
+    if args.winners_only:
+        cfg.data.winners_only = True
     if args.batch_size is not None:
         cfg.data.batch_size = args.batch_size
     if args.epochs is not None:
@@ -153,16 +171,25 @@ def main() -> None:
     # Set seeds for reproducibility
     torch.manual_seed(args.seed)
 
-    # Generate synthetic PGN
-    pgn_path = write_synthetic_pgn(
-        cfg.data.num_games, seed=args.seed
-    )
+    # Determine PGN source: real file or synthetic
+    is_synthetic = False
+    if cfg.data.pgn:
+        pgn_path = Path(cfg.data.pgn)
+        logger.info("Using real PGN: %s", pgn_path)
+        max_games = cfg.data.max_games
+    else:
+        pgn_path = write_synthetic_pgn(
+            cfg.data.num_games, seed=args.seed
+        )
+        max_games = cfg.data.num_games
+        is_synthetic = True
 
     # Build dataset
     logger.info("Building PGNSequenceDataset from %s ...", pgn_path)
     full_ds = PGNSequenceDataset(
         pgn_path=str(pgn_path),
-        max_games=cfg.data.num_games,
+        max_games=max_games,
+        winners_only=cfg.data.winners_only,
     )
     logger.info("Total samples: %d", len(full_ds))
 
@@ -253,9 +280,10 @@ def main() -> None:
         trainer.save_checkpoint(ckpt_path)
         logger.info("Checkpoint saved to %s", ckpt_path)
 
-    # Cleanup temp PGN
-    pgn_path.unlink(missing_ok=True)
-    logger.info("Cleaned up temp PGN: %s", pgn_path)
+    # Cleanup temp PGN (only if synthetic)
+    if is_synthetic:
+        pgn_path.unlink(missing_ok=True)
+        logger.info("Cleaned up temp PGN: %s", pgn_path)
 
 
 if __name__ == "__main__":

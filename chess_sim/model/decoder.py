@@ -48,7 +48,23 @@ class MoveDecoder(nn.Module):
             >>> dec = MoveDecoder()
             >>> dec = MoveDecoder(DecoderConfig(n_layers=2))
         """
-        raise NotImplementedError("To be implemented")
+        super().__init__()
+        cfg = decoder_cfg or DecoderConfig()
+        self.move_embedding = MoveEmbedding(cfg)
+        layer = nn.TransformerDecoderLayer(
+            d_model=cfg.d_model,
+            nhead=cfg.n_heads,
+            dim_feedforward=cfg.dim_feedforward,
+            dropout=cfg.dropout,
+            batch_first=True,
+        )
+        self.transformer = nn.TransformerDecoder(
+            layer, num_layers=cfg.n_layers,
+        )
+        self.norm = nn.LayerNorm(cfg.d_model)
+        self.output_proj = nn.Linear(
+            cfg.d_model, cfg.move_vocab_size
+        )
 
     def _causal_mask(self, seq_len: int) -> Tensor:
         """Generate an upper-triangular causal mask for autoregressive decoding.
@@ -70,7 +86,10 @@ class MoveDecoder(nn.Module):
             >>> mask[1, 0]  # position 1 can see position 0
             False
         """
-        raise NotImplementedError("To be implemented")
+        return torch.triu(
+            torch.ones(seq_len, seq_len, dtype=torch.bool),
+            diagonal=1,
+        )
 
     def decode(
         self,
@@ -97,7 +116,16 @@ class MoveDecoder(nn.Module):
             >>> out.logits.shape
             torch.Size([4, 20, 1971])
         """
-        raise NotImplementedError("To be implemented")
+        T = move_tokens.size(1)
+        tgt = self.move_embedding(move_tokens)
+        causal = self._causal_mask(T).to(memory.device)
+        out = self.transformer(
+            tgt, memory,
+            tgt_mask=causal,
+            tgt_key_padding_mask=tgt_key_padding_mask,
+        )
+        out = self.norm(out)
+        return DecoderOutput(logits=self.output_proj(out))
 
     def forward(
         self,

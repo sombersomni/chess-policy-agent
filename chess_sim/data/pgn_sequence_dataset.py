@@ -7,14 +7,75 @@ pads variable-length move sequences within a batch.
 
 from __future__ import annotations
 
-from typing import Optional
+import io
+import logging
+from pathlib import Path
+from typing import Iterator
 
+import chess
+import chess.pgn
 import torch
 from torch import Tensor
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
-from chess_sim.data.move_vocab import PAD_IDX
+from chess_sim.data.move_tokenizer import MoveTokenizer
+from chess_sim.data.move_vocab import EOS_IDX, PAD_IDX, SOS_IDX
+from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.types import GameTurnBatch, GameTurnSample
+
+logger = logging.getLogger(__name__)
+
+
+def _make_trajectory_tokens(
+    move_history: list[chess.Move],
+) -> list[int]:
+    """Return trajectory_tokens len-65 from last two half-moves.
+
+    Index 0 is CLS (always 0). Indices 1-64 map to squares a1-h8.
+    Values: 0=none, 1=player prev loc, 2=player curr loc,
+            3=opp prev loc, 4=opp curr loc.
+    """
+    tokens: list[int] = [0] * 65
+    if len(move_history) >= 2:
+        pl = move_history[-2]
+        tokens[pl.from_square + 1] = 1
+        tokens[pl.to_square + 1] = 2
+    if len(move_history) >= 1:
+        opp = move_history[-1]
+        tokens[opp.from_square + 1] = 3
+        tokens[opp.to_square + 1] = 4
+    return tokens
+
+
+def _stream_pgn(path: Path) -> Iterator[chess.pgn.Game]:
+    """Yield games from a plain .pgn or .zst file."""
+    if path.suffix == ".zst":
+        import zstandard
+        dctx = zstandard.ZstdDecompressor()
+        with open(path, "rb") as fh:
+            with dctx.stream_reader(fh) as reader:
+                text_io = io.TextIOWrapper(
+                    reader, encoding="utf-8",
+                    errors="replace",
+                )
+                yield from _read_games(text_io)
+    else:
+        with open(
+            path, encoding="utf-8", errors="replace"
+        ) as fh:
+            yield from _read_games(fh)
+
+
+def _read_games(
+    fh: io.TextIOWrapper,
+) -> Iterator[chess.pgn.Game]:
+    """Read games from a text stream until exhausted."""
+    while True:
+        game = chess.pgn.read_game(fh)
+        if game is None:
+            break
+        yield game
 
 
 class PGNSequenceDataset(Dataset[GameTurnSample]):
@@ -47,12 +108,101 @@ class PGNSequenceDataset(Dataset[GameTurnSample]):
         Args:
             pgn_path: Path to a PGN file (plain text or .zst).
             max_games: Maximum number of games to load. 0 = all.
-            winners_only: If True, only include games with a decisive result.
+            winners_only: If True, only include games with decisive result.
 
         Example:
             >>> ds = PGNSequenceDataset("games.pgn", max_games=100)
         """
-        raise NotImplementedError("To be implemented")
+        super().__init__()
+        self._samples: list[GameTurnSample] = []
+        self._build(
+            Path(pgn_path), max_games, winners_only
+        )
+
+    def _build(
+        self,
+        pgn_path: Path,
+        max_games: int,
+        winners_only: bool,
+    ) -> None:
+        """Parse PGN and build per-ply samples."""
+        board_tok = BoardTokenizer()
+        move_tok = MoveTokenizer()
+        game_count = 0
+
+        for game in _stream_pgn(pgn_path):
+            if max_games > 0 and game_count >= max_games:
+                break
+            result = game.headers.get("Result", "*")
+            if winners_only and result not in (
+                "1-0", "0-1",
+            ):
+                continue
+
+            board = game.board()
+            moves = list(game.mainline_moves())
+            if not moves:
+                continue
+
+            move_history: list[chess.Move] = []
+            uci_history: list[str] = []
+
+            for t, move in enumerate(moves):
+                # Board state BEFORE this move
+                tb = board_tok.tokenize(board, board.turn)
+                traj = _make_trajectory_tokens(move_history)
+
+                board_tokens = torch.tensor(
+                    tb.board_tokens, dtype=torch.long
+                )
+                color_tokens = torch.tensor(
+                    tb.color_tokens, dtype=torch.long
+                )
+                trajectory_tokens = torch.tensor(
+                    traj, dtype=torch.long
+                )
+
+                # Decoder input: SOS + moves[:t]
+                input_ids = [SOS_IDX] + [
+                    move_tok.tokenize_move(u)
+                    for u in uci_history
+                ]
+                move_tokens = torch.tensor(
+                    input_ids, dtype=torch.long
+                )
+
+                # Target: moves[:t] + current move
+                target_ids = [
+                    move_tok.tokenize_move(u)
+                    for u in uci_history
+                ] + [move_tok.tokenize_move(move.uci())]
+                target_tokens = torch.tensor(
+                    target_ids, dtype=torch.long
+                )
+
+                move_pad_mask = torch.zeros(
+                    len(input_ids), dtype=torch.bool
+                )
+
+                self._samples.append(GameTurnSample(
+                    board_tokens=board_tokens,
+                    color_tokens=color_tokens,
+                    trajectory_tokens=trajectory_tokens,
+                    move_tokens=move_tokens,
+                    target_tokens=target_tokens,
+                    move_pad_mask=move_pad_mask,
+                ))
+
+                uci_history.append(move.uci())
+                move_history.append(move)
+                board.push(move)
+
+            game_count += 1
+
+        logger.info(
+            "Built %d samples from %d games",
+            len(self._samples), game_count,
+        )
 
     def __len__(self) -> int:
         """Return the total number of game-turn samples.
@@ -64,7 +214,7 @@ class PGNSequenceDataset(Dataset[GameTurnSample]):
             >>> len(ds)
             5000
         """
-        raise NotImplementedError("To be implemented")
+        return len(self._samples)
 
     def __getitem__(self, idx: int) -> GameTurnSample:
         """Return the GameTurnSample at the given index.
@@ -83,15 +233,15 @@ class PGNSequenceDataset(Dataset[GameTurnSample]):
             >>> sample.move_tokens.dtype
             torch.int64
         """
-        raise NotImplementedError("To be implemented")
+        return self._samples[idx]
 
 
 class PGNSequenceCollator:
-    """Collate function that pads move sequences to the max length in a batch.
+    """Collate function that pads move sequences in a batch.
 
     Used as the collate_fn argument to DataLoader. Pads move_tokens,
-    target_tokens, and move_pad_mask to the longest sequence in the batch.
-    Board/color/trajectory tokens are stacked directly (fixed length 65).
+    target_tokens, and move_pad_mask to the longest sequence in batch.
+    Board/color/trajectory tokens are stacked directly (fixed len 65).
 
     Attributes:
         pad_idx: Integer padding index for move tokens. Default PAD_IDX.
@@ -105,21 +255,23 @@ class PGNSequenceCollator:
         """Initialize with a padding index.
 
         Args:
-            pad_idx: Token index used for padding. Defaults to PAD_IDX (0).
+            pad_idx: Token index used for padding. Default PAD_IDX (0).
 
         Example:
             >>> collator = PGNSequenceCollator()
         """
-        raise NotImplementedError("To be implemented")
+        self.pad_idx = pad_idx
 
-    def __call__(self, samples: list[GameTurnSample]) -> GameTurnBatch:
-        """Collate a list of GameTurnSamples into a padded GameTurnBatch.
+    def __call__(
+        self, samples: list[GameTurnSample]
+    ) -> GameTurnBatch:
+        """Collate GameTurnSamples into a padded GameTurnBatch.
 
         Pads move_tokens, target_tokens with pad_idx and move_pad_mask
         with True at padding positions. Stacks fixed-size board tokens.
 
         Args:
-            samples: List of GameTurnSample namedtuples from the dataset.
+            samples: List of GameTurnSample namedtuples.
 
         Returns:
             GameTurnBatch with all tensors batched and padded.
@@ -129,4 +281,45 @@ class PGNSequenceCollator:
             >>> batch.move_tokens.shape[0]
             3
         """
-        raise NotImplementedError("To be implemented")
+        board_tokens = torch.stack(
+            [s.board_tokens for s in samples]
+        )
+        color_tokens = torch.stack(
+            [s.color_tokens for s in samples]
+        )
+        trajectory_tokens = torch.stack(
+            [s.trajectory_tokens for s in samples]
+        )
+
+        # Pad variable-length move sequences
+        move_tokens = pad_sequence(
+            [s.move_tokens for s in samples],
+            batch_first=True,
+            padding_value=self.pad_idx,
+        )
+        target_tokens = pad_sequence(
+            [s.target_tokens for s in samples],
+            batch_first=True,
+            padding_value=self.pad_idx,
+        )
+        # Build pad mask: True where padded
+        max_len = move_tokens.size(1)
+        move_pad_mask = torch.stack([
+            torch.cat([
+                s.move_pad_mask,
+                torch.ones(
+                    max_len - len(s.move_pad_mask),
+                    dtype=torch.bool,
+                ),
+            ])
+            for s in samples
+        ])
+
+        return GameTurnBatch(
+            board_tokens=board_tokens,
+            color_tokens=color_tokens,
+            trajectory_tokens=trajectory_tokens,
+            move_tokens=move_tokens,
+            target_tokens=target_tokens,
+            move_pad_mask=move_pad_mask,
+        )

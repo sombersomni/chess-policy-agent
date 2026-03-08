@@ -7,6 +7,7 @@ The two are summed element-wise.
 
 from __future__ import annotations
 
+import torch
 import torch.nn as nn
 from torch import Tensor
 
@@ -43,7 +44,14 @@ class MoveEmbedding(nn.Module):
             >>> emb = MoveEmbedding()
             >>> emb = MoveEmbedding(DecoderConfig(d_model=128))
         """
-        raise NotImplementedError("To be implemented")
+        super().__init__()
+        cfg = decoder_cfg or DecoderConfig()
+        self.token_emb = nn.Embedding(
+            cfg.move_vocab_size, cfg.d_model,
+            padding_idx=PAD_IDX,
+        )
+        self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.d_model)
+        self.dropout = nn.Dropout(cfg.dropout)
 
     def embed_moves(self, move_tokens: Tensor) -> Tensor:
         """Embed a batch of move token sequences.
@@ -63,7 +71,13 @@ class MoveEmbedding(nn.Module):
             >>> out.shape
             torch.Size([4, 20, 256])
         """
-        raise NotImplementedError("To be implemented")
+        positions = torch.arange(
+            move_tokens.size(1), device=move_tokens.device
+        )
+        return self.dropout(
+            self.token_emb(move_tokens)
+            + self.pos_emb(positions)
+        )
 
     def forward(self, move_tokens: Tensor) -> Tensor:
         """nn.Module forward -- delegates to embed_moves().

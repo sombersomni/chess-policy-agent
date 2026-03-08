@@ -56,7 +56,108 @@ class MoveVocab:
             >>> len(vocab) > 1900
             True
         """
-        raise NotImplementedError("To be implemented")
+        import chess
+
+        self._encode: dict[str, int] = {}
+        self._decode: dict[int, str] = {}
+        # Reserve special tokens at indices 0, 1, 2.
+        idx = 3
+        moves: list[str] = []
+        for sq in range(64):
+            rank, file = sq // 8, sq % 8
+            moves.extend(
+                self._piece_moves(sq, rank, file)
+            )
+        # Deduplicate preserving order, assign indices.
+        seen: set[str] = set()
+        for uci in moves:
+            if uci not in seen:
+                seen.add(uci)
+                self._encode[uci] = idx
+                self._decode[idx] = uci
+                idx += 1
+
+    @staticmethod
+    def _piece_moves(
+        sq: int, rank: int, file: int
+    ) -> list[str]:
+        """Enumerate all piece-reachable UCI strings from sq."""
+        import chess
+
+        result: list[str] = []
+        promos = [
+            chess.QUEEN, chess.ROOK,
+            chess.BISHOP, chess.KNIGHT,
+        ]
+
+        def _add(to: int, promo: bool = False) -> None:
+            if promo:
+                for p in promos:
+                    result.append(
+                        chess.Move(sq, to, promotion=p).uci()
+                    )
+            else:
+                result.append(chess.Move(sq, to).uci())
+
+        # Knight
+        for dr, df in [
+            (-2, -1), (-2, 1), (-1, -2), (-1, 2),
+            (1, -2), (1, 2), (2, -1), (2, 1),
+        ]:
+            r2, f2 = rank + dr, file + df
+            if 0 <= r2 < 8 and 0 <= f2 < 8:
+                _add(r2 * 8 + f2)
+
+        # King (1-square moves)
+        for dr in [-1, 0, 1]:
+            for df in [-1, 0, 1]:
+                if dr == 0 and df == 0:
+                    continue
+                r2, f2 = rank + dr, file + df
+                if 0 <= r2 < 8 and 0 <= f2 < 8:
+                    _add(r2 * 8 + f2)
+
+        # Rook / Queen (straight lines)
+        for d in range(1, 8):
+            for dr, df in [(d, 0), (-d, 0), (0, d), (0, -d)]:
+                r2, f2 = rank + dr, file + df
+                if 0 <= r2 < 8 and 0 <= f2 < 8:
+                    _add(r2 * 8 + f2)
+
+        # Bishop / Queen (diagonals)
+        for d in range(1, 8):
+            for dr, df in [
+                (d, d), (d, -d), (-d, d), (-d, -d),
+            ]:
+                r2, f2 = rank + dr, file + df
+                if 0 <= r2 < 8 and 0 <= f2 < 8:
+                    _add(r2 * 8 + f2)
+
+        # White pawn (rank increases)
+        if rank < 7:
+            to_rank = rank + 1
+            is_promo = to_rank == 7
+            _add(to_rank * 8 + file, promo=is_promo)
+            if rank == 1:
+                _add((rank + 2) * 8 + file)
+            for df in [-1, 1]:
+                f2 = file + df
+                if 0 <= f2 < 8:
+                    _add(to_rank * 8 + f2, promo=is_promo)
+
+        # Black pawn (rank decreases)
+        if rank > 0:
+            to_rank = rank - 1
+            is_promo = to_rank == 0
+            _add(to_rank * 8 + file, promo=is_promo)
+            if rank == 6:
+                _add((rank - 2) * 8 + file)
+            for df in [-1, 1]:
+                f2 = file + df
+                if 0 <= f2 < 8:
+                    _add(to_rank * 8 + f2, promo=is_promo)
+
+        return result
 
     def encode(self, uci: str) -> int:
         """Convert a UCI move string to its integer vocabulary index.
@@ -76,7 +177,7 @@ class MoveVocab:
             >>> isinstance(idx, int)
             True
         """
-        raise NotImplementedError("To be implemented")
+        return self._encode[uci]
 
     def decode(self, idx: int) -> str:
         """Convert an integer vocabulary index back to its UCI move string.
@@ -95,7 +196,7 @@ class MoveVocab:
             >>> vocab.decode(3)
             'a1a2'  # (actual value depends on enumeration)
         """
-        raise NotImplementedError("To be implemented")
+        return self._decode[idx]
 
     def __len__(self) -> int:
         """Return the total vocabulary size including special tokens.
@@ -107,7 +208,7 @@ class MoveVocab:
             >>> len(MoveVocab())
             1971
         """
-        raise NotImplementedError("To be implemented")
+        return len(self._encode) + 3  # 3 special tokens
 
     def __contains__(self, uci: str) -> bool:
         """Check whether a UCI move string is in the vocabulary.
@@ -122,4 +223,4 @@ class MoveVocab:
             >>> "e2e4" in MoveVocab()
             True
         """
-        raise NotImplementedError("To be implemented")
+        return uci in self._encode

@@ -35,7 +35,7 @@ class MoveTokenizer:
         Example:
             >>> tok = MoveTokenizer()
         """
-        raise NotImplementedError("To be implemented")
+        self._vocab = MoveVocab()
 
     def tokenize_move(self, uci: str) -> int:
         """Convert a single UCI move string to its vocabulary index.
@@ -54,7 +54,7 @@ class MoveTokenizer:
             >>> tok.tokenize_move("e2e4")
             42
         """
-        raise NotImplementedError("To be implemented")
+        return self._vocab.encode(uci)
 
     def tokenize_game(self, moves: list[str]) -> Tensor:
         """Convert a list of UCI moves to a LongTensor with SOS/EOS framing.
@@ -75,7 +75,10 @@ class MoveTokenizer:
             >>> out[-1].item() == EOS_IDX
             True
         """
-        raise NotImplementedError("To be implemented")
+        indices = [SOS_IDX] + [
+            self._vocab.encode(m) for m in moves
+        ] + [EOS_IDX]
+        return torch.tensor(indices, dtype=torch.long)
 
     def build_legal_mask(self, legal_moves: list[str]) -> Tensor:
         """Build a boolean mask over the move vocabulary for legal moves.
@@ -95,4 +98,12 @@ class MoveTokenizer:
             >>> mask.sum().item()
             2
         """
-        raise NotImplementedError("To be implemented")
+        mask = torch.zeros(len(self._vocab), dtype=torch.bool)
+        for uci in legal_moves:
+            idx = self._vocab.encode(uci)
+            mask[idx] = True
+        # Ensure special tokens are always False.
+        mask[PAD_IDX] = False
+        mask[SOS_IDX] = False
+        mask[EOS_IDX] = False
+        return mask

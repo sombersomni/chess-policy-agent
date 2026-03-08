@@ -58,7 +58,11 @@ class ChessModel(nn.Module):
             >>> model = ChessModel()
             >>> model = ChessModel(ModelConfig(n_layers=4), DecoderConfig(n_layers=2))
         """
-        raise NotImplementedError("To be implemented")
+        super().__init__()
+        model_cfg = model_cfg or ModelConfig()
+        decoder_cfg = decoder_cfg or DecoderConfig()
+        self.encoder = ChessEncoder(model_cfg)
+        self.decoder = MoveDecoder(decoder_cfg)
 
     def forward(
         self,
@@ -85,7 +89,20 @@ class ChessModel(nn.Module):
             >>> logits.shape
             torch.Size([4, 20, 1971])
         """
-        raise NotImplementedError("To be implemented")
+        enc_out = self.encoder.encode(
+            board_tokens, color_tokens, trajectory_tokens,
+        )
+        # memory: [B, 65, d_model] — CLS + 64 squares
+        memory = torch.cat(
+            [
+                enc_out.cls_embedding.unsqueeze(1),
+                enc_out.square_embeddings,
+            ],
+            dim=1,
+        )
+        return self.decoder.decode(
+            move_tokens, memory, move_pad_mask,
+        ).logits
 
     def predict_next_move(
         self,
@@ -118,4 +135,30 @@ class ChessModel(nn.Module):
             >>> isinstance(move, str)
             True
         """
-        raise NotImplementedError("To be implemented")
+        from chess_sim.data.move_tokenizer import MoveTokenizer
+
+        tok = MoveTokenizer()
+        # Build decoder input: SOS + move_history (drop EOS)
+        move_tokens = tok.tokenize_game(
+            move_history
+        ).unsqueeze(0).to(board_tokens.device)
+        # Drop trailing EOS for decoder input
+        move_tokens = move_tokens[:, :-1]
+
+        self.eval()
+        with torch.no_grad():
+            logits = self.forward(
+                board_tokens, color_tokens,
+                trajectory_tokens, move_tokens,
+            )
+        # Take logits at the last position
+        next_logits = logits[0, -1, :]  # [V]
+        legal_mask = tok.build_legal_mask(
+            legal_moves
+        ).to(next_logits.device)
+        next_logits[~legal_mask] = -1e9
+        probs = torch.softmax(
+            next_logits / temperature, dim=-1
+        )
+        idx = torch.multinomial(probs, num_samples=1).item()
+        return tok._vocab.decode(idx)  # type: ignore[arg-type]

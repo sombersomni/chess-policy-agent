@@ -1,0 +1,114 @@
+"""PGNReplayer: replays a chess.pgn.Game into OfflinePlyTuple records.
+
+Implements the Replayable protocol. Iterates all mainline moves,
+captures board state BEFORE each move, computes material delta and
+check status AFTER, and determines winner/loser ply assignment from
+the game result header.
+"""
+from __future__ import annotations
+
+import logging
+
+import chess
+import chess.pgn
+import torch
+
+from chess_sim.data.move_tokenizer import MoveTokenizer
+from chess_sim.data.tokenizer import BoardTokenizer
+from chess_sim.training.phase2_trainer import (
+    _make_trajectory_tokens,
+)
+from chess_sim.training.training_utils import material_balance
+from chess_sim.types import OfflinePlyTuple
+
+logger = logging.getLogger(__name__)
+
+# Result header -> (white_wins, black_wins) mapping
+_RESULT_MAP: dict[str, tuple[bool, bool]] = {
+    "1-0": (True, False),
+    "0-1": (False, True),
+    "1/2-1/2": (True, True),  # draw: both sides "win"
+}
+
+
+class PGNReplayer:
+    """Replays a chess.pgn.Game into a list of OfflinePlyTuple.
+
+    Implements the Replayable protocol.
+    """
+
+    def __init__(self) -> None:
+        """Initialize tokenizers for board and move encoding."""
+        self._board_tok = BoardTokenizer()
+        self._move_tok = MoveTokenizer()
+
+    def replay(
+        self,
+        game: chess.pgn.Game,
+    ) -> list[OfflinePlyTuple]:
+        """Replay all moves, returning one OfflinePlyTuple per ply.
+
+        Skips games with unknown result (e.g. '*').
+
+        Args:
+            game: A parsed PGN game object.
+
+        Returns:
+            List of OfflinePlyTuple in game order.
+            Empty if result is unknown or no moves.
+        """
+        result = game.headers.get("Result", "*")
+        if result not in _RESULT_MAP:
+            return []
+
+        white_wins, black_wins = _RESULT_MAP[result]
+        board = game.board()
+        move_history: list[chess.Move] = []
+        plies: list[OfflinePlyTuple] = []
+
+        for move in game.mainline_moves():
+            is_white_ply = board.turn == chess.WHITE
+            is_winner = (
+                white_wins if is_white_ply else black_wins
+            )
+
+            # Tokenize board BEFORE push
+            tb = self._board_tok.tokenize(board, board.turn)
+            bt = torch.tensor(
+                tb.board_tokens, dtype=torch.long
+            )
+            ct = torch.tensor(
+                tb.color_tokens, dtype=torch.long
+            )
+            traj = _make_trajectory_tokens(move_history)
+            tt = torch.tensor(traj, dtype=torch.long)
+
+            # Build move prefix: SOS + prior moves (no EOS)
+            prior_ucis = [m.uci() for m in move_history]
+            prefix = self._move_tok.tokenize_game(prior_ucis)
+            prefix = prefix[:-1]  # drop EOS
+
+            # Capture material before push
+            mat_before = material_balance(board)
+
+            # Push the move
+            board.push(move)
+
+            # Compute post-move signals
+            mat_delta = material_balance(board) - mat_before
+            gave_check = 1.0 if board.is_check() else 0.0
+
+            plies.append(OfflinePlyTuple(
+                board_tokens=bt,
+                color_tokens=ct,
+                traj_tokens=tt,
+                move_prefix=prefix,
+                move_uci=move.uci(),
+                is_winner_ply=is_winner,
+                is_white_ply=is_white_ply,
+                material_delta=mat_delta,
+                gave_check=gave_check,
+            ))
+            move_history.append(move)
+
+        return plies

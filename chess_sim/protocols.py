@@ -19,6 +19,7 @@ from chess_sim.types import (
     ChessBatch,
     EncoderOutput,
     EpisodeRecord,
+    OfflinePlyTuple,
     PlyTuple,
     PredictionOutput,
     RawTurnRecord,
@@ -26,8 +27,15 @@ from chess_sim.types import (
 )
 
 if TYPE_CHECKING:
-    from chess_sim.config import Phase2Config, PreprocessV2Config
-    from chess_sim.data.streaming_types import ManifestInfo, PreprocessConfig
+    from chess_sim.config import (
+        Phase2Config,
+        PreprocessV2Config,
+        RLConfig,
+    )
+    from chess_sim.data.streaming_types import (
+        ManifestInfo,
+        PreprocessConfig,
+    )
 
 
 @runtime_checkable
@@ -502,4 +510,50 @@ class Updatable(Protocol):
         opponent: nn.Module,
     ) -> None:
         """Update opponent: theta_opp <- alpha*theta_opp + (1-alpha)*theta_player."""
+        ...
+
+
+# -------------------------------------------------------------------
+# Offline RL PGN Protocols
+# -------------------------------------------------------------------
+
+
+@runtime_checkable
+class Replayable(Protocol):
+    """Replays a PGN game into per-ply offline RL tuples."""
+
+    def replay(
+        self,
+        game: chess.pgn.Game,
+    ) -> list[OfflinePlyTuple]:
+        """Replay all moves and return one OfflinePlyTuple per ply.
+
+        Args:
+            game: A parsed PGN game object.
+
+        Returns:
+            List of OfflinePlyTuple, one per half-move. Empty if
+            the game result is unknown or the move list is invalid.
+        """
+        ...
+
+
+@runtime_checkable
+class OfflineComputable(Protocol):
+    """Converts offline ply tuples into a per-ply reward tensor."""
+
+    def compute(
+        self,
+        plies: list[OfflinePlyTuple],
+        cfg: "RLConfig",
+    ) -> Tensor:
+        """Return reward tensor of shape [T], one value per ply.
+
+        Args:
+            plies: List of OfflinePlyTuple from PGNReplayer.
+            cfg: RLConfig with gamma, reward values, lambdas.
+
+        Returns:
+            FloatTensor of shape [T] with per-ply rewards.
+        """
         ...

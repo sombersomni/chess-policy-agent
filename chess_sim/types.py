@@ -219,6 +219,25 @@ class RawTurnRecord(NamedTuple):
 # ---------------------------------------------------------------------------
 
 
+class OfflinePlyTuple(NamedTuple):
+    """One half-move from PGN replay for offline RL training.
+
+    board_tokens/color_tokens/traj_tokens/move_prefix are captured
+    BEFORE the move is applied. material_delta and gave_check are
+    computed AFTER.
+    """
+
+    board_tokens: Tensor
+    color_tokens: Tensor
+    traj_tokens: Tensor
+    move_prefix: Tensor        # SOS + prior move vocab indices
+    move_uci: str
+    is_winner_ply: bool        # True = positive reward side
+    is_white_ply: bool         # True when white is side-to-move
+    material_delta: float = 0.0  # white-frame signed material
+    gave_check: float = 0.0   # 1.0 if move gave check
+
+
 class PlyTuple(NamedTuple):
     """Per-ply record for one half-move during a self-play episode.
 

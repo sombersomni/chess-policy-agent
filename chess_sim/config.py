@@ -431,6 +431,106 @@ def load_simulate_config(path: Path) -> SimulateConfig:
     )
 
 
+# ---------------------------------------------------------------------------
+# Offline RL PGN configs
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RLConfig:
+    """Hyperparameters for offline RL training on PGN games."""
+
+    learning_rate: float = 1e-4
+    weight_decay: float = 0.01
+    warmup_fraction: float = 0.05
+    decay_start_fraction: float = 0.5
+    min_lr: float = 1e-5
+    gradient_clip: float = 1.0
+    epochs: int = 20
+    checkpoint: str = ""
+    resume: str = ""
+    gamma: float = 0.99
+    win_reward: float = 1.0
+    loss_reward: float = -1.0
+    draw_reward: float = 0.0
+    lambda_material: float = 0.01
+    lambda_check: float = 0.1
+    lambda_ce: float = 0.5
+    label_smoothing: float = 0.1
+
+    def __post_init__(self) -> None:
+        """Validate RL hyperparameter ranges."""
+        if self.lambda_ce < 0:
+            raise ValueError(
+                f"lambda_ce must be >= 0, got {self.lambda_ce}"
+            )
+        if not (0 < self.gamma <= 1):
+            raise ValueError(
+                f"gamma must be in (0, 1], got {self.gamma}"
+            )
+        if self.win_reward <= 0:
+            raise ValueError(
+                f"win_reward must be > 0, got {self.win_reward}"
+            )
+        if self.loss_reward >= 0:
+            raise ValueError(
+                "loss_reward must be < 0, "
+                f"got {self.loss_reward}"
+            )
+        if self.warmup_fraction >= self.decay_start_fraction:
+            raise ValueError(
+                "warmup_fraction must be < decay_start_fraction"
+                f", got {self.warmup_fraction} >= "
+                f"{self.decay_start_fraction}"
+            )
+
+
+@dataclass
+class PGNRLConfig:
+    """Root config for offline RL PGN training."""
+
+    data: DataConfig = field(default_factory=DataConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    decoder: DecoderConfig = field(
+        default_factory=DecoderConfig
+    )
+    rl: RLConfig = field(default_factory=RLConfig)
+    aim: AimConfig = field(default_factory=AimConfig)
+
+
+def load_pgn_rl_config(path: Path) -> PGNRLConfig:
+    """Load PGNRLConfig from a YAML file.
+
+    Parses data, model, decoder, rl, and aim sections.
+    Unknown keys raise TypeError immediately.
+
+    Args:
+        path: Path to the YAML config file.
+
+    Returns:
+        Fully populated PGNRLConfig.
+
+    Raises:
+        FileNotFoundError: If path does not exist.
+        TypeError: If YAML contains unknown keys.
+
+    Example:
+        >>> cfg = load_pgn_rl_config(Path("configs/train_rl.yaml"))
+        >>> cfg.rl.gamma
+        0.99
+    """
+    raw: dict[str, Any] = (
+        yaml.safe_load(path.read_text()) or {}
+    )
+    return PGNRLConfig(
+        data=DataConfig(**raw.get("data", {})),
+        model=ModelConfig(**raw.get("model", {})),
+        decoder=DecoderConfig(**raw.get("decoder", {})),
+        rl=RLConfig(**raw.get("rl", {})),
+        aim=AimConfig(**raw.get("aim", {})),
+    )
+
+
 def load_preprocess_v2_config(
     path: Path,
 ) -> PreprocessV2Config:

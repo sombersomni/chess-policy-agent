@@ -6,12 +6,13 @@
 # Replace YOUR_GITHUB_USERNAME, e.g.:
 #   image: ghcr.io/sombersomni/chess-sim:ci
 #
-# imagePullSecrets references the K8s secret created via:
+# imagePullSecrets references the K8s secret created via gh CLI
+# (avoids storing a long-lived PAT — uses your active gh auth session):
 #   kubectl create secret docker-registry ghcr-secret \
 #     --namespace jenkins \
 #     --docker-server=ghcr.io \
-#     --docker-username=YOUR_GITHUB_USERNAME \
-#     --docker-password=YOUR_GITHUB_PAT
+#     --docker-username=$(gh api user --jq .login) \
+#     --docker-password=$(gh auth token)
 #
 # The 'chess-sim' container runs the lint and test stages.
 # The default 'jnlp' sidecar (added automatically by the K8s plugin)

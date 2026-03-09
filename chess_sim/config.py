@@ -224,7 +224,7 @@ class Phase2Config:
             )
         if self.lambda_illegal > 0:
             raise ValueError(
-                "lambda_illegal must be <= 0 (penalty), "
+                "lambda_illegal must be <= 0, "
                 f"got {self.lambda_illegal}"
             )
         if self.lambda_check < 0:

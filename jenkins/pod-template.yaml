@@ -3,8 +3,15 @@
 #
 # Referenced by Jenkinsfile via: yamlFile 'jenkins/pod-template.yaml'
 #
-# Replace YOUR_DOCKERHUB_USER with your Docker Hub username, e.g.:
-#   image: sombersomni/chess-sim:ci
+# Replace YOUR_GITHUB_USERNAME, e.g.:
+#   image: ghcr.io/sombersomni/chess-sim:ci
+#
+# imagePullSecrets references the K8s secret created via:
+#   kubectl create secret docker-registry ghcr-secret \
+#     --namespace jenkins \
+#     --docker-server=ghcr.io \
+#     --docker-username=YOUR_GITHUB_USERNAME \
+#     --docker-password=YOUR_GITHUB_PAT
 #
 # The 'chess-sim' container runs the lint and test stages.
 # The default 'jnlp' sidecar (added automatically by the K8s plugin)
@@ -17,9 +24,11 @@ metadata:
   labels:
     app: chess-sim-ci
 spec:
+  imagePullSecrets:
+    - name: ghcr-secret
   containers:
     - name: chess-sim
-      image: YOUR_DOCKERHUB_USER/chess-sim:ci
+      image: ghcr.io/YOUR_GITHUB_USERNAME/chess-sim:ci
       command: ["sleep"]
       args: ["infinity"]
       env:

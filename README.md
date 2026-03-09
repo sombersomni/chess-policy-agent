@@ -111,6 +111,56 @@ Each board is encoded as 65 tokens: `[CLS, a1, b1, ..., h8]`.
 
 ---
 
+## CI Pipeline
+
+Every PR triggers a Jenkins build on the Kubernetes cluster (`10.0.0.169`).
+The pipeline runs two stages — lint then tests — inside an ephemeral K8s pod
+built from `ghcr.io/<user>/chess-sim:ci`.
+
+```mermaid
+flowchart LR
+    PR[GitHub PR] -->|webhook| JK[Jenkins on K8s]
+    JK -->|K8s plugin| POD[chess-sim:ci pod\nCPU-only]
+    POD --> L[ruff check .]
+    L --> T[unittest discover]
+    T -->|commit status| GH[GitHub PR ✅ / ❌]
+```
+
+### CI image versioning
+
+The CI image (`Dockerfile.ci`) contains only Python deps — no source code.
+Rebuild and push a new version whenever **`requirements.txt`, the base image,
+or the system packages change**.
+
+| Tag | Example | Use |
+|---|---|---|
+| `ci-vMAJOR.MINOR.PATCH` | `ci-v1.0.0` | Pinned release — use this in `jenkins/pod-template.yaml` |
+| `ci-sha-<7>` | `ci-sha-a3f9c1` | Immutable per-commit tag, always pushed alongside the version tag |
+| `ci-latest` | `ci-latest` | Convenience alias; never pin K8s manifests to this |
+
+**Build, tag, and push:**
+```bash
+VERSION=ci-v1.0.0
+SHA=ci-sha-$(git rev-parse --short HEAD)
+REPO=ghcr.io/$(gh api user --jq .login)/chess-sim
+
+gh auth token | docker login ghcr.io -u $(gh api user --jq .login) --password-stdin
+
+docker build -f Dockerfile.ci \
+    -t ${REPO}:${VERSION} \
+    -t ${REPO}:${SHA} \
+    -t ${REPO}:ci-latest .
+
+docker push ${REPO}:${VERSION}
+docker push ${REPO}:${SHA}
+docker push ${REPO}:ci-latest
+```
+
+After pushing, update `jenkins/pod-template.yaml` line 32 to the new
+`ci-vX.Y.Z` tag and commit both changes together.
+
+---
+
 ## Setup
 
 ### Prerequisites

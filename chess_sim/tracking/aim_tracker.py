@@ -111,6 +111,37 @@ class AimTracker:
             aim.Text(message), name="logs", step=step
         )
 
+    def track_image(
+        self,
+        fig: object,
+        name: str,
+        step: int | None = None,
+    ) -> None:
+        """Log a matplotlib Figure as an aim.Image artifact.
+
+        Converts the figure to a PNG in memory and logs it via
+        aim.Image. Closes the figure after logging to free memory.
+
+        Args:
+            fig: A matplotlib Figure instance.
+            name: Display label for the image in the Aim UI.
+            step: Optional global step or epoch to associate.
+        """
+        import io
+
+        import aim
+        import matplotlib.pyplot as plt
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight")  # type: ignore[union-attr]
+        buf.seek(0)
+        self._run.track(
+            aim.Image(buf, format="png"),
+            name=name,
+            step=step,
+        )
+        plt.close(fig)  # type: ignore[arg-type]
+
     def close(self) -> None:
         """Flush and seal the aim Run.
 

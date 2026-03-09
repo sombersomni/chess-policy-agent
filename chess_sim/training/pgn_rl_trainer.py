@@ -14,12 +14,17 @@ import logging
 from pathlib import Path
 
 import chess.pgn
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import chess
+
 from chess_sim.config import PGNRLConfig
 from chess_sim.data.move_tokenizer import MoveTokenizer
+from chess_sim.data.move_vocab import MoveVocab
+from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.model.chess_model import ChessModel
 from chess_sim.tracking.noop_tracker import NoOpTracker
 from chess_sim.tracking.protocol import MetricTracker
@@ -27,6 +32,8 @@ from chess_sim.training.pgn_replayer import PGNReplayer
 from chess_sim.training.pgn_rl_reward_computer import (
     PGNRLRewardComputer,
 )
+from chess_sim.training.phase2_trainer import _make_trajectory_tokens
+from chess_sim.training.training_utils import material_balance
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +191,8 @@ class PGNRLTrainer:
         winner_logits: list[torch.Tensor] = []
         winner_targets: list[int] = []
         valid_reward_idxs: list[int] = []
+        entropy_sum: float = 0.0
+        n_entropy: int = 0
 
         for i, ply in enumerate(plies):
             bt = ply.board_tokens.unsqueeze(0).to(
@@ -209,7 +218,13 @@ class PGNRLTrainer:
             except KeyError:
                 continue
 
-            log_p = F.log_softmax(last_logits, dim=-1)
+            probs = F.softmax(last_logits, dim=-1)
+            log_p = torch.log(probs + 1e-10)
+            entropy_sum += (
+                -(probs * log_p).sum().item()
+            )
+            n_entropy += 1
+
             log_probs.append(log_p[move_idx])
             valid_reward_idxs.append(i)
 
@@ -259,11 +274,19 @@ class PGNRLTrainer:
         self._sched.step()
         self._global_step += 1
 
+        mean_entropy = (
+            entropy_sum / n_entropy if n_entropy > 0 else 0.0
+        )
+        valid_rewards_cpu = valid_rewards.cpu()
+        mean_reward = float(valid_rewards_cpu.mean())
+
         return {
             "total_loss": total_loss.item(),
             "pg_loss": pg_loss.item(),
             "ce_loss": ce_loss.item(),
             "n_plies": len(plies),
+            "mean_entropy": mean_entropy,
+            "mean_reward": mean_reward,
         }
 
     def train_epoch(
@@ -284,6 +307,8 @@ class PGNRLTrainer:
         total_loss = 0.0
         pg_loss = 0.0
         ce_loss = 0.0
+        entropy_sum = 0.0
+        reward_sum = 0.0
         n_games = 0
 
         for game in games:
@@ -293,6 +318,8 @@ class PGNRLTrainer:
             total_loss += metrics["total_loss"]
             pg_loss += metrics["pg_loss"]
             ce_loss += metrics["ce_loss"]
+            entropy_sum += metrics["mean_entropy"]
+            reward_sum += metrics["mean_reward"]
             n_games += 1
 
         denom = max(n_games, 1)
@@ -300,6 +327,8 @@ class PGNRLTrainer:
             "total_loss": total_loss / denom,
             "pg_loss": pg_loss / denom,
             "ce_loss": ce_loss / denom,
+            "mean_entropy": entropy_sum / denom,
+            "mean_reward": reward_sum / denom,
             "n_games": n_games,
         }
 
@@ -375,6 +404,138 @@ class PGNRLTrainer:
             "val_accuracy": correct / denom,
             "n_games": n_games,
         }
+
+    def sample_visuals(
+        self,
+        pgn_path: Path,
+        n_plies: int = 4,
+        top_k: int = 8,
+    ) -> list[object]:
+        """Generate matplotlib figures for sampled plies from the first game.
+
+        Replays the first game in pgn_path, evenly samples up to n_plies
+        positions, runs inference (no_grad), and returns rendered figures
+        via rl_visualizer.render_rl_ply.
+
+        Args:
+            pgn_path: Path to .pgn or .pgn.zst file.
+            n_plies: Number of positions to sample per call.
+            top_k: Number of top predicted moves to show in chart.
+
+        Returns:
+            List of matplotlib Figure objects (may be empty on failure).
+        """
+        from chess_sim.training.rl_visualizer import render_rl_ply
+
+        games = _stream_pgn(pgn_path, max_games=1)
+        if not games:
+            return []
+
+        game = games[0]
+        result = game.headers.get("Result", "*")
+        _RESULT_MAP = {
+            "1-0": (True, False),
+            "0-1": (False, True),
+            "1/2-1/2": (True, True),
+        }
+        if result not in _RESULT_MAP:
+            return []
+
+        white_wins, black_wins = _RESULT_MAP[result]
+        board_tok = BoardTokenizer()
+        move_tok = MoveTokenizer()
+        vocab = MoveVocab()
+
+        # Collect all (board_snapshot, ply_tuple) pairs
+        board = game.board()
+        move_history: list[chess.Move] = []
+        snapshots: list[tuple[chess.Board, object]] = []
+
+        for move in game.mainline_moves():
+            is_white = board.turn == chess.WHITE
+            is_winner = white_wins if is_white else black_wins
+
+            board_copy = board.copy()
+            tb = board_tok.tokenize(board, board.turn)
+            bt = torch.tensor(tb.board_tokens, dtype=torch.long)
+            ct = torch.tensor(tb.color_tokens, dtype=torch.long)
+            traj = _make_trajectory_tokens(move_history)
+            tt = torch.tensor(traj, dtype=torch.long)
+            prior = [m.uci() for m in move_history]
+            prefix_t = move_tok.tokenize_game(prior)[:-1]
+
+            mat_before = material_balance(board)
+            board.push(move)
+            mat_delta = material_balance(board) - mat_before
+            reward_base = (
+                self._cfg.rl.win_reward
+                if is_winner
+                else self._cfg.rl.loss_reward
+            )
+            T = sum(1 for _ in game.mainline_moves())
+            t = len(move_history)
+            reward = reward_base * (
+                self._cfg.rl.gamma ** max(T - 1 - t, 0)
+            ) + self._cfg.rl.lambda_material * mat_delta
+
+            from chess_sim.types import OfflinePlyTuple
+            ply = OfflinePlyTuple(
+                board_tokens=bt,
+                color_tokens=ct,
+                traj_tokens=tt,
+                move_prefix=prefix_t,
+                move_uci=move.uci(),
+                is_winner_ply=is_winner,
+                is_white_ply=is_white,
+                material_delta=mat_delta,
+            )
+            snapshots.append((board_copy, ply, float(reward)))
+            move_history.append(move)
+
+        if not snapshots:
+            return []
+
+        # Evenly sample n_plies positions
+        indices = np.linspace(
+            0, len(snapshots) - 1, min(n_plies, len(snapshots)),
+            dtype=int,
+        )
+        figs: list[object] = []
+        self._model.eval()
+        with torch.no_grad():
+            for idx in indices:
+                board_snap, ply, reward = snapshots[int(idx)]
+                bt = ply.board_tokens.unsqueeze(0).to(self._device)
+                ct = ply.color_tokens.unsqueeze(0).to(self._device)
+                tt = ply.traj_tokens.unsqueeze(0).to(self._device)
+                prefix = ply.move_prefix.unsqueeze(0).to(self._device)
+
+                logits = self._model(bt, ct, tt, prefix, None)
+                last_logits = logits[0, -1]
+                probs = F.softmax(last_logits, dim=-1)
+                log_p = torch.log(probs + 1e-10)
+                entropy = -(probs * log_p).sum().item()
+
+                top_indices = probs.topk(top_k).indices.tolist()
+                top_pairs: list[tuple[str, float]] = []
+                for vi in top_indices:
+                    try:
+                        uci = vocab.decode(vi)
+                        top_pairs.append((uci, probs[vi].item()))
+                    except (KeyError, IndexError):
+                        continue
+
+                fig = render_rl_ply(
+                    board=board_snap,
+                    actual_uci=ply.move_uci,
+                    top_k=top_pairs,
+                    reward=reward,
+                    entropy=entropy,
+                    ply_idx=int(idx),
+                )
+                figs.append(fig)
+
+        return figs
 
     def save_checkpoint(self, path: Path) -> None:
         """Save model, optimizer, and scheduler state.

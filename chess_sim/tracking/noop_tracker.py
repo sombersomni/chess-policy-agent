@@ -31,6 +31,15 @@ class NoOpTracker:
         """Accept and discard log text."""
         pass
 
+    def track_image(
+        self,
+        fig: object,
+        name: str,
+        step: int | None = None,
+    ) -> None:
+        """Accept and discard image artifacts."""
+        pass
+
     def close(self) -> None:
         """No-op close; nothing to flush."""
         pass

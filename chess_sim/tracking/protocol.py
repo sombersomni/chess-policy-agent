@@ -50,6 +50,21 @@ class MetricTracker(Protocol):
         """
         ...
 
+    def track_image(
+        self,
+        fig: object,
+        name: str,
+        step: int | None = None,
+    ) -> None:
+        """Log a matplotlib Figure as an image artifact.
+
+        Args:
+            fig: A matplotlib Figure to serialize and log.
+            name: Metric name / display label for the image.
+            step: Optional global step or epoch to associate.
+        """
+        ...
+
     def close(self) -> None:
         """Flush pending data and seal the tracking run."""
         ...

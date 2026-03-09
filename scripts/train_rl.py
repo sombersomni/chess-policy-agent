@@ -86,24 +86,49 @@ def main() -> None:
                 max_games=cfg.data.max_games,
             )
             lr = trainer._opt.param_groups[0]["lr"]
-            tracker.track_epoch(metrics, epoch, lr)
+
+            # Evaluation pass (same games, no grad)
+            val_metrics = trainer.evaluate(
+                pgn_path,
+                max_games=cfg.data.max_games,
+            )
+
+            # Merge all metrics and ship to Aim
+            all_metrics = {**metrics, **val_metrics}
+            tracker.track_epoch(all_metrics, epoch, lr)
 
             logger.info(
-                "Epoch %02d: total=%.4f pg=%.4f "
-                "ce=%.4f games=%d lr=%.2e",
+                "Epoch %02d: total=%.4f pg=%.4f ce=%.4f "
+                "| val_loss=%.4f val_acc=%.4f "
+                "| H=%.3f reward=%.4f games=%d lr=%.2e",
                 epoch,
                 metrics["total_loss"],
                 metrics["pg_loss"],
                 metrics["ce_loss"],
+                val_metrics["val_loss"],
+                val_metrics["val_accuracy"],
+                metrics["mean_entropy"],
+                metrics["mean_reward"],
                 metrics["n_games"],
                 lr,
             )
 
-        # Save final checkpoint
-        if cfg.rl.checkpoint:
-            ckpt_path = Path(cfg.rl.checkpoint)
-            trainer.save_checkpoint(ckpt_path)
-            logger.info("Final checkpoint: %s", ckpt_path)
+            # Board + prediction visuals → Aim
+            figs = trainer.sample_visuals(pgn_path, n_plies=4)
+            for i, fig in enumerate(figs):
+                tracker.track_image(
+                    fig,
+                    name=f"ply_sample_{i}",
+                    step=epoch,
+                )
+
+            # Save checkpoint after every epoch
+            if cfg.rl.checkpoint:
+                ckpt_path = Path(cfg.rl.checkpoint)
+                trainer.save_checkpoint(ckpt_path)
+                logger.info(
+                    "Checkpoint saved: %s", ckpt_path
+                )
     finally:
         logging.getLogger().removeHandler(aim_handler)
         tracker.close()

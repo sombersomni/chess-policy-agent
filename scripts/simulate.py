@@ -114,7 +114,7 @@ def _load_agent(
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
     state = ckpt.get("model", ckpt)
     model_cfg, decoder_cfg = _infer_configs_from_state(state, model_cfg, decoder_cfg)
 

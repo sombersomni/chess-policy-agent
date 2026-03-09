@@ -369,7 +369,7 @@ class SelfPlayLoop:
             path: Source .pt file path.
         """
         ckpt = torch.load(
-            path, map_location=self._device
+            path, map_location=self._device, weights_only=True
         )
         self._player.load_state_dict(ckpt["player"])
         self._opponent.load_state_dict(ckpt["opponent"])

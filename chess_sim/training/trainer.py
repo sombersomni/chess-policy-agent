@@ -296,7 +296,9 @@ class Trainer:
         Example:
             >>> trainer.load_checkpoint(Path("checkpoints/best.pt"))
         """
-        ckpt = torch.load(path, map_location=self.device)
+        ckpt = torch.load(
+            path, map_location=self.device, weights_only=True
+        )
         self.encoder.load_state_dict(
             ckpt['encoder'], strict=False
         )

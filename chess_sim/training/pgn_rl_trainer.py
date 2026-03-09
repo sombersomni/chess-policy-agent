@@ -403,7 +403,9 @@ class PGNRLTrainer:
             path: Source .pt file path.
         """
         ckpt = torch.load(
-            path, map_location=self._device
+            path,
+            map_location=self._device,
+            weights_only=True,
         )
         self._model.load_state_dict(ckpt["model"])
         opt_state = ckpt.get("optimizer")

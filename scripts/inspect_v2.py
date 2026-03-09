@@ -554,7 +554,7 @@ def load_model_from_checkpoint(
 ) -> ChessModel:
     """Load ChessModel from a .pt checkpoint file."""
     dev = torch.device(device)
-    ckpt = torch.load(checkpoint_path, map_location=dev, weights_only=False)
+    ckpt = torch.load(checkpoint_path, map_location=dev, weights_only=True)
     model = ChessModel()
     model.load_state_dict(ckpt["model"])
     model.to(dev)

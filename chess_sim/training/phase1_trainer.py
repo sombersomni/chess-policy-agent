@@ -298,7 +298,7 @@ class Phase1Trainer:
             >>> trainer.load_checkpoint(Path("checkpoints/p1.pt"))
         """
         ckpt = torch.load(
-            path, map_location=self.device
+            path, map_location=self.device, weights_only=True
         )
         self.model.load_state_dict(ckpt["model"])
         self.optimizer.load_state_dict(ckpt["optimizer"])

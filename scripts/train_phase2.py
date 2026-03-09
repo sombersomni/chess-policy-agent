@@ -36,6 +36,7 @@ def main() -> None:
         ckpt = torch.load(
             cfg.phase2.pretrained_ckpt,
             map_location="cpu",
+            weights_only=True,
         )
         player.load_state_dict(ckpt["model"])
     device = (

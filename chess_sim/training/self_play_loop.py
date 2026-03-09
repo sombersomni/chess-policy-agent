@@ -186,7 +186,8 @@ class SelfPlayLoop:
                     chess.Move.from_uci(ply.move_uci)
                 )
                 step_count += 1
-            outcome = self._compute_outcome(board)
+            truncated = not source.is_terminal()
+            outcome = self._compute_outcome(board, truncated)
             record = self._recorder.finalize(outcome)
             rewards = self._reward_fn.compute(
                 record, self._cfg
@@ -198,11 +199,12 @@ class SelfPlayLoop:
                 self._update_params(player_plies, rewards)
             self._ema.step(self._player, self._opponent)
             logger.info(
-                "Episode %d/%d: %d plies, outcome=%.1f",
+                "Episode %d/%d: %d plies, outcome=%.2f%s",
                 ep + 1,
                 episodes,
                 step_count,
                 outcome,
+                " (truncated)" if truncated else "",
             )
 
     def _player_ply(
@@ -284,14 +286,24 @@ class SelfPlayLoop:
             is_player_ply=False,
         )
 
-    def _compute_outcome(self, board: chess.Board) -> float:
-        """Derive outcome from the board state."""
+    def _compute_outcome(
+        self, board: chess.Board, truncated: bool = False
+    ) -> float:
+        """Derive outcome from the board state.
+
+        Args:
+            board: Current board after the episode ended.
+            truncated: True if the episode hit max_episode_steps
+                       without reaching a natural game-over.
+        """
         if board.is_game_over():
             result = board.result()
             if result == "1-0":
                 return self._cfg.win_reward
             elif result == "0-1":
                 return self._cfg.loss_reward
+        if truncated:
+            return self._cfg.truncation_reward
         return self._cfg.draw_reward
 
     def _update_params(

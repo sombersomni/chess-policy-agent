@@ -1,19 +1,22 @@
 """RewardComputer: converts EpisodeRecord into per-player-ply rewards.
 
-Implements the Computable protocol. Each reward component is L1-normalized
-across player plies before combining, so every component's absolute values
-sum to 1.0 and contribute equally at baseline. Sign is preserved so wins
-produce positive rewards and losses produce negative rewards. Lambda weights
-provide explicit relative control over each component.
+Implements the Computable protocol.
+
+Temporal advantage is kept raw (outcome * gamma^t) so the outcome scale
+is preserved: wins sum to ~+1.0 across plies, losses ~-1.0, draws ~+0.1,
+truncations ~-0.05. Shaping components (surprise, material, illegal, check)
+are L1-normalized so their absolute values sum to 1.0 regardless of episode
+length, enabling fair comparison across episodes of different lengths. Lambda
+weights provide relative control over each shaping component.
 
 Reward formula per player ply t:
-    R(t) = l1_norm(temporal)[t]
+    R(t) = temporal(t)
            + lambda_surprise  * l1_norm(surprise)[t]
            + lambda_material  * l1_norm(material)[t]
            + lambda_illegal   * l1_norm(illegal)[t]
            + lambda_check     * l1_norm(check)[t]
 
-All-zero components are left as zeros (no spurious uniform signal).
+All-zero shaping components are left as zeros (no spurious uniform signal).
 """
 
 from __future__ import annotations
@@ -128,7 +131,7 @@ class RewardComputer:
         )
         norm = self._l1_normalize
         return (
-            norm(temporal)
+            temporal
             + cfg.lambda_surprise * norm(surprise)
             + cfg.lambda_material * norm(material)
             + cfg.lambda_illegal * norm(illegal)

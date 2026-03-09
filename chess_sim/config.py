@@ -196,6 +196,7 @@ class Phase2Config:
     lambda_material: float = 0.01
     lambda_illegal: float = -0.5
     lambda_check: float = 0.1
+    truncation_reward: float = -0.05
 
     def __post_init__(self) -> None:
         """Validate hyperparameter ranges."""

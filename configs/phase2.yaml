@@ -27,3 +27,4 @@ phase2:
   lambda_material:     0.1
   lambda_illegal:      0.0
   lambda_check:        0.1
+  truncation_reward:   -0.05

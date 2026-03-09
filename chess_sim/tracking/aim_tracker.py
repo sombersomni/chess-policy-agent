@@ -131,12 +131,14 @@ class AimTracker:
 
         import aim
         import matplotlib.pyplot as plt
+        from PIL import Image as PILImage
 
         buf = io.BytesIO()
         fig.savefig(buf, format="png", bbox_inches="tight")  # type: ignore[union-attr]
         buf.seek(0)
+        pil_img = PILImage.open(buf)
         self._run.track(
-            aim.Image(buf, format="png"),
+            aim.Image(pil_img),
             name=name,
             step=step,
         )

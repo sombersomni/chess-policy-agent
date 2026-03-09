@@ -1,6 +1,6 @@
 data:
   pgn:       data/lichess_db_standard_rated_2013-01.pgn.zst
-  max_games: 1000
+  max_games: 10
 
 model:
   d_model:         128
@@ -25,8 +25,8 @@ rl:
   decay_start_fraction: 0.5
   min_lr:               0.00001
   gradient_clip:        1.0
-  epochs:               20
-  checkpoint:           checkpoints/chess_rl.pt
+  epochs:               1
+  checkpoint:           checkpoints/chess_rl_test.pt
   resume:               ""
   gamma:                0.99
   win_reward:           1.0
@@ -39,6 +39,6 @@ rl:
 
 aim:
   enabled:           true
-  experiment_name:   chess_rl
+  experiment_name:   chess_rl_test
   repo:              .aim
   log_every_n_steps: 10

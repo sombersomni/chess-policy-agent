@@ -25,3 +25,5 @@ phase2:
   loss_reward:         -1.0
   pretrained_ckpt:     checkpoints/chess_v2_1k.pt
   lambda_material:     0.01
+  lambda_illegal:      -0.5
+  lambda_check:        0.1

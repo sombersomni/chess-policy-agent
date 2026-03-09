@@ -194,6 +194,8 @@ class Phase2Config:
     loss_reward: float = -1.0
     pretrained_ckpt: str = ""
     lambda_material: float = 0.01
+    lambda_illegal: float = -0.5
+    lambda_check: float = 0.1
 
     def __post_init__(self) -> None:
         """Validate hyperparameter ranges."""
@@ -219,6 +221,16 @@ class Phase2Config:
             raise ValueError(
                 "lambda_material must be >= 0, "
                 f"got {self.lambda_material}"
+            )
+        if self.lambda_illegal > 0:
+            raise ValueError(
+                "lambda_illegal must be <= 0 (penalty), "
+                f"got {self.lambda_illegal}"
+            )
+        if self.lambda_check < 0:
+            raise ValueError(
+                "lambda_check must be >= 0, "
+                f"got {self.lambda_check}"
             )
 
 

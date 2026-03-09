@@ -173,7 +173,14 @@ class SelfPlayLoop:
                 step_info = source.step(ply.move_uci)
                 board = step_info.board
                 mat_delta = _material_balance(board) - mat_before
-                ply = ply._replace(material_delta=mat_delta)
+                gave_check = (
+                    1.0 if is_player_turn and board.is_check()
+                    else 0.0
+                )
+                ply = ply._replace(
+                    material_delta=mat_delta,
+                    gave_check=gave_check,
+                )
                 self._recorder.record(ply)
                 move_history.append(
                     chess.Move.from_uci(ply.move_uci)
@@ -209,6 +216,13 @@ class SelfPlayLoop:
         """Sample a move from the player model."""
         logits = self._player(bt, ct, tt, move_prefix, None)
         last_logits = logits[0, -1]
+        with torch.no_grad():
+            pre_mask_probs = torch.softmax(
+                last_logits.detach(), dim=-1
+            )
+            illegal_mass = float(
+                1.0 - pre_mask_probs[legal_mask].sum().item()
+            )
         masked = last_logits.masked_fill(
             ~legal_mask, float("-inf")
         )
@@ -230,6 +244,7 @@ class SelfPlayLoop:
             entropy=entropy,
             move_uci=move_uci,
             is_player_ply=True,
+            illegal_mass=illegal_mass,
         )
 
     def _opponent_ply(

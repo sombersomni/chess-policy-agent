@@ -67,17 +67,7 @@ class EpisodeRecorder:
                 player_indices, norm_entropies.tolist()
             ):
                 old = new_plies[idx]
-                new_plies[idx] = PlyTuple(
-                    board_tokens=old.board_tokens,
-                    color_tokens=old.color_tokens,
-                    traj_tokens=old.traj_tokens,
-                    move_prefix=old.move_prefix,
-                    log_prob=old.log_prob,
-                    probs=old.probs,
-                    entropy=norm_h,
-                    move_uci=old.move_uci,
-                    is_player_ply=old.is_player_ply,
-                )
+                new_plies[idx] = old._replace(entropy=norm_h)
         else:
             new_plies = list(self._plies)
         record = EpisodeRecord(

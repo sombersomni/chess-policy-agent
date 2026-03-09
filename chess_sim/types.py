@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-import torch
 from torch import Tensor
 
 
@@ -239,6 +238,8 @@ class PlyTuple(NamedTuple):
     move_uci: str
     is_player_ply: bool
     material_delta: float = 0.0
+    illegal_mass: float = 0.0
+    gave_check: float = 0.0
 
 
 class EpisodeRecord(NamedTuple):

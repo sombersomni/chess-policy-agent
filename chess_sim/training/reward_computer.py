@@ -93,10 +93,20 @@ class RewardComputer:
             [p.material_delta for p in player_plies],
             dtype=torch.float32,
         )
+        illegal = torch.tensor(
+            [p.illegal_mass for p in player_plies],
+            dtype=torch.float32,
+        )
+        check = torch.tensor(
+            [p.gave_check for p in player_plies],
+            dtype=torch.float32,
+        )
         return (
             temporal
             + cfg.lambda_surprise * surprise
             + cfg.lambda_material * material
+            + cfg.lambda_illegal * illegal
+            + cfg.lambda_check * check
         )
 
     def _temporal_advantage(

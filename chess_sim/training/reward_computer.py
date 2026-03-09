@@ -1,13 +1,18 @@
 """RewardComputer: converts EpisodeRecord into per-player-ply rewards.
 
-Implements the Computable protocol. Reward formula per player ply t:
-    R(t) = temporal_advantage(t) + lambda_surprise * surprise(t)
+Implements the Computable protocol. Each reward component is softmax-
+normalized across player plies before combining, so every component
+sums to 1.0 and contributes equally at baseline. Lambda weights then
+provide explicit relative control over each component.
 
-Surprise formula (using softmax-normalized entropy H_norm):
-    surprise(t) = H_norm(t) * correct(t) * reward_sign
-    correct(t)  = +1 if argmax(probs_t) == vocab_idx(move_uci_t)
-                  else -1
-    reward_sign  = +1 win / -1 loss / 0 draw
+Reward formula per player ply t:
+    R(t) = softmax(temporal)[t]
+           + lambda_surprise  * softmax(surprise)[t]
+           + lambda_material  * softmax(material)[t]
+           + lambda_illegal   * softmax(illegal)[t]
+           + lambda_check     * softmax(check)[t]
+
+All-zero components are left as zeros (no spurious uniform signal).
 """
 
 from __future__ import annotations
@@ -24,9 +29,23 @@ class RewardComputer:
     """Converts an EpisodeRecord into a per-player-ply reward tensor.
 
     Implements the Computable protocol. Filters plies to player-only,
-    computes temporal advantage and surprise for each, and combines
-    them according to the Phase2Config hyperparameters.
+    computes each reward component, softmax-normalizes each so it sums
+    to 1.0, then combines them with lambda weights.
     """
+
+    @staticmethod
+    def _softmax_normalize(t: Tensor) -> Tensor:
+        """Softmax-normalize t across plies; return zeros if t is all-zero.
+
+        Args:
+            t: Tensor of shape [T].
+
+        Returns:
+            softmax(t) if any value is non-zero, else zeros_like(t).
+        """
+        if t.abs().max() < 1e-8:
+            return torch.zeros_like(t)
+        return torch.softmax(t, dim=0)
 
     def compute(
         self,
@@ -101,12 +120,13 @@ class RewardComputer:
             [p.gave_check for p in player_plies],
             dtype=torch.float32,
         )
+        norm = self._softmax_normalize
         return (
-            temporal
-            + cfg.lambda_surprise * surprise
-            + cfg.lambda_material * material
-            + cfg.lambda_illegal * illegal
-            + cfg.lambda_check * check
+            norm(temporal)
+            + cfg.lambda_surprise * norm(surprise)
+            + cfg.lambda_material * norm(material)
+            + cfg.lambda_illegal * norm(illegal)
+            + cfg.lambda_check * norm(check)
         )
 
     def _temporal_advantage(

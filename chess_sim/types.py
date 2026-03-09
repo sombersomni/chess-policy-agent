@@ -222,9 +222,7 @@ class RawTurnRecord(NamedTuple):
 class OfflinePlyTuple(NamedTuple):
     """One half-move from PGN replay for offline RL training.
 
-    board_tokens/color_tokens/traj_tokens/move_prefix are captured
-    BEFORE the move is applied. material_delta and gave_check are
-    computed AFTER.
+    All tokens captured BEFORE the move is applied.
     """
 
     board_tokens: Tensor
@@ -234,8 +232,7 @@ class OfflinePlyTuple(NamedTuple):
     move_uci: str
     is_winner_ply: bool        # True = positive reward side
     is_white_ply: bool         # True when white is side-to-move
-    material_delta: float = 0.0  # white-frame signed material
-    gave_check: float = 0.0   # 1.0 if move gave check
+    is_draw_ply: bool = False  # True for all plies in a drawn game
 
 
 class PlyTuple(NamedTuple):
@@ -283,3 +280,45 @@ class ValueHeadOutput(NamedTuple):
 
     v_win: Tensor
     v_surprise: Tensor
+
+
+# ---------------------------------------------------------------------------
+# RL HDF5 preprocessing types
+# ---------------------------------------------------------------------------
+
+
+class RLPlyRecord(NamedTuple):
+    """Intermediate container: one filtered ply from PGN replay, no tensors.
+
+    Passed between RLPlyParser and RLHdf5Writer. All fields are plain
+    Python / NumPy-compatible types — no torch.Tensor dependency.
+
+    Attributes:
+        board_tokens:  len 65, CLS at index 0, values 0-7.
+        color_tokens:  len 65, values 0-2.
+        traj_tokens:   len 65, values 0-4.
+        move_prefix:   SOS + prior move indices; variable length.
+        move_uci:      UCI string e.g. "e2e4".
+        is_winner_ply: True if this ply belongs to the winning side.
+        is_white_ply:  True when white is the side-to-move.
+        is_draw_ply:   True for all plies in a drawn game.
+        game_id:       Source game index.
+        ply_index:     0-indexed ply within the game.
+
+    Example:
+        >>> rec = RLPlyRecord([0]*65, [0]*65, [0]*65, [1], "e2e4",
+        ...                   True, True, False, 0, 0)
+        >>> rec.move_uci
+        'e2e4'
+    """
+
+    board_tokens: list[int]
+    color_tokens: list[int]
+    traj_tokens: list[int]
+    move_prefix: list[int]
+    move_uci: str
+    is_winner_ply: bool
+    is_white_ply: bool
+    is_draw_ply: bool
+    game_id: int
+    ply_index: int

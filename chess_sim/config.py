@@ -450,19 +450,29 @@ class RLConfig:
     checkpoint: str = ""
     resume: str = ""
     gamma: float = 0.99
-    win_reward: float = 1.0
-    loss_reward: float = -1.0
-    draw_reward: float = 0.0
-    lambda_material: float = 0.01
-    lambda_check: float = 0.1
+    win_reward: float = 10.0
+    loss_reward: float = -10.0
+    draw_reward: float = 2.0
     lambda_ce: float = 0.5
+    lambda_entropy: float = 0.0
     label_smoothing: float = 0.1
+    train_color: str = "white"
 
     def __post_init__(self) -> None:
         """Validate RL hyperparameter ranges."""
+        if self.train_color not in ("white", "black"):
+            raise ValueError(
+                "train_color must be 'white' or 'black'"
+                f", got '{self.train_color}'"
+            )
         if self.lambda_ce < 0:
             raise ValueError(
                 f"lambda_ce must be >= 0, got {self.lambda_ce}"
+            )
+        if self.lambda_entropy < 0:
+            raise ValueError(
+                "lambda_entropy must be >= 0, "
+                f"got {self.lambda_entropy}"
             )
         if not (0 < self.gamma <= 1):
             raise ValueError(
@@ -476,6 +486,14 @@ class RLConfig:
             raise ValueError(
                 "loss_reward must be < 0, "
                 f"got {self.loss_reward}"
+            )
+        if not (
+            self.loss_reward < self.draw_reward < self.win_reward
+        ):
+            raise ValueError(
+                "draw_reward must satisfy "
+                "loss_reward < draw_reward < win_reward, "
+                f"got {self.draw_reward}"
             )
         if self.warmup_fraction >= self.decay_start_fraction:
             raise ValueError(
@@ -567,3 +585,107 @@ def load_preprocess_v2_config(
             **raw.get("processing", {})
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# RL HDF5 preprocess pipeline configs
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RLOutputConfig:
+    """HDF5 output settings for RL preprocessing.
+
+    Controls the on-disk layout: chunk size, compression, and
+    the padded width of the move_prefix dataset.
+
+    Example:
+        >>> RLOutputConfig(hdf5_path="data/chess_rl.h5").chunk_size
+        1000
+    """
+
+    hdf5_path: str = "data/processed/chess_rl.h5"
+    chunk_size: int = 1000
+    compression: str = "gzip"
+    compression_opts: int = 4
+    max_prefix_len: int = 512
+
+
+@dataclass
+class RLFilterConfig:
+    """Game filtering settings for RL preprocessing.
+
+    train_color selects which side's plies to keep; the other
+    side is discarded at write time.
+
+    Example:
+        >>> RLFilterConfig(train_color="black").min_moves
+        5
+    """
+
+    min_moves: int = 5
+    max_moves: int = 512
+    train_color: str = "white"
+
+    def __post_init__(self) -> None:
+        """Validate train_color is 'white' or 'black'."""
+        if self.train_color not in ("white", "black"):
+            raise ValueError(
+                "train_color must be 'white' or 'black'"
+                f", got '{self.train_color}'"
+            )
+
+
+@dataclass
+class RLPreprocessConfig:
+    """Root config for scripts/preprocess_rl.py.
+
+    Reuses InputConfig, SplitConfig, and ProcessingConfig from
+    the existing preprocess pipeline. Adds RL-specific output
+    and filter sections.
+
+    Example:
+        >>> cfg = RLPreprocessConfig()
+        >>> cfg.output.max_prefix_len
+        512
+    """
+
+    input: InputConfig = field(default_factory=InputConfig)
+    output: RLOutputConfig = field(
+        default_factory=RLOutputConfig
+    )
+    filter: RLFilterConfig = field(
+        default_factory=RLFilterConfig
+    )
+    split: SplitConfig = field(default_factory=SplitConfig)
+    processing: ProcessingConfig = field(
+        default_factory=ProcessingConfig
+    )
+
+
+def load_rl_preprocess_config(
+    path: Path,
+) -> RLPreprocessConfig:
+    """Load RLPreprocessConfig from a YAML file.
+
+    Parses input, output, filter, split, and processing sections.
+    Unknown keys raise TypeError immediately.
+
+    Args:
+        path: Path to the YAML config file.
+
+    Returns:
+        Fully populated RLPreprocessConfig.
+
+    Raises:
+        FileNotFoundError: If path does not exist.
+        TypeError: If YAML contains unknown keys.
+
+    Example:
+        >>> cfg = load_rl_preprocess_config(
+        ...     Path("configs/preprocess_rl.yaml")
+        ... )
+        >>> cfg.filter.train_color
+        'white'
+    """
+    raise NotImplementedError("To be implemented")

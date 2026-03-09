@@ -13,13 +13,12 @@ import io
 import logging
 from pathlib import Path
 
+import chess
 import chess.pgn
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-import chess
 
 from chess_sim.config import PGNRLConfig
 from chess_sim.data.move_tokenizer import MoveTokenizer
@@ -321,6 +320,18 @@ class PGNRLTrainer:
             entropy_sum += metrics["mean_entropy"]
             reward_sum += metrics["mean_reward"]
             n_games += 1
+            self._tracker.track_scalars(
+                {
+                    "pg_loss": metrics["pg_loss"],
+                    "ce_loss": metrics["ce_loss"],
+                    "total_loss": metrics["total_loss"],
+                    "mean_reward": metrics["mean_reward"],
+                    "mean_entropy": metrics[
+                        "mean_entropy"
+                    ],
+                },
+                step=self._global_step,
+            )
 
         denom = max(n_games, 1)
         return {

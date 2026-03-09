@@ -50,6 +50,18 @@ class MetricTracker(Protocol):
         """
         ...
 
+    def track_scalars(
+        self, metrics: dict[str, float], step: int
+    ) -> None:
+        """Log multiple named scalars at the same step.
+
+        Args:
+            metrics: Dict of metric name to float value.
+            step: Global training step to associate with these
+                scalars.
+        """
+        ...
+
     def track_image(
         self,
         fig: object,

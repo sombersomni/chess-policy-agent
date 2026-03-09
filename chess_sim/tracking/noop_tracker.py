@@ -31,6 +31,12 @@ class NoOpTracker:
         """Accept and discard log text."""
         pass
 
+    def track_scalars(
+        self, metrics: dict[str, float], step: int
+    ) -> None:
+        """No-op: discard all scalars silently."""
+        return None
+
     def track_image(
         self,
         fig: object,

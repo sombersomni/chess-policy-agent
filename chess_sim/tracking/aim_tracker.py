@@ -93,8 +93,12 @@ class AimTracker:
             >>> tracker.track_epoch({"val_loss": 2.1}, epoch=1, lr=3e-4)
         """
         for k, v in metrics.items():
-            self._run.track(v, name=k, epoch=epoch)
-        self._run.track(lr, name="lr", epoch=epoch)
+            self._run.track(
+                v, name=k, step=epoch, epoch=epoch
+            )
+        self._run.track(
+            lr, name="lr", step=epoch, epoch=epoch
+        )
 
     def log_text(
         self, message: str, step: int | None = None
@@ -110,6 +114,23 @@ class AimTracker:
         self._run.track(
             aim.Text(message), name="logs", step=step
         )
+
+    def track_scalars(
+        self, metrics: dict[str, float], step: int
+    ) -> None:
+        """Log multiple named scalars at the same step.
+
+        Calls run.track(v, name=k, step=step) for each entry.
+
+        Args:
+            metrics: Dict of metric name to float value.
+            step: Global training step index.
+
+        Example:
+            >>> tracker.track_scalars({"pg_loss": 1.2}, step=5)
+        """
+        for k, v in metrics.items():
+            self._run.track(v, name=k, step=step)
 
     def track_image(
         self,

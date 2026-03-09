@@ -446,5 +446,75 @@ class TestAimLogHandler(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# TC20-TC22: track_scalars and track_epoch step fix
+# ---------------------------------------------------------------------------
+
+class TestTrackScalars(unittest.TestCase):
+    """Tests for track_scalars and the track_epoch step= fix."""
+
+    def test_tc20_track_epoch_passes_step_equal_epoch(
+        self,
+    ) -> None:
+        """TC20: track_epoch passes step=epoch to every run.track call.
+
+        With 2 metric keys + lr = 3 calls, each must include step=2.
+        """
+        cfg = AimConfig(enabled=True)
+        mock_run = MagicMock()
+        tracker = AimTracker(cfg, run=mock_run)
+        tracker.track_epoch(
+            {"val_loss": 1.0, "pg_loss": 0.5},
+            epoch=2,
+            lr=1e-4,
+        )
+        for call in mock_run.track.call_args_list:
+            kwargs = call[1]
+            self.assertIn(
+                "step",
+                kwargs,
+                f"Expected step= in track call kwargs, "
+                f"got: {kwargs}",
+            )
+            self.assertEqual(kwargs["step"], 2)
+
+    def test_tc21_track_scalars_calls_run_track_per_key(
+        self,
+    ) -> None:
+        """TC21: track_scalars calls run.track once per key
+        with correct step."""
+        cfg = AimConfig(enabled=True)
+        mock_run = MagicMock()
+        tracker = AimTracker(cfg, run=mock_run)
+        metrics = {
+            "pg_loss": 1.5,
+            "ce_loss": 0.8,
+            "total_loss": 2.3,
+        }
+        tracker.track_scalars(metrics, step=7)
+        self.assertEqual(mock_run.track.call_count, 3)
+        tracked_names = {
+            call[1]["name"]
+            for call in mock_run.track.call_args_list
+        }
+        self.assertEqual(
+            tracked_names,
+            {"pg_loss", "ce_loss", "total_loss"},
+        )
+        for call in mock_run.track.call_args_list:
+            self.assertEqual(call[1]["step"], 7)
+
+    def test_tc22_noop_track_scalars_returns_none(
+        self,
+    ) -> None:
+        """TC22: NoOpTracker.track_scalars() returns None
+        without raising."""
+        tracker = NoOpTracker()
+        result = tracker.track_scalars(
+            {"pg_loss": 1.0, "ce_loss": 0.5}, step=3
+        )
+        self.assertIsNone(result)
+
+
 if __name__ == "__main__":
     unittest.main()

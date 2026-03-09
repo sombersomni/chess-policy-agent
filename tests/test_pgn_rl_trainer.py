@@ -247,5 +247,73 @@ class TestConfigYAML(unittest.TestCase):
         self.assertEqual(cfg.rl.lambda_ce, 0.5)
 
 
+class TestPGNRLTrainerTracking(unittest.TestCase):
+    """T13-T14: tracker integration in train_epoch."""
+
+    def setUp(self) -> None:
+        """Build a minimal trainer with a mock tracker."""
+        from unittest.mock import MagicMock
+
+        self.cfg = PGNRLConfig()
+        self.mock_tracker = MagicMock()
+        self.trainer = PGNRLTrainer(
+            cfg=self.cfg,
+            device="cpu",
+            total_steps=100,
+            tracker=self.mock_tracker,
+        )
+
+    def _write_pgn(
+        self, game: chess.pgn.Game
+    ) -> Path:
+        """Write a single game to a temp PGN file."""
+        import tempfile
+
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".pgn", delete=False
+        )
+        exporter = chess.pgn.StringExporter(
+            headers=True
+        )
+        tmp.write(game.accept(exporter))
+        tmp.flush()
+        return Path(tmp.name)
+
+    def test_t13_train_epoch_calls_track_scalars(
+        self,
+    ) -> None:
+        """T13: train_epoch calls tracker.track_scalars
+        once per trained game."""
+        game = _make_fools_mate()
+        pgn_path = self._write_pgn(game)
+        self.trainer.train_epoch(pgn_path, max_games=1)
+        self.mock_tracker.track_scalars.assert_called_once()
+
+    def test_t14_track_scalars_receives_required_keys(
+        self,
+    ) -> None:
+        """T14: track_scalars dict contains pg_loss, ce_loss,
+        total_loss, mean_reward, mean_entropy."""
+        required_keys = {
+            "pg_loss",
+            "ce_loss",
+            "total_loss",
+            "mean_reward",
+            "mean_entropy",
+        }
+        game = _make_fools_mate()
+        pgn_path = self._write_pgn(game)
+        self.trainer.train_epoch(pgn_path, max_games=1)
+        call_args = (
+            self.mock_tracker.track_scalars.call_args
+        )
+        metrics_dict = call_args[0][0]
+        self.assertTrue(
+            required_keys.issubset(metrics_dict.keys()),
+            f"Missing keys: "
+            f"{required_keys - metrics_dict.keys()}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

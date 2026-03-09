@@ -106,3 +106,17 @@
 - `scripts/train_phase2.py`: CLI entry point for Phase 2 training
 - Tests: `tests/test_phase2_self_play.py` - TC01-TC15 (15 tests)
 - Key gotcha: when testing reward correctness, `dummy_probs` argmax must match `MoveTokenizer.tokenize_move(uci)` index
+
+## Offline RL PGN Trainer (Phase 3)
+- `chess_sim/training/training_utils.py`: shared `material_balance`, `l1_normalize`
+- `chess_sim/training/pgn_replayer.py`: PGNReplayer -> list[OfflinePlyTuple] (Replayable protocol)
+- `chess_sim/training/pgn_rl_reward_computer.py`: temporal gamma^(T-1-t) + material + check shaping (OfflineComputable protocol)
+- `chess_sim/training/pgn_rl_trainer.py`: PGNRLTrainer (REINFORCE PG + optional CE aux loss on winner plies)
+- Config: `RLConfig`, `PGNRLConfig`, `load_pgn_rl_config` in `chess_sim/config.py`
+- Types: `OfflinePlyTuple` in `chess_sim/types.py`
+- Protocols: `Replayable`, `OfflineComputable` in `chess_sim/protocols.py`
+- Script: `scripts/train_rl.py` + `configs/train_rl.yaml`
+- Tests: `tests/test_pgn_rl_trainer.py` - T1-T12 (12 tests)
+- Key design: trains BOTH sides simultaneously (not just player plies like SelfPlayLoop)
+- Temporal discount: gamma^(T-1-t) so LAST ply gets gamma^0=1.0 (opposite of RewardComputer buggy direction)
+- LR schedule: identical SequentialLR (warmup -> constant -> cosine) from Phase1Trainer

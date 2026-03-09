@@ -1,16 +1,17 @@
 """RewardComputer: converts EpisodeRecord into per-player-ply rewards.
 
-Implements the Computable protocol. Each reward component is softmax-
-normalized across player plies before combining, so every component
-sums to 1.0 and contributes equally at baseline. Lambda weights then
+Implements the Computable protocol. Each reward component is L1-normalized
+across player plies before combining, so every component's absolute values
+sum to 1.0 and contribute equally at baseline. Sign is preserved so wins
+produce positive rewards and losses produce negative rewards. Lambda weights
 provide explicit relative control over each component.
 
 Reward formula per player ply t:
-    R(t) = softmax(temporal)[t]
-           + lambda_surprise  * softmax(surprise)[t]
-           + lambda_material  * softmax(material)[t]
-           + lambda_illegal   * softmax(illegal)[t]
-           + lambda_check     * softmax(check)[t]
+    R(t) = l1_norm(temporal)[t]
+           + lambda_surprise  * l1_norm(surprise)[t]
+           + lambda_material  * l1_norm(material)[t]
+           + lambda_illegal   * l1_norm(illegal)[t]
+           + lambda_check     * l1_norm(check)[t]
 
 All-zero components are left as zeros (no spurious uniform signal).
 """
@@ -34,18 +35,23 @@ class RewardComputer:
     """
 
     @staticmethod
-    def _softmax_normalize(t: Tensor) -> Tensor:
-        """Softmax-normalize t across plies; return zeros if t is all-zero.
+    def _l1_normalize(t: Tensor) -> Tensor:
+        """L1-normalize t across plies, preserving sign.
+
+        Divides by the sum of absolute values so the normalized tensor's
+        absolute values sum to 1.0. Returns zeros if t is all-zero to
+        avoid injecting spurious signal.
 
         Args:
             t: Tensor of shape [T].
 
         Returns:
-            softmax(t) if any value is non-zero, else zeros_like(t).
+            t / |t|.sum() if non-zero, else zeros_like(t).
         """
-        if t.abs().max() < 1e-8:
+        s = t.abs().sum()
+        if s < 1e-8:
             return torch.zeros_like(t)
-        return torch.softmax(t, dim=0)
+        return t / s
 
     def compute(
         self,
@@ -120,7 +126,7 @@ class RewardComputer:
             [p.gave_check for p in player_plies],
             dtype=torch.float32,
         )
-        norm = self._softmax_normalize
+        norm = self._l1_normalize
         return (
             norm(temporal)
             + cfg.lambda_surprise * norm(surprise)

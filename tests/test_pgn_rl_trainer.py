@@ -5,6 +5,7 @@ PGNRLTrainer, checkpoint, and YAML config loading.
 """
 from __future__ import annotations
 
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,8 @@ from chess_sim.config import (
     RLConfig,
     load_pgn_rl_config,
 )
+from chess_sim.model.chess_model import ChessModel
+from chess_sim.model.value_heads import ReturnValueHead
 from chess_sim.training.pgn_replayer import PGNReplayer
 from chess_sim.training.pgn_rl_reward_computer import (
     PGNRLRewardComputer,
@@ -72,7 +75,9 @@ class TestRLConfig(unittest.TestCase):
         """T1: RLConfig defaults construct without error."""
         cfg = RLConfig()
         self.assertEqual(cfg.gamma, 0.99)
-        self.assertEqual(cfg.win_reward, 1.0)
+        self.assertEqual(cfg.win_reward, 10.0)
+        self.assertEqual(cfg.loss_reward, -10.0)
+        self.assertEqual(cfg.draw_reward, 2.0)
 
     def test_t2_warmup_gt_decay_raises(self) -> None:
         """T2: warmup >= decay_start raises ValueError."""
@@ -86,6 +91,26 @@ class TestRLConfig(unittest.TestCase):
         """T3: loss_reward >= 0 raises ValueError."""
         with self.assertRaises(ValueError):
             RLConfig(loss_reward=0.5)
+
+    def test_t3b_invalid_train_color_raises(self) -> None:
+        """T3b: train_color not 'white'/'black' raises ValueError."""
+        with self.assertRaises(ValueError):
+            RLConfig(train_color="both")
+
+    def test_t18_negative_lambda_value_raises(self) -> None:
+        """RLConfig with lambda_value < 0 must raise ValueError."""
+        with self.assertRaises(ValueError):
+            RLConfig(lambda_value=-1.0)
+
+    def test_t22_lambda_value_zero_is_valid(self) -> None:
+        """RLConfig(lambda_value=0.0) must not raise."""
+        try:
+            RLConfig(lambda_value=0.0)
+        except ValueError:
+            self.fail(
+                "RLConfig(lambda_value=0.0) raised "
+                "ValueError unexpectedly"
+            )
 
 
 class TestPGNReplayer(unittest.TestCase):
@@ -112,23 +137,20 @@ class TestPGNReplayer(unittest.TestCase):
         self.assertTrue(plies[3].is_winner_ply)
 
     def test_t5_draw_all_winners(self) -> None:
-        """T5: Draw game -> all plies are winner plies."""
+        """T5: Draw game -> all plies are winner and draw plies."""
         game = _make_draw_game()
         plies = self.replayer.replay(game)
         self.assertEqual(len(plies), 4)
         for ply in plies:
             self.assertTrue(ply.is_winner_ply)
+            self.assertTrue(ply.is_draw_ply)
 
-    def test_t6_check_detection(self) -> None:
-        """T6: d8h4 in Fool's Mate gives check."""
+    def test_t6_decisive_game_not_draw(self) -> None:
+        """T6: Decisive game -> all plies have is_draw_ply=False."""
         game = _make_fools_mate()
         plies = self.replayer.replay(game)
-        # Last move d8h4 is checkmate, which is also check
-        self.assertEqual(plies[3].gave_check, 1.0)
-        # Earlier moves should not give check
-        self.assertEqual(plies[0].gave_check, 0.0)
-        self.assertEqual(plies[1].gave_check, 0.0)
-        self.assertEqual(plies[2].gave_check, 0.0)
+        for ply in plies:
+            self.assertFalse(ply.is_draw_ply)
 
 
 class TestPGNRLRewardComputer(unittest.TestCase):
@@ -143,9 +165,7 @@ class TestPGNRLRewardComputer(unittest.TestCase):
         """T7: Last ply reward magnitude >= first ply."""
         game = _make_fools_mate()
         plies = self.replayer.replay(game)
-        cfg = RLConfig(
-            lambda_material=0.0, lambda_check=0.0
-        )
+        cfg = RLConfig()
         rewards = self.reward_fn.compute(plies, cfg)
         self.assertEqual(rewards.shape[0], 4)
         # Last ply: gamma^0 * outcome, first: gamma^3
@@ -159,9 +179,7 @@ class TestPGNRLRewardComputer(unittest.TestCase):
         """T8: Winner plies > 0, loser plies < 0."""
         game = _make_scholars_mate()
         plies = self.replayer.replay(game)
-        cfg = RLConfig(
-            lambda_material=0.0, lambda_check=0.0
-        )
+        cfg = RLConfig()
         rewards = self.reward_fn.compute(plies, cfg)
         for i, ply in enumerate(plies):
             if ply.is_winner_ply:
@@ -174,6 +192,19 @@ class TestPGNRLRewardComputer(unittest.TestCase):
                     rewards[i].item(), 0.0,
                     f"Loser ply {i} should be negative",
                 )
+
+
+    def test_t8b_draw_reward_between_win_and_loss(
+        self,
+    ) -> None:
+        """T8b: Draw game rewards positive and < win_reward."""
+        game = _make_draw_game()
+        plies = self.replayer.replay(game)
+        cfg = RLConfig()
+        rewards = self.reward_fn.compute(plies, cfg)
+        for r in rewards:
+            self.assertGreater(r.item(), 0.0)
+            self.assertLess(r.item(), cfg.win_reward)
 
 
 class TestL1Normalize(unittest.TestCase):
@@ -208,6 +239,51 @@ class TestPGNRLTrainer(unittest.TestCase):
             torch.isfinite(
                 torch.tensor(metrics["total_loss"])
             )
+        )
+
+    def test_t15_train_game_returns_value_loss_key(
+        self,
+    ) -> None:
+        """train_game must include 'value_loss' in returned metrics."""
+        game = _make_scholars_mate()
+        metrics = self.trainer.train_game(game)
+        self.assertIn("value_loss", metrics)
+
+    def test_t16_value_loss_non_negative(self) -> None:
+        """MSE value_loss must be >= 0 (MSE is always non-negative)."""
+        game = _make_scholars_mate()
+        metrics = self.trainer.train_game(game)
+        self.assertGreaterEqual(metrics["value_loss"], 0.0)
+
+    def test_t21_checkpoint_includes_value_head_weights(
+        self,
+    ) -> None:
+        """Checkpoint round-trip must preserve value_head weights."""
+        original_weights = {
+            k: v.clone()
+            for k, v in (
+                self.trainer.model.value_head.state_dict().items()
+            )
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ckpt_path = Path(tmpdir) / "test.pt"
+            self.trainer.save_checkpoint(ckpt_path)
+            self.trainer.load_checkpoint(ckpt_path)
+        for k, v in (
+            self.trainer.model.value_head.state_dict().items()
+        ):
+            self.assertTrue(
+                torch.equal(v, original_weights[k]),
+                f"Mismatch in {k}",
+            )
+
+    def test_t23_mean_advantage_is_finite(self) -> None:
+        """mean_advantage in train_game metrics must be finite."""
+        game = _make_scholars_mate()
+        metrics = self.trainer.train_game(game)
+        self.assertIn("mean_advantage", metrics)
+        self.assertTrue(
+            math.isfinite(metrics["mean_advantage"])
         )
 
     def test_t11_checkpoint_roundtrip(self) -> None:
@@ -289,17 +365,32 @@ class TestPGNRLTrainerTracking(unittest.TestCase):
         self.trainer.train_epoch(pgn_path, max_games=1)
         self.mock_tracker.track_scalars.assert_called_once()
 
+    def test_t17_track_scalars_receives_value_loss_and_mean_advantage(
+        self,
+    ) -> None:
+        """train_epoch must pass value_loss and mean_advantage."""
+        game = _make_fools_mate()
+        pgn_path = self._write_pgn(game)
+        self.trainer.train_epoch(pgn_path, max_games=1)
+        calls = (
+            self.mock_tracker.track_scalars.call_args_list
+        )
+        all_keys: set[str] = set()
+        for call in calls:
+            all_keys.update(call[0][0].keys())
+        self.assertIn("value_loss", all_keys)
+        self.assertIn("mean_advantage", all_keys)
+
     def test_t14_track_scalars_receives_required_keys(
         self,
     ) -> None:
         """T14: track_scalars dict contains pg_loss, ce_loss,
-        total_loss, mean_reward, mean_entropy."""
+        total_loss, mean_reward."""
         required_keys = {
             "pg_loss",
             "ce_loss",
             "total_loss",
             "mean_reward",
-            "mean_entropy",
         }
         game = _make_fools_mate()
         pgn_path = self._write_pgn(game)
@@ -313,6 +404,34 @@ class TestPGNRLTrainerTracking(unittest.TestCase):
             f"Missing keys: "
             f"{required_keys - metrics_dict.keys()}",
         )
+
+
+class TestReturnValueHead(unittest.TestCase):
+    """T19-T20: ReturnValueHead integration."""
+
+    def setUp(self) -> None:
+        """Build a ChessModel with default config."""
+        from chess_sim.config import ModelConfig
+
+        cfg = ModelConfig()
+        self.model = ChessModel(cfg)
+
+    def test_t19_chess_model_has_value_head_attribute(
+        self,
+    ) -> None:
+        """ChessModel must have value_head as ReturnValueHead."""
+        self.assertTrue(hasattr(self.model, "value_head"))
+        self.assertIsInstance(
+            self.model.value_head, ReturnValueHead
+        )
+
+    def test_t20_return_value_head_output_shape(
+        self,
+    ) -> None:
+        """ReturnValueHead(128).forward(rand(4, 128)) -> [4, 1]."""
+        head = ReturnValueHead(128)
+        out = head.forward(torch.rand(4, 128))
+        self.assertEqual(out.shape, torch.Size([4, 1]))
 
 
 if __name__ == "__main__":

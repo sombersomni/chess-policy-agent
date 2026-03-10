@@ -454,7 +454,7 @@ class RLConfig:
     loss_reward: float = -10.0
     draw_reward: float = 2.0
     lambda_ce: float = 0.5
-    lambda_entropy: float = 0.0
+    lambda_value: float = 1.0
     label_smoothing: float = 0.1
     train_color: str = "white"
 
@@ -469,10 +469,10 @@ class RLConfig:
             raise ValueError(
                 f"lambda_ce must be >= 0, got {self.lambda_ce}"
             )
-        if self.lambda_entropy < 0:
+        if self.lambda_value < 0:
             raise ValueError(
-                "lambda_entropy must be >= 0, "
-                f"got {self.lambda_entropy}"
+                f"lambda_value must be >= 0, "
+                f"got {self.lambda_value}"
             )
         if not (0 < self.gamma <= 1):
             raise ValueError(
@@ -688,4 +688,15 @@ def load_rl_preprocess_config(
         >>> cfg.filter.train_color
         'white'
     """
-    raise NotImplementedError("To be implemented")
+    raw: dict[str, Any] = (
+        yaml.safe_load(path.read_text()) or {}
+    )
+    return RLPreprocessConfig(
+        input=InputConfig(**raw.get("input", {})),
+        output=RLOutputConfig(**raw.get("output", {})),
+        filter=RLFilterConfig(**raw.get("filter", {})),
+        split=SplitConfig(**raw.get("split", {})),
+        processing=ProcessingConfig(
+            **raw.get("processing", {})
+        ),
+    )

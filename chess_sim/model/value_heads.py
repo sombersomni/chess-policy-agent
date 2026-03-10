@@ -1,54 +1,30 @@
-"""ValueHeads: two linear value heads on the shared encoder CLS embedding.
-
-V_win predicts probability of winning from the current board state.
-V_surprise predicts the expected surprise score from the current state.
-Both heads receive a detached CLS embedding so value gradients do not
-distort the shared encoder's move-prediction representations.
-"""
-
+"""Return value critic head: two-layer MLP on detached CLS embedding."""
 from __future__ import annotations
 
 import torch.nn as nn
 from torch import Tensor
 
-from chess_sim.types import ValueHeadOutput
 
+class ReturnValueHead(nn.Module):
+    """Two-layer MLP critic: d_model -> d_model//2 -> ReLU -> 1.
 
-class ValueHeads(nn.Module):
-    """Two linear value heads on the shared encoder CLS embedding.
-
-    V_win predicts probability of winning from the current board state.
-    V_surprise predicts the expected surprise score from the current
-    state. Both heads receive a detached CLS embedding so value
-    gradients do not distort the shared encoder representations.
+    Caller must detach cls_emb before passing to prevent encoder gradient
+    contamination. This head performs no detach internally.
     """
 
     def __init__(self, d_model: int) -> None:
-        """Initialise win and surprise projection heads.
-
-        Args:
-            d_model: Dimensionality of the encoder CLS embedding.
-        """
         super().__init__()
-        self._win_head = nn.Linear(d_model, 1)
-        self._surprise_head = nn.Linear(d_model, 1)
+        self._fc1: nn.Linear = nn.Linear(d_model, d_model // 2)
+        self._relu: nn.ReLU = nn.ReLU()
+        self._fc2: nn.Linear = nn.Linear(d_model // 2, 1)
 
-    def forward(self, cls_emb: Tensor) -> ValueHeadOutput:
-        """Project detached CLS embedding through both value heads.
-
-        IMPORTANT: cls_emb must be detached by the caller before this
-        forward pass (cls_emb.detach()) so value MSE gradients do not
-        flow back into the encoder.
+    def forward(self, cls_emb: Tensor) -> Tensor:
+        """Return scalar return estimate per board state.
 
         Args:
-            cls_emb: CLS embedding tensor of shape [B, d_model].
-                     Must be detached.
+            cls_emb: [B, d_model] CLS embedding, caller must detach.
 
         Returns:
-            ValueHeadOutput with v_win and v_surprise each [B, 1].
+            [B, 1] scalar return estimate.
         """
-        v_win = self._win_head(cls_emb)
-        v_surprise = self._surprise_head(cls_emb)
-        return ValueHeadOutput(
-            v_win=v_win, v_surprise=v_surprise
-        )
+        raise NotImplementedError("To be implemented")

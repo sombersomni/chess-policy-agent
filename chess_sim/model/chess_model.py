@@ -16,6 +16,7 @@ from torch import Tensor
 from chess_sim.config import DecoderConfig, ModelConfig
 from chess_sim.model.decoder import MoveDecoder
 from chess_sim.model.encoder import ChessEncoder
+from chess_sim.model.value_heads import ReturnValueHead
 
 
 class ChessModel(nn.Module):
@@ -63,6 +64,9 @@ class ChessModel(nn.Module):
         decoder_cfg = decoder_cfg or DecoderConfig()
         self.encoder = ChessEncoder(model_cfg)
         self.decoder = MoveDecoder(decoder_cfg)
+        self.value_head: ReturnValueHead = ReturnValueHead(
+            model_cfg.d_model
+        )
 
     def forward(
         self,

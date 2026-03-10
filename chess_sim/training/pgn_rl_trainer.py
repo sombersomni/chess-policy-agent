@@ -1,8 +1,7 @@
 """PGNRLTrainer: unified offline RL trainer on PGN master games.
 
-Trains both sides of each game simultaneously using REINFORCE policy
-gradient loss on recorded moves, with optional cross-entropy auxiliary
-loss on winner plies.
+Trains one side of each game (configured via train_color) using
+pure REINFORCE policy gradient loss on recorded moves.
 
 Does NOT implement the Trainable protocol (different train_epoch
 signature -- takes a PGN path instead of a DataLoader).
@@ -32,7 +31,6 @@ from chess_sim.training.pgn_rl_reward_computer import (
     PGNRLRewardComputer,
 )
 from chess_sim.training.phase2_trainer import _make_trajectory_tokens
-from chess_sim.training.training_utils import material_balance
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +82,8 @@ def _stream_pgn(
 class PGNRLTrainer:
     """Unified offline RL trainer on PGN master games.
 
-    Trains both sides of each game simultaneously using REINFORCE
-    policy gradient loss on recorded moves, with optional
-    cross-entropy auxiliary loss on winner plies.
+    Trains one side of each game (configured via train_color)
+    using pure REINFORCE policy gradient loss on recorded moves.
     """
 
     def __init__(
@@ -160,6 +157,19 @@ class PGNRLTrainer:
         )
         self._global_step: int = 0
 
+    def _encode_and_decode(
+        self,
+        bt: torch.Tensor,
+        ct: torch.Tensor,
+        tt: torch.Tensor,
+        prefix: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Shared encode->decode path used by train_game and sample_visuals.
+
+        Returns (last_logits [1, vocab], cls_emb [1, d_model]).
+        """
+        raise NotImplementedError("To be implemented")
+
     @property
     def model(self) -> ChessModel:
         """Expose the underlying ChessModel."""
@@ -178,6 +188,10 @@ class PGNRLTrainer:
             skipped (unknown result, no valid plies).
         """
         plies = self._replayer.replay(game)
+        train_white = self._cfg.rl.train_color == "white"
+        plies = [
+            p for p in plies if p.is_white_ply == train_white
+        ]
         if not plies:
             return {}
 
@@ -187,11 +201,10 @@ class PGNRLTrainer:
         self._model.train()
 
         log_probs: list[torch.Tensor] = []
-        winner_logits: list[torch.Tensor] = []
-        winner_targets: list[int] = []
+        v_preds: list[torch.Tensor] = []  # noqa: F841
+        all_logits: list[torch.Tensor] = []
+        all_targets: list[int] = []
         valid_reward_idxs: list[int] = []
-        entropy_sum: float = 0.0
-        n_entropy: int = 0
 
         for i, ply in enumerate(plies):
             bt = ply.board_tokens.unsqueeze(0).to(
@@ -219,17 +232,11 @@ class PGNRLTrainer:
 
             probs = F.softmax(last_logits, dim=-1)
             log_p = torch.log(probs + 1e-10)
-            entropy_sum += (
-                -(probs * log_p).sum().item()
-            )
-            n_entropy += 1
 
             log_probs.append(log_p[move_idx])
+            all_logits.append(last_logits)
+            all_targets.append(move_idx)
             valid_reward_idxs.append(i)
-
-            if ply.is_winner_ply:
-                winner_logits.append(last_logits)
-                winner_targets.append(move_idx)
 
         if not log_probs:
             return {}
@@ -241,23 +248,14 @@ class PGNRLTrainer:
 
         pg_loss = -(log_probs_t * valid_rewards).sum()
 
-        ce_loss = torch.tensor(
-            0.0, device=self._device
+        targets_t = torch.tensor(
+            all_targets, dtype=torch.long, device=self._device
         )
-        if winner_logits and self._cfg.rl.lambda_ce > 0:
-            w_logits = torch.stack(winner_logits)
-            w_targets = torch.tensor(
-                winner_targets,
-                dtype=torch.long,
-                device=self._device,
-            )
-            ce_loss = F.cross_entropy(
-                w_logits,
-                w_targets,
-                label_smoothing=(
-                    self._cfg.rl.label_smoothing
-                ),
-            )
+        ce_loss = F.cross_entropy(
+            torch.stack(all_logits),
+            targets_t,
+            label_smoothing=self._cfg.rl.label_smoothing,
+        )
 
         total_loss = (
             pg_loss + self._cfg.rl.lambda_ce * ce_loss
@@ -273,19 +271,16 @@ class PGNRLTrainer:
         self._sched.step()
         self._global_step += 1
 
-        mean_entropy = (
-            entropy_sum / n_entropy if n_entropy > 0 else 0.0
-        )
-        valid_rewards_cpu = valid_rewards.cpu()
-        mean_reward = float(valid_rewards_cpu.mean())
+        mean_reward = float(valid_rewards.cpu().mean())
 
         return {
             "total_loss": total_loss.item(),
             "pg_loss": pg_loss.item(),
             "ce_loss": ce_loss.item(),
             "n_plies": len(plies),
-            "mean_entropy": mean_entropy,
             "mean_reward": mean_reward,
+            "value_loss": 0.0,
+            "mean_advantage": 0.0,
         }
 
     def train_epoch(
@@ -306,8 +301,9 @@ class PGNRLTrainer:
         total_loss = 0.0
         pg_loss = 0.0
         ce_loss = 0.0
-        entropy_sum = 0.0
         reward_sum = 0.0
+        value_loss_sum: float = 0.0
+        mean_adv_sum: float = 0.0
         n_games = 0
 
         for game in games:
@@ -317,8 +313,9 @@ class PGNRLTrainer:
             total_loss += metrics["total_loss"]
             pg_loss += metrics["pg_loss"]
             ce_loss += metrics["ce_loss"]
-            entropy_sum += metrics["mean_entropy"]
             reward_sum += metrics["mean_reward"]
+            value_loss_sum += metrics["value_loss"]
+            mean_adv_sum += metrics["mean_advantage"]
             n_games += 1
             self._tracker.track_scalars(
                 {
@@ -326,8 +323,9 @@ class PGNRLTrainer:
                     "ce_loss": metrics["ce_loss"],
                     "total_loss": metrics["total_loss"],
                     "mean_reward": metrics["mean_reward"],
-                    "mean_entropy": metrics[
-                        "mean_entropy"
+                    "value_loss": metrics["value_loss"],
+                    "mean_advantage": metrics[
+                        "mean_advantage"
                     ],
                 },
                 step=self._global_step,
@@ -338,9 +336,10 @@ class PGNRLTrainer:
             "total_loss": total_loss / denom,
             "pg_loss": pg_loss / denom,
             "ce_loss": ce_loss / denom,
-            "mean_entropy": entropy_sum / denom,
             "mean_reward": reward_sum / denom,
             "n_games": n_games,
+            "value_loss": value_loss_sum / denom,
+            "mean_advantage": mean_adv_sum / denom,
         }
 
     def evaluate(
@@ -367,6 +366,14 @@ class PGNRLTrainer:
         with torch.no_grad():
             for game in games:
                 plies = self._replayer.replay(game)
+                train_white = (
+                    self._cfg.rl.train_color == "white"
+                )
+                plies = [
+                    p
+                    for p in plies
+                    if p.is_white_ply == train_white
+                ]
                 if not plies:
                     continue
                 n_games += 1
@@ -453,6 +460,7 @@ class PGNRLTrainer:
             return []
 
         white_wins, black_wins = _RESULT_MAP[result]
+        is_draw = white_wins and black_wins
         board_tok = BoardTokenizer()
         move_tok = MoveTokenizer()
         vocab = MoveVocab()
@@ -461,6 +469,7 @@ class PGNRLTrainer:
         board = game.board()
         move_history: list[chess.Move] = []
         snapshots: list[tuple[chess.Board, object]] = []
+        T = sum(1 for _ in game.mainline_moves())
 
         for move in game.mainline_moves():
             is_white = board.turn == chess.WHITE
@@ -475,19 +484,18 @@ class PGNRLTrainer:
             prior = [m.uci() for m in move_history]
             prefix_t = move_tok.tokenize_game(prior)[:-1]
 
-            mat_before = material_balance(board)
             board.push(move)
-            mat_delta = material_balance(board) - mat_before
             reward_base = (
-                self._cfg.rl.win_reward
+                self._cfg.rl.draw_reward
+                if is_draw
+                else self._cfg.rl.win_reward
                 if is_winner
                 else self._cfg.rl.loss_reward
             )
-            T = sum(1 for _ in game.mainline_moves())
             t = len(move_history)
             reward = reward_base * (
                 self._cfg.rl.gamma ** max(T - 1 - t, 0)
-            ) + self._cfg.rl.lambda_material * mat_delta
+            )
 
             from chess_sim.types import OfflinePlyTuple
             ply = OfflinePlyTuple(
@@ -498,7 +506,7 @@ class PGNRLTrainer:
                 move_uci=move.uci(),
                 is_winner_ply=is_winner,
                 is_white_ply=is_white,
-                material_delta=mat_delta,
+                is_draw_ply=is_draw,
             )
             snapshots.append((board_copy, ply, float(reward)))
             move_history.append(move)

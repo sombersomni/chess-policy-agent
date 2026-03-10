@@ -1,0 +1,57 @@
+<?xml version="1.1" encoding="UTF-8"?>
+<!--
+  Jenkins Pipeline Job: chess-sim-pipeline
+  
+  This can be created via:
+  1. Jenkins UI: New Item > Pipeline > Name: chess-sim-pipeline
+  2. Or apply this config via Jenkins Job Builder or CLI
+  
+  Configuration:
+  - Source: GitHub repository https://github.com/sombersomni/chess-sim
+  - Branch: main
+  - Script path: Jenkinsfile (in repository root)
+-->
+<project>
+  <description>Chess-sim CI Pipeline - Lint and Test stages</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <scm class="hudson.plugins.git.GitSCM">
+    <configVersion>2</configVersion>
+    <userRemoteConfigs>
+      <hudson.plugins.git.UserRemoteConfig>
+        <url>https://github.com/sombersomni/chess-sim.git</url>
+      </hudson.plugins.git.UserRemoteConfigs>
+    </userRemoteConfigs>
+    <branches>
+      <hudson.plugins.git.BranchSpec>
+        <name>*/main</name>
+      </hudson.plugins.git.BranchSpec>
+    </branches>
+  </scm>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/>
+  <concurrentBuild>false</concurrentBuild>
+  <builders/>
+  <publishers/>
+  <buildWrappers/>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition">
+    <scm class="hudson.plugins.git.GitSCM">
+      <configVersion>2</configVersion>
+      <userRemoteConfigs>
+        <hudson.plugins.git.UserRemoteConfig>
+          <url>https://github.com/sombersomni/chess-sim.git</url>
+        </hudson.plugins.git.UserRemoteConfigs>
+      </userRemoteConfigs>
+      <branches>
+        <hudson.plugins.git.BranchSpec>
+          <name>*/main</name>
+        </hudson.plugins.git.BranchSpec>
+      </branches>
+    </scm>
+    <scriptPath>Jenkinsfile</scriptPath>
+    <lightweight>true</lightweight>
+  </definition>
+</project>

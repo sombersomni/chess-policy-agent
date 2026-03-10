@@ -9,13 +9,11 @@ Hyperparameters (from design doc):
 
 from __future__ import annotations
 
-import torch
 import torch.nn as nn
 from torch import Tensor
 
 from chess_sim.config import ModelConfig
 from chess_sim.model.embedding import EmbeddingLayer
-from chess_sim.protocols import Encodable
 from chess_sim.types import EncoderOutput
 
 N_HEADS: int = 8

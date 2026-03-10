@@ -36,6 +36,7 @@ rl:
   label_smoothing:      0.1
   train_color:          white
   lambda_value:         1.0
+  value_lr_multiplier:  5.0
 
 aim:
   enabled:           true

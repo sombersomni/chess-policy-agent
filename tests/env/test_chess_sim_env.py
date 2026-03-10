@@ -33,7 +33,7 @@ import torch
 from chess_sim.config import load_simulate_config
 from chess_sim.data.move_vocab import MoveVocab
 from chess_sim.data.tokenizer import BoardTokenizer
-from chess_sim.env import MovePrediction, RenderContext
+from chess_sim.env import RenderContext
 from chess_sim.env.chess_sim_env import ChessSimEnv
 from chess_sim.env.sources import PGNSource, RandomSource
 from chess_sim.env.terminal_renderer import TerminalRenderer

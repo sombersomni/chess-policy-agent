@@ -7,13 +7,10 @@ duplicating setup logic across test files.
 from __future__ import annotations
 
 import io
-from pathlib import Path
-from typing import NamedTuple
 
 import chess
 import chess.pgn
 import torch
-from torch import Tensor
 
 from chess_sim.types import ChessBatch, LabelTensors, PredictionOutput, TrainingExample
 

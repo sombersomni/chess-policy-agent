@@ -5,12 +5,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import torch
 
 from chess_sim.training.trainer import Trainer
-from chess_sim.types import EncoderOutput, PredictionOutput
+from chess_sim.types import EncoderOutput
 from tests.utils import make_synthetic_batch
 
 

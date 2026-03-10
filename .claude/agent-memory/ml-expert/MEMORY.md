@@ -94,3 +94,18 @@
 - Use PYTHONUNBUFFERED=1 for real-time log output in future runs
 - Config merge: YAML -> dataclass, CLI overrides with None-default args
 - load_v2_config ignores unknown YAML keys (uses .get()); safe to add eval section
+
+## Offline RL PGN Trainer (chess_rl.pt)
+- **Key files**: `pgn_rl_trainer.py`, `pgn_rl_reward_computer.py`, `model/value_heads.py`
+- **Value head**: ReturnValueHead (d_model->d_model//2->ReLU->1), 8,321 params, detached CLS input
+- **Loss**: `pg + lambda_ce*ce + lambda_value*value_mse`, advantage = reward - V(s).detach()
+- **Params**: 2,839,220 total (2,830,899 base + 8,321 value head)
+- **Speed**: ~10 min/epoch on GPU (1k games, ply-by-ply, no batching)
+- **1-epoch from-scratch run (2026-03-09)**:
+  - total=-308.53, pg=-392.10, ce=7.67, value=79.74
+  - val_loss=7.68, val_acc=1.07%, mean_reward=0.79, mean_adv=-1.41
+  - value_loss~80 (near random ~83) -- critic NOT useful after 1 epoch
+  - Critic V(s)~2.20 avg vs true mean return 0.79 -- biased baseline
+- **Log format gap**: epoch log omits ce_loss, value_loss, mean_advantage
+- **Insight**: detached CLS limits critic learning; needs separate higher LR or multi-epoch
+- **Diagnostic needed**: compare std(advantage) vs std(reward) over epochs

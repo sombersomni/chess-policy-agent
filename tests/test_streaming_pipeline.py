@@ -28,12 +28,11 @@ from chess_sim.data.sharded_dataset import (
     ShardedChessDataset,
 )
 from chess_sim.data.streaming_types import (
-    ManifestInfo, PreprocessConfig,
+    ManifestInfo,
+    PreprocessConfig,
 )
 from chess_sim.types import ChessBatch
-
 from tests.utils import parse_pgn_games
-
 
 # ---------------------------------------------------------------------------
 # Helper: build a small set of games for chunk processor tests
@@ -132,6 +131,7 @@ class TestChunkProcessor(unittest.TestCase):
         with WHITE to move.
         """
         import chess
+
         from chess_sim.data.tokenizer import BoardTokenizer
 
         tokenizer = BoardTokenizer()

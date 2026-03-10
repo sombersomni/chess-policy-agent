@@ -406,6 +406,75 @@ class TestPGNRLTrainerTracking(unittest.TestCase):
         )
 
 
+class TestBoardSnapshotLogging(unittest.TestCase):
+    """Tests for per-ply board snapshot logging to tracker."""
+
+    def setUp(self) -> None:
+        """Build a minimal trainer with a mock tracker."""
+        from unittest.mock import MagicMock
+
+        self.cfg = PGNRLConfig()
+        self.mock_tracker = MagicMock()
+        self.trainer = PGNRLTrainer(
+            cfg=self.cfg,
+            device="cpu",
+            total_steps=100,
+            tracker=self.mock_tracker,
+        )
+
+    def test_ply_step_increments_per_ply(self) -> None:
+        """_ply_step increments once per trained ply, not per game."""
+        game = _make_scholars_mate()
+        # train_color=white -> 4 white plies out of 7
+        self.trainer.train_game(game, game_idx=0)
+        self.assertGreater(self.trainer._ply_step, 0)
+        step_after_1 = self.trainer._ply_step
+        # Train another game; ply_step should accumulate
+        game2 = _make_fools_mate()
+        self.trainer.train_game(game2, game_idx=1)
+        self.assertGreater(
+            self.trainer._ply_step, step_after_1,
+        )
+
+    def test_log_text_called_at_step_100(self) -> None:
+        """log_text is called when _ply_step hits a multiple of 100."""
+        # Set _ply_step to 99 so next ply hits 100
+        self.trainer._ply_step = 99
+        game = _make_scholars_mate()
+        self.trainer.train_game(game, game_idx=0)
+        self.mock_tracker.log_text.assert_called()
+        call_args = self.mock_tracker.log_text.call_args
+        text = call_args[0][0]
+        # Verify text contains board unicode and move info
+        self.assertIn("Step 100", text)
+        self.assertIn("Game 0", text)
+        self.assertIn("Move:", text)
+
+    def test_log_text_not_called_before_100(self) -> None:
+        """log_text is NOT called when _ply_step < 100."""
+        self.trainer._ply_step = 0
+        game = _make_fools_mate()
+        # Fool's mate: 2 white plies -> steps 1, 2
+        self.trainer.train_game(game, game_idx=0)
+        self.mock_tracker.log_text.assert_not_called()
+
+    def test_board_snapshot_text_contains_unicode(self) -> None:
+        """Logged text includes chess board unicode characters."""
+        self.trainer._ply_step = 99
+        game = _make_scholars_mate()
+        self.trainer.train_game(game, game_idx=5)
+        call_args = self.mock_tracker.log_text.call_args
+        text = call_args[0][0]
+        # board.unicode() produces pieces like ♜ ♞ ♝ etc.
+        # At minimum the text should have multiple lines (board)
+        lines = text.strip().split("\n")
+        self.assertGreaterEqual(
+            len(lines), 9,
+            "Board text should have at least 9 lines "
+            "(header + 8 board rows)",
+        )
+
+
 class TestActionConditionedValueHead(unittest.TestCase):
     """T19-T20: ActionConditionedValueHead integration."""
 

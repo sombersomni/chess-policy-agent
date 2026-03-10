@@ -12,10 +12,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from chess_sim.config import (
-    RLPreprocessConfig,
-    load_rl_preprocess_config,
-)
+from chess_sim.config import load_rl_preprocess_config
 from chess_sim.preprocess import (
     RLHdf5Preprocessor,
     RLHdf5Validator,
@@ -60,7 +57,42 @@ def main() -> None:
         python -m scripts.preprocess_rl \
             --config configs/preprocess_rl.yaml
     """
-    raise NotImplementedError("To be implemented")
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "%(asctime)s %(name)s %(levelname)s "
+            "%(message)s"
+        ),
+    )
+
+    args = _build_parser().parse_args()
+    cfg = load_rl_preprocess_config(Path(args.config))
+
+    if args.pgn:
+        cfg.input.pgn_path = args.pgn
+    if args.output:
+        cfg.output.hdf5_path = args.output
+    if args.max_games is not None:
+        cfg.input.max_games = args.max_games
+
+    reader = RLPGNReader()
+    parser = RLPlyParser(
+        cfg.filter.train_color,
+        cfg.filter.min_moves,
+        cfg.filter.max_moves,
+    )
+    writer = RLHdf5Writer(
+        cfg.output.max_prefix_len,
+        cfg.output.chunk_size,
+        cfg.output.compression,
+        cfg.output.compression_opts,
+        cfg.filter.train_color,
+    )
+    validator = RLHdf5Validator()
+    preprocessor = RLHdf5Preprocessor(
+        reader, parser, writer, validator
+    )
+    preprocessor.run(cfg)
 
 
 if __name__ == "__main__":

@@ -11,12 +11,10 @@ state, P(piece | src_sq, board) = 1 — no separate piece-type head is needed.
 
 from __future__ import annotations
 
-import torch
 import torch.nn as nn
 from torch import Tensor
 
 from chess_sim.config import ModelConfig
-from chess_sim.protocols import Predictable
 from chess_sim.types import PredictionOutput
 
 N_SQUARES: int = 64

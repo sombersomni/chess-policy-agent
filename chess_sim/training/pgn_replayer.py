@@ -1,9 +1,8 @@
 """PGNReplayer: replays a chess.pgn.Game into OfflinePlyTuple records.
 
 Implements the Replayable protocol. Iterates all mainline moves,
-captures board state BEFORE each move, computes material delta and
-check status AFTER, and determines winner/loser ply assignment from
-the game result header.
+captures board state BEFORE each move, and determines winner/loser
+and draw ply assignment from the game result header.
 """
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.training.phase2_trainer import (
     _make_trajectory_tokens,
 )
-from chess_sim.training.training_utils import material_balance
 from chess_sim.types import OfflinePlyTuple
 
 logger = logging.getLogger(__name__)
@@ -62,6 +60,7 @@ class PGNReplayer:
             return []
 
         white_wins, black_wins = _RESULT_MAP[result]
+        is_draw = white_wins and black_wins
         board = game.board()
         move_history: list[chess.Move] = []
         plies: list[OfflinePlyTuple] = []
@@ -88,15 +87,7 @@ class PGNReplayer:
             prefix = self._move_tok.tokenize_game(prior_ucis)
             prefix = prefix[:-1]  # drop EOS
 
-            # Capture material before push
-            mat_before = material_balance(board)
-
-            # Push the move
             board.push(move)
-
-            # Compute post-move signals
-            mat_delta = material_balance(board) - mat_before
-            gave_check = 1.0 if board.is_check() else 0.0
 
             plies.append(OfflinePlyTuple(
                 board_tokens=bt,
@@ -106,8 +97,7 @@ class PGNReplayer:
                 move_uci=move.uci(),
                 is_winner_ply=is_winner,
                 is_white_ply=is_white_ply,
-                material_delta=mat_delta,
-                gave_check=gave_check,
+                is_draw_ply=is_draw,
             ))
             move_history.append(move)
 

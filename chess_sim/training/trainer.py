@@ -18,13 +18,11 @@ from typing import Any, Callable, TypeVar
 
 import torch
 import torch.nn as nn
-from torch import Tensor
 from torch.utils.data import DataLoader
 
 from chess_sim.config import ModelConfig, TrainerConfig
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.model.heads import PredictionHeads
-from chess_sim.protocols import Trainable
 from chess_sim.training.loss import LossComputer
 from chess_sim.types import ChessBatch
 

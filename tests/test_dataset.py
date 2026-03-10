@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import io
 import unittest
-from unittest.mock import MagicMock, patch
 
 import chess
 import chess.pgn
@@ -12,9 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from chess_sim.data.dataset import ChessDataset
-from chess_sim.data.tokenizer import BoardTokenizer
-from chess_sim.types import ChessBatch, TrainingExample
-from tests.utils import make_small_pgn_fixture, make_training_examples, parse_pgn_games
+from tests.utils import make_training_examples, parse_pgn_games
 
 
 class TestMoveLabelsExtraction(unittest.TestCase):

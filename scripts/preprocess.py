@@ -12,7 +12,6 @@ import logging
 from pathlib import Path
 
 from chess_sim.config import (
-    PreprocessV2Config,
     load_preprocess_v2_config,
 )
 from chess_sim.data.reader import StreamingPGNReader

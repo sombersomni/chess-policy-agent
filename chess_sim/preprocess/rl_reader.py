@@ -6,22 +6,27 @@ files. Composes rather than duplicates .zst decompression logic.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
 import chess.pgn
 
+from chess_sim.data.reader import StreamingPGNReader
+
+logger = logging.getLogger(__name__)
+
 
 class RLPGNReader:
     """Stream chess.pgn.Game objects from .pgn or .pgn.zst files.
 
-    Delegates .zst decompression to StreamingPGNReader; handles plain
-    .pgn directly with chess.pgn.read_game.
+    Delegates .zst decompression to StreamingPGNReader; handles
+    plain .pgn directly with chess.pgn.read_game.
 
     Example:
         >>> reader = RLPGNReader()
-        >>> for game in reader.stream(Path("data/games.pgn"), max_games=10):
-        ...     print(game.headers["Result"])
+        >>> for g in reader.stream(Path("data/games.pgn"), 10):
+        ...     print(g.headers["Result"])
     """
 
     def stream(
@@ -42,7 +47,30 @@ class RLPGNReader:
             FileNotFoundError: If path does not exist.
 
         Example:
-            >>> list(RLPGNReader().stream(Path("x.pgn"), max_games=1))
+            >>> list(RLPGNReader().stream(Path("x.pgn"), 1))
             [<chess.pgn.Game at ...>]
         """
-        raise NotImplementedError("To be implemented")
+        if not path.exists():
+            raise FileNotFoundError(f"PGN not found: {path}")
+
+        count = 0
+        if path.suffix == ".zst":
+            for game in StreamingPGNReader().stream(path):
+                if max_games > 0 and count >= max_games:
+                    break
+                yield game
+                count += 1
+        else:
+            with open(
+                path, encoding="utf-8", errors="replace"
+            ) as fh:
+                while True:
+                    if max_games > 0 and count >= max_games:
+                        break
+                    game = chess.pgn.read_game(fh)
+                    if game is None:
+                        break
+                    yield game
+                    count += 1
+
+        logger.info("Streamed %d games from %s", count, path)

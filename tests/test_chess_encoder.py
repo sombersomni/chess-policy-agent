@@ -6,24 +6,19 @@ T26-T40: Tests for trajectory token derivation, embedding init priors,
 
 from __future__ import annotations
 
-import math
-import tempfile
 import unittest
-from pathlib import Path
 
 import chess
 import torch
 import torch.nn.functional as F
 
-from chess_sim.model.embedding import D_MODEL, EmbeddingLayer
-from chess_sim.model.encoder import ChessEncoder
-from chess_sim.protocols import Embeddable, Encodable
-from chess_sim.types import ChessBatch, TrainingExample
 from chess_sim.data.tokenizer_utils import (
     make_trajectory_tokens as _make_trajectory_tokens,
 )
+from chess_sim.model.embedding import D_MODEL, EmbeddingLayer
+from chess_sim.model.encoder import ChessEncoder
+from chess_sim.protocols import Embeddable, Encodable
 from tests.utils import make_training_examples
-
 
 # ------------------------------------------------------------------
 # T26-T28: _make_trajectory_tokens

@@ -85,7 +85,7 @@ class ChessModel(nn.Module):
             >>> emb is model.decoder.move_embedding.token_emb
             True
         """
-        raise NotImplementedError("To be implemented")
+        return self.decoder.move_embedding.token_emb
 
     def forward(
         self,

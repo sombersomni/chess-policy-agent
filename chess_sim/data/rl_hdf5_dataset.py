@@ -1,4 +1,4 @@
-"""RLPlyHDF5Dataset: reads OfflinePlyTuple records from RL HDF5 files.
+"""RLPlyHDF5Dataset: reads OfflinePlyTuple records from RL HDF5.
 
 Provides random access to preprocessed RL data without PGN parsing.
 Compatible with standard DataLoader and rl_hdf5_worker_init for
@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import h5py
+import torch
 from torch.utils.data import Dataset
 
 from chess_sim.types import OfflinePlyTuple
@@ -18,20 +20,14 @@ logger = logging.getLogger(__name__)
 
 
 class RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]):
-    """Dataset reading OfflinePlyTuple records from an RL HDF5 file.
+    """Dataset reading OfflinePlyTuple records from RL HDF5.
 
-    Each __getitem__ call reads integer/byte arrays from disk and
-    reconstructs an OfflinePlyTuple with proper tensor types.
+    Each __getitem__ call reads integer/byte arrays from disk
+    and reconstructs an OfflinePlyTuple with proper tensor types.
     move_prefix is sliced to prefix_lengths[idx] to strip padding.
 
-    Attributes:
-        _path: Path to the HDF5 file.
-        _split: Split name ('train' or 'val').
-        _file: Open h5py.File handle (or None).
-        _length: Cached dataset length.
-
     Example:
-        >>> ds = RLPlyHDF5Dataset(Path("data/chess_rl.h5"), "train")
+        >>> ds = RLPlyHDF5Dataset(Path("data/chess_rl.h5"))
         >>> len(ds)
         5000
         >>> ply = ds[0]
@@ -46,32 +42,48 @@ class RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]):
     ) -> None:
         """Open HDF5 file and cache dataset length.
 
-        Reads the train_color root attribute for consistency
-        checking. Raises ValueError if split group is missing.
-
         Args:
             hdf5_path: Path to the RL HDF5 dataset file.
             split: 'train' or 'val'.
 
         Raises:
             FileNotFoundError: If hdf5_path does not exist.
-            KeyError: If the split group is missing in the file.
+            KeyError: If split group is missing in the file.
 
         Example:
             >>> ds = RLPlyHDF5Dataset(Path("data/chess_rl.h5"))
         """
-        raise NotImplementedError("To be implemented")
+        super().__init__()
+        self._path = Path(hdf5_path)
+        self._split = split
+        self._file: h5py.File | None = None
+        self._open()
+        grp = self._file[self._split]  # type: ignore[index]
+        self._length: int = int(
+            grp["board_tokens"].shape[0]
+        )
+        logger.info(
+            "RLPlyHDF5Dataset(%s/%s): %d samples",
+            self._path.name,
+            split,
+            self._length,
+        )
 
     def _open(self) -> None:
         """Open or re-open the HDF5 file handle.
 
-        Called during __init__ and by rl_hdf5_worker_init in
-        each DataLoader worker process.
+        Called during __init__ and by rl_hdf5_worker_init
+        in each DataLoader worker process.
 
         Example:
             >>> ds._open()
         """
-        raise NotImplementedError("To be implemented")
+        if self._file is not None:
+            try:
+                self._file.close()
+            except Exception:
+                pass
+        self._file = h5py.File(str(self._path), "r")
 
     def __len__(self) -> int:
         """Return number of samples in this split.
@@ -83,7 +95,7 @@ class RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]):
             >>> len(ds)
             5000
         """
-        raise NotImplementedError("To be implemented")
+        return self._length
 
     def __getitem__(self, idx: int) -> OfflinePlyTuple:
         """Read one OfflinePlyTuple by index.
@@ -95,8 +107,7 @@ class RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]):
             idx: Sample index (non-negative).
 
         Returns:
-            OfflinePlyTuple with tensors for board/color/traj/prefix
-            and decoded move_uci string.
+            OfflinePlyTuple with tensors and decoded strings.
 
         Raises:
             IndexError: If idx < 0 or idx >= len(self).
@@ -106,7 +117,46 @@ class RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]):
             >>> ply.board_tokens.shape
             torch.Size([65])
         """
-        raise NotImplementedError("To be implemented")
+        if idx < 0 or idx >= self._length:
+            raise IndexError(
+                f"Index {idx} out of range "
+                f"[0, {self._length})"
+            )
+
+        grp = self._file[self._split]  # type: ignore[index]
+        pl = int(grp["prefix_lengths"][idx])
+
+        board_tokens = torch.tensor(
+            grp["board_tokens"][idx], dtype=torch.long
+        )
+        color_tokens = torch.tensor(
+            grp["color_tokens"][idx], dtype=torch.long
+        )
+        traj_tokens = torch.tensor(
+            grp["traj_tokens"][idx], dtype=torch.long
+        )
+        move_prefix = torch.tensor(
+            grp["move_prefix"][idx, :pl], dtype=torch.long
+        )
+        move_uci: str = (
+            grp["move_uci"][idx]
+            .decode("ascii")
+            .rstrip("\x00")
+        )
+        is_winner_ply = bool(grp["is_winner_ply"][idx])
+        is_white_ply = bool(grp["is_white_ply"][idx])
+        is_draw_ply = bool(grp["is_draw_ply"][idx])
+
+        return OfflinePlyTuple(
+            board_tokens=board_tokens,
+            color_tokens=color_tokens,
+            traj_tokens=traj_tokens,
+            move_prefix=move_prefix,
+            move_uci=move_uci,
+            is_winner_ply=is_winner_ply,
+            is_white_ply=is_white_ply,
+            is_draw_ply=is_draw_ply,
+        )
 
 
 def rl_hdf5_worker_init(worker_id: int) -> None:
@@ -122,4 +172,9 @@ def rl_hdf5_worker_init(worker_id: int) -> None:
         >>> DataLoader(ds, num_workers=2,
         ...            worker_init_fn=rl_hdf5_worker_init)
     """
-    raise NotImplementedError("To be implemented")
+    worker_info = torch.utils.data.get_worker_info()
+    if worker_info is None:
+        return
+    ds = worker_info.dataset
+    if isinstance(ds, RLPlyHDF5Dataset):
+        ds._open()

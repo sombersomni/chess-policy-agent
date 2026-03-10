@@ -1,12 +1,15 @@
-"""Action-conditioned Q-value critic head: two-layer MLP on concat fusion.
+"""Value heads for chess model critic components.
 
-Estimates Q(S_t, A_teacher_t) from detached board CLS embedding and
-detached teacher action embedding. Replaces the prior ReturnValueHead.
+ActionConditionedValueHead: Q-value critic via concat fusion MLP.
+ValueHeads: legacy Phase 2 dual-head (win + surprise) critic.
 """
 from __future__ import annotations
 
+import torch
 import torch.nn as nn
 from torch import Tensor
+
+from chess_sim.types import ValueHeadOutput
 
 
 class ActionConditionedValueHead(nn.Module):
@@ -37,7 +40,10 @@ class ActionConditionedValueHead(nn.Module):
         Example:
             >>> head = ActionConditionedValueHead(128)
         """
-        raise NotImplementedError("To be implemented")
+        super().__init__()
+        self._fc1 = nn.Linear(2 * d_model, d_model // 2)
+        self._relu = nn.ReLU()
+        self._fc2 = nn.Linear(d_model // 2, 1)
 
     def forward(
         self, cls_emb: Tensor, action_emb: Tensor
@@ -62,4 +68,40 @@ class ActionConditionedValueHead(nn.Module):
             >>> q.shape
             torch.Size([4, 1])
         """
-        raise NotImplementedError("To be implemented")
+        fused = torch.cat([cls_emb, action_emb], dim=-1)
+        return self._fc2(self._relu(self._fc1(fused)))
+
+
+class ValueHeads(nn.Module):
+    """Legacy Phase 2 dual-head critic: win + surprise on CLS embedding.
+
+    V_win predicts probability of winning from the current state.
+    V_surprise predicts the expected surprise score. Both heads
+    receive a detached CLS embedding so value gradients do not
+    distort the shared encoder representations.
+    """
+
+    def __init__(self, d_model: int) -> None:
+        """Initialise win and surprise projection heads.
+
+        Args:
+            d_model: Dimensionality of the encoder CLS embedding.
+        """
+        super().__init__()
+        self._win_head = nn.Linear(d_model, 1)
+        self._surprise_head = nn.Linear(d_model, 1)
+
+    def forward(self, cls_emb: Tensor) -> ValueHeadOutput:
+        """Project detached CLS embedding through both heads.
+
+        Args:
+            cls_emb: [B, d_model] CLS embedding, must be detached.
+
+        Returns:
+            ValueHeadOutput with v_win and v_surprise each [B, 1].
+        """
+        v_win = self._win_head(cls_emb)
+        v_surprise = self._surprise_head(cls_emb)
+        return ValueHeadOutput(
+            v_win=v_win, v_surprise=v_surprise
+        )

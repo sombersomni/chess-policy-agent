@@ -120,3 +120,15 @@
 - Key design: trains BOTH sides simultaneously (not just player plies like SelfPlayLoop)
 - Temporal discount: gamma^(T-1-t) so LAST ply gets gamma^0=1.0 (opposite of RewardComputer buggy direction)
 - LR schedule: identical SequentialLR (warmup -> constant -> cosine) from Phase1Trainer
+
+## RL HDF5 Preprocessing Pipeline
+- `chess_sim/preprocess/rl_reader.py`: RLPGNReader — streams .pgn/.zst via StreamingPGNReader delegation
+- `chess_sim/preprocess/rl_parser.py`: RLPlyParser — filters by train_color, returns list[RLPlyRecord] (plain lists, no tensors)
+- `chess_sim/preprocess/rl_writer.py`: RLHdf5Writer — 11 datasets per split, move_uci as S5, prefix zero-padded
+- `chess_sim/preprocess/rl_validator.py`: RLHdf5Validator — schema + value range + train_color attr checks
+- `chess_sim/preprocess/rl_preprocessor.py`: RLHdf5Preprocessor — serial/parallel orchestration with _rl_parse_worker
+- `chess_sim/data/rl_hdf5_dataset.py`: RLPlyHDF5Dataset -> OfflinePlyTuple, rl_hdf5_worker_init for multi-worker
+- Config: `RLPreprocessConfig` (RLOutputConfig, RLFilterConfig) + `load_rl_preprocess_config` in `chess_sim/config.py`
+- Script: `scripts/preprocess_rl.py` + `configs/preprocess_rl.yaml`
+- Tests: `tests/test_rl_hdf5_pipeline.py` — 47 tests
+- HDF5 schema: version="rl_1.0", 11 datasets (board_tokens, color_tokens, traj_tokens, move_prefix, prefix_lengths, move_uci, is_winner_ply, is_white_ply, is_draw_ply, game_id, ply_index)

@@ -457,6 +457,7 @@ class RLConfig:
     lambda_value: float = 1.0
     label_smoothing: float = 0.1
     train_color: str = "white"
+    value_lr_multiplier: float = 5.0
 
     def __post_init__(self) -> None:
         """Validate RL hyperparameter ranges."""

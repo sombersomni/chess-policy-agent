@@ -1,8 +1,8 @@
 """PGNRLRewardComputer: converts offline ply tuples into reward tensors.
 
-Implements the OfflineComputable protocol. Combines temporal discount
-(correct direction: last ply gets gamma^0=1.0), material delta, and
-check bonus into a single per-ply reward tensor.
+Implements the OfflineComputable protocol. Pure temporal discount:
+last ply gets gamma^0=1.0, first ply gets the largest discount.
+Outcome: win_reward / draw_reward / loss_reward per ply type.
 """
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import torch
 from torch import Tensor
 
 from chess_sim.config import RLConfig
-from chess_sim.training.training_utils import l1_normalize
 from chess_sim.types import OfflinePlyTuple
 
 
@@ -19,9 +18,8 @@ class PGNRLRewardComputer:
 
     Implements the OfflineComputable protocol.
 
-    Temporal discount: gamma^(T-1-t) so the last ply (closest to
-    outcome) gets gamma^0 = 1.0, and the first ply gets the
-    largest discount.
+    R(t) = base_outcome * gamma^(T-1-t)
+    where base_outcome is draw_reward, win_reward, or loss_reward.
     """
 
     def compute(
@@ -33,19 +31,21 @@ class PGNRLRewardComputer:
 
         Args:
             plies: List of OfflinePlyTuple from PGNReplayer.
-            cfg: RLConfig with gamma, reward values, lambdas.
+            cfg: RLConfig with gamma and reward values.
 
         Returns:
-            FloatTensor of shape [T] with combined rewards.
+            FloatTensor of shape [T] with temporally discounted rewards.
         """
         T = len(plies)
         if T == 0:
             return torch.zeros(0)
 
-        temporal = torch.tensor(
+        return torch.tensor(
             [
                 (
-                    cfg.win_reward
+                    cfg.draw_reward
+                    if p.is_draw_ply
+                    else cfg.win_reward
                     if p.is_winner_ply
                     else cfg.loss_reward
                 )
@@ -53,17 +53,4 @@ class PGNRLRewardComputer:
                 for t, p in enumerate(plies)
             ],
             dtype=torch.float32,
-        )
-        material = torch.tensor(
-            [p.material_delta for p in plies],
-            dtype=torch.float32,
-        )
-        check = torch.tensor(
-            [p.gave_check for p in plies],
-            dtype=torch.float32,
-        )
-        return (
-            temporal
-            + cfg.lambda_material * l1_normalize(material)
-            + cfg.lambda_check * l1_normalize(check)
         )

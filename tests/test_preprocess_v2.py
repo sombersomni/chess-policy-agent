@@ -6,7 +6,6 @@ to avoid dependency on real PGN files.
 
 from __future__ import annotations
 
-import io
 import random
 import tempfile
 import unittest
@@ -29,7 +28,6 @@ from chess_sim.config import (
 )
 from chess_sim.data.hdf5_dataset import (
     ChessHDF5Dataset,
-    hdf5_worker_init,
 )
 from chess_sim.data.move_vocab import SOS_IDX
 from chess_sim.data.pgn_sequence_dataset import (
@@ -39,7 +37,6 @@ from chess_sim.preprocess.parse import GameParser
 from chess_sim.preprocess.validate import HDF5Validator
 from chess_sim.preprocess.writer import HDF5Writer
 from chess_sim.types import RawTurnRecord
-
 
 # ---------------------------------------------------------------
 # Fixtures
@@ -715,7 +712,6 @@ class TestTrainV2Integration(unittest.TestCase):
         """T24: Empty hdf5_path uses PGNSequenceDataset path."""
         from chess_sim.config import (
             ChessModelV2Config,
-            DataConfig,
         )
 
         cfg = ChessModelV2Config()

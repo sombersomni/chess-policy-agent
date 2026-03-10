@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -19,9 +18,6 @@ from torch.utils.data import DataLoader
 
 from chess_sim.config import (
     ChessModelV2Config,
-    DecoderConfig,
-    ModelConfig,
-    TrainerConfig,
 )
 from chess_sim.data.move_vocab import PAD_IDX
 from chess_sim.functional import entropy_from_logits, mean_entropy

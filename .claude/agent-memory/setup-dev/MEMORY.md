@@ -1,232 +1,92 @@
 # setup-dev Agent Memory
 
-## Scaffolding Completed: Phase 2 Self-Play RL (2026-03-08)
+## Key Patterns
+- `.gitignore` has `data/` and `env/` catch-all — must use `git add -f` for `chess_sim/data/*` and `chess_sim/env/*`
+- Virtualenv at `.venv/`; run with `source .venv/bin/activate && python -m ...`
+- All nn.Module stubs raise NotImplementedError in `__init__` (consistent pattern)
+- Append to existing config.py, types.py, protocols.py — never modify existing code
+- Config pattern: `@dataclass` with defaults, `__post_init__` for validation, `load_*_config()` loader
+- Test pattern: `unittest.TestCase` + `parameterized.expand`, assert NotImplementedError for stubs
+- No new deps without justification; ruff line limit 88 chars
+
+## Detailed History
+See [scaffolding-history.md](scaffolding-history.md) for all prior scaffolding details.
+
+---
+
+## Scaffolding Completed: RL HDF5 Pipeline (2026-03-09)
 
 ### Module Layout
 ```
 chess_sim/
-├── config.py                        # Phase2Config replaced: +ema_alpha, gamma, lambda_surprise, __post_init__ validation
-├── types.py                         # +3 NamedTuples: PlyTuple, EpisodeRecord, ValueHeadOutput
-├── protocols.py                     # +3 Protocols: Recordable, Computable, Updatable
-├── env/self_play_source.py          # SelfPlaySource — implements SimSource structurally
-├── model/value_heads.py             # ValueHeads(nn.Module) — v_win + v_surprise linear heads
-├── training/episode_recorder.py     # EpisodeRecorder — implements Recordable
-├── training/reward_computer.py      # RewardComputer — implements Computable
-├── training/ema_updater.py          # EMAUpdater — implements Updatable
-├── training/self_play_loop.py       # SelfPlayLoop — orchestrates full RL loop
-├── training/phase2_trainer.py       # (existing, unchanged — still uses old Phase2Config fields)
-configs/phase2.yaml                  # Default Phase2Config YAML
-scripts/train_phase2.py              # Entry-point stub
+├── config.py                          # +RLOutputConfig, RLFilterConfig, RLPreprocessConfig, load_rl_preprocess_config
+├── types.py                           # +RLPlyRecord NamedTuple (10 fields, no torch dep)
+├── preprocess/rl_reader.py            # RLPGNReader — stream() yields chess.pgn.Game
+├── preprocess/rl_parser.py            # RLPlyParser — parse_game() -> list[RLPlyRecord]
+├── preprocess/rl_writer.py            # RLHdf5Writer — open/write_batch/flush/close
+├── preprocess/rl_validator.py         # RLHdf5Validator — validate() raises ValueError
+├── preprocess/rl_preprocessor.py      # RLHdf5Preprocessor — orchestrates full pipeline
+├── preprocess/__init__.py             # +5 RL exports
+├── data/rl_hdf5_dataset.py            # RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]) + rl_hdf5_worker_init
+configs/preprocess_rl.yaml             # Default RL preprocess YAML
+scripts/preprocess_rl.py               # Entry-point stub
 ```
 
-### Test Suite (15 tests, all raise NotImplementedError)
+### Test Suite (39 tests, all PASS — stubs assert NotImplementedError, configs test real validation)
 ```
-tests/test_phase2_self_play.py
-  - TC01: EMA update correctness (alpha=0.995 blend)
-  - TC02: EMA leaves player unchanged
-  - TC03-05: Surprise scores (certain correct, uncertain wrong, draw=0)
-  - TC06-07: Reward tensor shape/values, loss trajectory sign flip
-  - TC08: ValueHeads forward shape [B,1]
-  - TC09-10: Phase2Config validation (invalid alpha, invalid gamma)
-  - TC11: EpisodeRecorder.finalize
-  - TC12: SelfPlaySource terminal detection
-  - TC13: Player-only ply filtering (20 plies -> 10 rewards)
-  - TC14: Temporal discount monotonicity
-  - TC15: SelfPlayLoop no param collision
-```
-
-### Key Decisions
-- Phase2Config.__post_init__ validates ema_alpha in (0,1), gamma in (0,1], lambda_surprise >= 0, episodes_per_update >= 1
-- ValueHeads.__init__ calls super().__init__() then creates nn.Linear heads (NOT raising NotImplementedError)
-- Existing phase2_trainer.py unmodified — still imports win_reward/loss_reward/draw_reward (all kept)
-- SelfPlaySource implements SimSource structurally (no inheritance)
-- `git add -f` needed for chess_sim/env/self_play_source.py due to .gitignore `env/` pattern
-- Test imports use `# noqa: F401` since bodies are stubs
-
----
-
-## Scaffolding Completed: Aim Experiment Tracking (2026-03-07)
-
-### Module Layout
-```
-chess_sim/
-├── config.py                       # +AimConfig dataclass, +aim field on ChessModelV2Config
-├── tracking/__init__.py            # Exports MetricTracker, AimTracker, NoOpTracker, make_tracker
-├── tracking/protocol.py            # MetricTracker Protocol (track_step, track_epoch, close)
-├── tracking/aim_tracker.py         # AimTracker — wraps aim.Run, stubs raise NotImplementedError
-├── tracking/noop_tracker.py        # NoOpTracker — silent pass bodies (production fallback)
-├── tracking/factory.py             # make_tracker() — stub, returns AimTracker or NoOpTracker
-├── training/phase1_trainer.py      # +tracker param, +_global_step, +_mean_entropy stub
-└── scripts/train_v2.py             # +make_tracker, +tracker=tracker, +try/finally close()
-```
-
-### Test Suite (15 tests: 6 pass, 9 fail awaiting impl)
-```
-tests/test_aim_tracking.py
-  - TestMakeTracker:    TC01-TC03 (factory returns correct type)
-  - TestAimTracker:     TC04-TC07 (log_every_n, step0 guard, epoch keys, hparams)
-  - TestNoOpTracker:    TC08 (all return None) [PASSES]
-  - TestPhase1Trainer:  TC09-TC10 (None->NoOp, global_step) [PASSES]
-  - TestEvaluateEntropy: TC11 (mean_entropy in dict) [PASSES]
-  - TestAimConfigYAML:  TC12-TC13 (YAML load, missing section) [PASSES]
-  - TestMeanEntropy:    TC14 (peaked logits < 0.001)
-  - TestTrackerClose:   TC15 (finally block) [PASSES]
+tests/test_rl_hdf5_pipeline.py
+  - T1:  TestSchemaCorrectness — validator raises NIE
+  - T2:  TestTokenRoundTrip — writer/dataset init raises NIE
+  - T3:  TestPrefixPadding — record prefix len + writer NIE
+  - T4:  TestPrefixTruncation — long prefix constructable + writer NIE
+  - T5:  TestTrainColorFiltering — parser NIE + filter config validation (white/black/invalid)
+  - T6:  TestMoveUciRoundTrip — 4 parameterized UCI string checks
+  - T7:  TestRewardRecomputation — flag types + dataset NIE
+  - T8:  TestEmptyGameHandling — parser init NIE
+  - T9:  TestDatasetLength — dataset init NIE
+  - T10: TestOutOfRange — dataset init NIE
+  - T11: TestMultiWorkerDataLoader — worker_init NIE
+  - T12: TestTrainColorMismatch — validator NIE with black filter
+  + TestRLPreprocessConfig (4): defaults, loader NIE
+  + TestRLPlyRecordFields (11): field count + 10 parameterized name checks
+  + TestRLPGNReader (1): stream NIE
+  + TestRLHdf5Preprocessor (2): parser NIE, preprocessor init NIE
 ```
 
 ### Key Decisions
-- `git add -f` needed for chess_sim/tracking/* (`.gitignore` `data/` pattern)
-- NoOpTracker uses `pass` not NotImplementedError — it IS the production fallback
-- AimTracker.__init__ accepts `run: Any` for MagicMock injection
-- _mean_entropy is module-level private function in phase1_trainer.py
-- aim>=3.17 in requirements.txt; optional at runtime via import guard
+- `git add -f` needed for chess_sim/data/rl_hdf5_dataset.py (gitignore `data/` pattern)
+- RLFilterConfig.__post_init__ validates train_color in ("white", "black")
+- RLPreprocessConfig reuses InputConfig, SplitConfig, ProcessingConfig from existing pipeline
+- load_rl_preprocess_config raises NotImplementedError (stub)
+- RLPlyRecord has 10 fields, no torch dependency — pure Python/lists
+- HDF5 schema: board/color/traj [N,65] uint8, move_prefix [N,max_prefix_len] uint16, move_uci S5 ASCII
+- Design doc at docs/rl_hdf5_pipeline.md
 
 ---
 
-## Scaffolding Completed: ChessModel v2 Encoder-Decoder (2026-03-07)
+## Scaffolding Completed: ReturnValueHead Critic (2026-03-09)
 
-### Module Layout
-```
-chess_sim/
-├── protocols.py                    # +3 Protocols: MoveTokenizable, Decodable, MoveEmbeddable
-├── types.py                        # +4 NamedTuples: GameTurnSample, GameTurnBatch, DecoderOutput, SelfPlayGame
-├── config.py                       # +3 dataclasses: DecoderConfig, Phase2Config, ChessModelV2Config + load_v2_config()
-├── data/move_vocab.py              # MoveVocab — UCI string <-> int index, PAD=0/SOS=1/EOS=2, ~1971 total
-├── data/move_tokenizer.py          # MoveTokenizer — implements MoveTokenizable
-├── data/pgn_sequence_dataset.py    # PGNSequenceDataset(Dataset) + PGNSequenceCollator
-├── model/move_embedding.py         # MoveEmbedding(nn.Module) — implements MoveEmbeddable
-├── model/decoder.py                # MoveDecoder(nn.Module) — implements Decodable, wraps nn.TransformerDecoder
-├── model/chess_model.py            # ChessModel(nn.Module) — encoder + decoder assembly
-├── training/phase1_trainer.py      # Phase1Trainer — supervised CE on move sequences
-└── training/phase2_trainer.py      # Phase2Trainer — REINFORCE self-play
-```
+### Changes
+- `chess_sim/model/value_heads.py` — full replacement: `ValueHeads` -> `ReturnValueHead` (two-layer MLP stub, forward raises NIE)
+- `chess_sim/model/chess_model.py` — added `self.value_head: ReturnValueHead` in `__init__`
+- `chess_sim/config.py` — added `lambda_value: float = 1.0` to `RLConfig` with `__post_init__` validation
+- `configs/train_rl.yaml` — added `lambda_value: 1.0` under `rl:` block
+- `chess_sim/training/pgn_rl_trainer.py` — added `_encode_and_decode` stub (NIE), `v_preds` list, `value_loss`/`mean_advantage` placeholders (0.0) in return dicts
+- `tests/test_pgn_rl_trainer.py` — T15-T23 (9 new tests), new `TestReturnValueHead` class
 
-### Test Suite
-```
-tests/test_v2_skeleton.py  # 42 tests (25 pass structural, 17 fail awaiting impl)
-  - TestMoveVocab:         TV01 (size), TV02 (roundtrip x3), TV03 (special), TV04 (promo x4)
-  - TestMoveTokenizer:     TV05 (shape), TV06 (SOS/EOS), TV07 (mask shape), TV08 (mask values)
-  - TestMoveEmbedding:     TV09 (output shape)
-  - TestMoveDecoder:       TV10 (mask shape), TV11 (upper-tri), TV12 (forward shape)
-  - TestChessModel:        TV13 (e2e shape)
-  - TestGameTurnSample:    TV14 (5 field checks across 4 NamedTuples)
-  - TestDecoderConfig:     TV15 (7 default checks)
-  - TestPhase2Config:      TV16 (9 default checks)
-  - TestLoadV2Config:      TV17 (yaml load, empty yaml, unknown key)
-```
-
-### Key Decisions
-- Appended to existing protocols.py, types.py, config.py — no existing code modified
-- `git add -f` needed for chess_sim/data/* files due to .gitignore `data/` pattern
-- Decorators `@log_metrics` and `@device_aware` imported from existing `chess_sim.training.trainer`
-- MoveVocab: 3 special tokens + ~1968 moves = ~1971 total vocab
-- DecoderConfig defaults: d_model=256, n_heads=8, n_layers=4, max_seq_len=512
-- All nn.Module stubs raise NotImplementedError in __init__ (consistent with v1 pattern)
+### Test Results: 24 pass, 1 fail (T20 — NIE from forward stub, expected)
+- Design doc at docs/return_value_head.md
 
 ---
 
-## Scaffolding Completed: Streaming Data Pipeline (2026-03-06)
+## Scaffolding Completed: ActionConditionedValueHead Q-function (2026-03-09)
 
-### Module Layout
-```
-chess_sim/
-├── protocols.py              # +3 Protocols: Preprocessable, ShardWritable, Cacheable
-├── data/streaming_types.py   # PreprocessConfig, ManifestInfo (frozen dataclasses)
-├── data/chunk_processor.py   # ChunkProcessor — games to dense tensors
-├── data/shard_writer.py      # ShardWriter — implements ShardWritable
-├── data/cache_manager.py     # CacheManager — implements Cacheable
-├── data/preprocessor.py      # PGNPreprocessor — implements Preprocessable
-└── data/sharded_dataset.py   # ShardedChessDataset(Dataset) — LRU shard cache
-```
+### Changes
+- `chess_sim/model/value_heads.py` — `ReturnValueHead` -> `ActionConditionedValueHead` (concat fusion MLP, 2*d_model input)
+- `chess_sim/model/chess_model.py` — import updated, `@property move_token_emb` stub added (NIE)
+- `chess_sim/training/pgn_rl_trainer.py` — `_encode_and_decode` gains `move_uci` param, returns `tuple[Tensor, Tensor, int | None]` (NIE); `v_preds` -> `q_preds`; ply loop updated with action_emb + Q-head
+- `tests/test_pgn_rl_trainer.py` — `TestReturnValueHead` -> `TestActionConditionedValueHead`
+- `tests/test_value_head_q.py` — T24-T37 (14 tests), all fail with NIE
 
-### Test Suite
-```
-tests/test_streaming_pipeline.py  # T1-T20 (20 tests, all self.fail)
-  - TestChunkProcessor:       T1 (shapes), T2 (tokenization match)
-  - TestShardWriter:          T3 (roundtrip), T4 (file naming)
-  - TestCacheManager:         T5 (checksum stability), T6 (miss), T7 (hit), T8 (invalidation)
-  - TestShardedChessDataset:  T9 (length), T10 (boundary), T11 (LRU eviction), T12 (ChessBatch type)
-  - TestPGNPreprocessor:      T13 (e2e), T14 (cache skip), T15 (max_games), T16 (winners_only draw)
-  - TestDataLoaderIntegration: T17 (multi-worker), T18 (empty pgn), T19 (train/val split), T20 (trainer compat)
-```
-
-### Key Decisions
-- `.gitignore` has `data/` which matches `chess_sim/data/` — must use `git add -f` for data subpackage files
-- Reuses `game_to_examples` and `_make_trajectory_tokens` from `scripts/train_real.py`
-- No new dependencies — only torch, json, hashlib, pathlib, bisect from stdlib
-- Shard file naming: `shard_{idx:06d}.pt`
-- ShardedChessDataset uses OrderedDict for LRU + bisect for O(log S) shard lookup
-
----
-
-## Scaffolding Completed: GUI Chess Viewer (2026-03-06)
-
-### Module Layout
-```
-scripts/gui/
-├── __init__.py            # 3 Protocols: Renderable, Navigable, GameSource
-├── formatters.py          # _fmt_loss, _fmt_acc, _fmt_entropy (tkinter-free)
-├── game_controller.py     # GameController — implements GameSource (no tkinter)
-├── board_panel.py         # BoardPanel(tk.Frame) — implements Renderable, Navigable
-├── stats_panel.py         # StatsPanel(tk.Frame) — implements Renderable
-└── viewer.py              # ChessViewer — root window wiring panels
-```
-
-### Test Suite
-```
-tests/gui/__init__.py
-tests/gui/test_game_controller.py   # GC01-GC05 (requires checkpoint, skip in CI)
-tests/gui/test_stats_panel.py       # SP01-SP02 (7 tests, pure formatting)
-```
-
-### Key Decisions
-- Pure formatting helpers extracted to `scripts/gui/formatters.py` to avoid tkinter import in headless tests
-- `GameController` has zero tkinter deps — fully testable without display
-- `tkinter` not available in CI/venv — tests importing tk-dependent modules will fail
-- `matplotlib>=3.7` added to requirements.txt for embedding scatter plot
-- StepResult imported from `scripts.evaluate`, not re-defined
-
----
-
-## Scaffolding Completed: Chess Encoder (2026-03-05)
-
-### Module Layout
-```
-chess_sim/
-├── protocols.py          # 6 Protocols: Tokenizable, Embeddable, Encodable, Predictable, Trainable, Samplable
-├── types.py              # 6 NamedTuples: TokenizedBoard, TrainingExample, ChessBatch, EncoderOutput, PredictionOutput, LabelTensors
-├── data/tokenizer.py     # BoardTokenizer — implements Tokenizable
-├── data/dataset.py       # ChessDataset — torch.utils.data.Dataset
-├── data/reader.py        # StreamingPGNReader — zstandard-based streaming
-├── data/sampler.py       # ReservoirSampler — implements Samplable
-├── model/embedding.py    # EmbeddingLayer (nn.Module) — implements Embeddable
-├── model/encoder.py      # ChessEncoder (nn.Module) — implements Encodable
-├── model/heads.py        # PredictionHeads (nn.Module) — implements Predictable
-├── training/loss.py      # LossComputer — 4x CE, ignore_index=-1 for opp heads
-└── training/trainer.py   # Trainer — implements Trainable + 3 decorator stubs
-```
-
-### Test Suite
-```
-tests/utils.py            # Shared fixtures: make_synthetic_batch, make_small_pgn_fixture, make_initial_board_tokens
-tests/test_tokenizer.py   # T01, T02, T03, T13, T14, T15, T16
-tests/test_embedding.py   # T04
-tests/test_encoder.py     # T05, T09
-tests/test_heads.py       # T06
-tests/test_loss.py        # T07
-tests/test_trainer.py     # T08, T19
-tests/test_sampler.py     # T10, T11
-tests/test_reader.py      # T12
-tests/test_dataset.py     # T17, T18, T20
-```
-Total: 45 tests, all raising NotImplementedError — zero import errors.
-
-### Key Patterns Established
-- `board_tokens` index offset: CLS at 0, squares are python-chess square + 1 (a1=1..h8=64)
-- `ignore_index=-1` for opponent heads (last move in game has no opponent response)
-- All nn.Module stubs have `__init__` raising NotImplementedError (no `super().__init__()` before it)
-- `@log_metrics`, `@device_aware`, `@timed` are functools.wraps-based decorator stubs
-- Chi-squared uniformity test for T10 is implemented manually (no scipy dependency)
-- Virtualenv at `.venv/`; run tests with `.venv/bin/python -m unittest discover -s tests -v`
-
-### Dependencies
-- torch>=2.0, python-chess>=1.9, zstandard>=0.21, parameterized (all in requirements.txt)
+### Test Results: 14 tests, all ERROR (NotImplementedError — expected)
+- Design doc at docs/action_conditioned_value_head.md

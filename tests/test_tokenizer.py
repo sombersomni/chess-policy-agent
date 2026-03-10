@@ -7,14 +7,13 @@ import unittest
 import chess
 
 from chess_sim.data.tokenizer import (
+    CLS_TOKEN,
     COLOR_EMPTY,
     COLOR_OPPONENT,
     COLOR_PLAYER,
-    CLS_TOKEN,
     EMPTY_TOKEN,
     BoardTokenizer,
 )
-from tests.utils import make_initial_board_tokens
 
 
 class TestBoardTokenizerInitialPosition(unittest.TestCase):

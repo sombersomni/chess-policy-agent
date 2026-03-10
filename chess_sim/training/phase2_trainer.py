@@ -12,14 +12,12 @@ from pathlib import Path
 
 import chess
 import torch
-import torch.nn as nn
 from torch import Tensor
 
-from chess_sim.config import ChessModelV2Config, Phase2Config
+from chess_sim.config import ChessModelV2Config
 from chess_sim.data.move_tokenizer import MoveTokenizer
 from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.model.chess_model import ChessModel
-from chess_sim.training.trainer import log_metrics
 from chess_sim.types import SelfPlayGame
 
 logger = logging.getLogger(__name__)

@@ -114,9 +114,32 @@ class PGNRLTrainer:
             tracker or NoOpTracker()
         )
 
+        # Split params: value head gets higher LR
+        value_params = set(
+            id(p)
+            for p in self._model.value_head.parameters()
+        )
+        main_params = [
+            p
+            for p in self._model.parameters()
+            if id(p) not in value_params
+        ]
         self._opt = torch.optim.AdamW(
-            self._model.parameters(),
-            lr=cfg.rl.learning_rate,
+            [
+                {
+                    "params": main_params,
+                    "lr": cfg.rl.learning_rate,
+                },
+                {
+                    "params": list(
+                        self._model.value_head.parameters()
+                    ),
+                    "lr": (
+                        cfg.rl.learning_rate
+                        * cfg.rl.value_lr_multiplier
+                    ),
+                },
+            ],
             weight_decay=cfg.rl.weight_decay,
         )
 
@@ -157,6 +180,7 @@ class PGNRLTrainer:
             )
         )
         self._global_step: int = 0
+        self._ply_step: int = 0
 
     def _encode_and_decode(
         self,
@@ -186,20 +210,97 @@ class PGNRLTrainer:
             >>> logits, cls, idx = trainer._encode_and_decode(
             ...     bt, ct, tt, prefix, "e2e4")
         """
-        raise NotImplementedError("To be implemented")
+        enc_out = self._model.encoder.encode(bt, ct, tt)
+        memory = torch.cat(
+            [
+                enc_out.cls_embedding.unsqueeze(1),
+                enc_out.square_embeddings,
+            ],
+            dim=1,
+        )
+        dec_out = self._model.decoder.decode(
+            prefix, memory, None
+        )
+        last_logits = dec_out.logits[0, -1]
+        try:
+            move_idx: int | None = (
+                self._move_tok.tokenize_move(move_uci)
+            )
+        except KeyError:
+            move_idx = None
+        return (last_logits, enc_out.cls_embedding, move_idx)
 
     @property
     def model(self) -> ChessModel:
         """Expose the underlying ChessModel."""
         return self._model
 
+    def _build_board_snapshots(
+        self,
+        game: chess.pgn.Game,
+        train_white: bool,
+    ) -> list[chess.Board]:
+        """Replay game and collect pre-move boards for trained side.
+
+        Args:
+            game: A parsed PGN game object.
+            train_white: True if training the white side.
+
+        Returns:
+            Board snapshots (before each move) for the trained
+            side only, in game order.
+        """
+        board = game.board()
+        snapshots: list[chess.Board] = []
+        for move in game.mainline_moves():
+            is_white = board.turn == chess.WHITE
+            if is_white == train_white:
+                snapshots.append(board.copy())
+            board.push(move)
+        return snapshots
+
+    def _log_board_snapshot(
+        self,
+        board: chess.Board,
+        move_uci: str,
+        game_idx: int,
+    ) -> None:
+        """Emit a board text block to tracker every 100 ply steps.
+
+        Args:
+            board: Board state before the move.
+            move_uci: UCI string of the move just played.
+            game_idx: Index of the current game in the epoch.
+        """
+        if self._ply_step % 100 != 0:
+            return
+        try:
+            san = board.san(chess.Move.from_uci(move_uci))
+        except (ValueError, chess.InvalidMoveError):
+            san = "?"
+        text = (
+            f"Step {self._ply_step} | "
+            f"Game {game_idx} | "
+            f"Move: {move_uci} ({san})\n"
+            f"{board.unicode()}"
+        )
+        logger.info(
+            "Board @ ply_step=%d game=%d move=%s(%s)",
+            self._ply_step, game_idx, move_uci, san,
+        )
+        self._tracker.log_text(text, step=self._ply_step)
+
     def train_game(
-        self, game: chess.pgn.Game
+        self,
+        game: chess.pgn.Game,
+        game_idx: int = 0,
     ) -> dict[str, float]:
         """Train on one complete PGN game.
 
         Args:
             game: A parsed PGN game object.
+            game_idx: Index of this game in the epoch
+                (used for board snapshot logging).
 
         Returns:
             Dict with loss metrics. Empty dict if game is
@@ -212,6 +313,9 @@ class PGNRLTrainer:
         ]
         if not plies:
             return {}
+        board_snaps = self._build_board_snapshots(
+            game, train_white
+        )
 
         rewards = self._reward_fn.compute(
             plies, self._cfg.rl
@@ -225,6 +329,14 @@ class PGNRLTrainer:
         valid_reward_idxs: list[int] = []
 
         for i, ply in enumerate(plies):
+            self._ply_step += 1
+            if i < len(board_snaps):
+                self._log_board_snapshot(
+                    board_snaps[i],
+                    ply.move_uci,
+                    game_idx,
+                )
+
             bt = ply.board_tokens.unsqueeze(0).to(
                 self._device
             )
@@ -291,6 +403,7 @@ class PGNRLTrainer:
         pg_loss = -(log_probs_t * advantage).sum()
         value_loss = F.mse_loss(q_preds_t, valid_rewards)
         mean_adv = advantage.mean().item()
+        std_adv = advantage.std().item() if len(advantage) > 1 else 0.0
 
         targets_t = torch.tensor(
             all_targets, dtype=torch.long, device=self._device
@@ -327,6 +440,7 @@ class PGNRLTrainer:
             "mean_reward": mean_reward,
             "value_loss": value_loss.item(),
             "mean_advantage": mean_adv,
+            "std_advantage": std_adv,
         }
 
     def train_epoch(
@@ -350,10 +464,11 @@ class PGNRLTrainer:
         reward_sum = 0.0
         value_loss_sum: float = 0.0
         mean_adv_sum: float = 0.0
+        std_adv_sum: float = 0.0
         n_games = 0
 
-        for game in games:
-            metrics = self.train_game(game)
+        for gi, game in enumerate(games):
+            metrics = self.train_game(game, game_idx=gi)
             if not metrics:
                 continue
             total_loss += metrics["total_loss"]
@@ -362,6 +477,7 @@ class PGNRLTrainer:
             reward_sum += metrics["mean_reward"]
             value_loss_sum += metrics["value_loss"]
             mean_adv_sum += metrics["mean_advantage"]
+            std_adv_sum += metrics["std_advantage"]
             n_games += 1
             self._tracker.track_scalars(
                 {
@@ -372,6 +488,9 @@ class PGNRLTrainer:
                     "value_loss": metrics["value_loss"],
                     "mean_advantage": metrics[
                         "mean_advantage"
+                    ],
+                    "std_advantage": metrics[
+                        "std_advantage"
                     ],
                 },
                 step=self._global_step,
@@ -386,6 +505,7 @@ class PGNRLTrainer:
             "n_games": n_games,
             "value_loss": value_loss_sum / denom,
             "mean_advantage": mean_adv_sum / denom,
+            "std_advantage": std_adv_sum / denom,
         }
 
     def evaluate(

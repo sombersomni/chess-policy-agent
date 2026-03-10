@@ -15,11 +15,9 @@ from pathlib import Path
 
 from chess_sim.config import (
     ModelConfig,
-    TrainConfig,
     TrainerConfig,
     load_train_config,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -173,8 +171,10 @@ class TestTrainerConfig(unittest.TestCase):
 
     def test_tc14_warmup_steps_yaml_raises(self) -> None:
         """TC14: YAML with deprecated warmup_steps raises TypeError."""
-        import tempfile, textwrap
+        import tempfile
+        import textwrap
         from pathlib import Path
+
         from chess_sim.config import load_v2_config
         yaml_str = textwrap.dedent("""\
             trainer:

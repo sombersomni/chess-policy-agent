@@ -98,17 +98,22 @@ def main() -> None:
             tracker.track_epoch(all_metrics, epoch, lr)
 
             logger.info(
-                "Epoch %02d: total=%.4f pg=%.4f ce=%.4f "
+                "Epoch %02d: total=%.4f pg=%.4f "
+                "ce=%.4f "
                 "| val_loss=%.4f val_acc=%.4f "
-                "| H=%.3f reward=%.4f games=%d lr=%.2e",
+                "| reward=%.4f "
+                "adv=%.4f\u00b1%.4f "
+                "vl=%.4f games=%d lr=%.2e",
                 epoch,
                 metrics["total_loss"],
                 metrics["pg_loss"],
                 metrics["ce_loss"],
                 val_metrics["val_loss"],
                 val_metrics["val_accuracy"],
-                metrics["mean_entropy"],
                 metrics["mean_reward"],
+                metrics["mean_advantage"],
+                metrics["std_advantage"],
+                metrics["value_loss"],
                 metrics["n_games"],
                 lr,
             )

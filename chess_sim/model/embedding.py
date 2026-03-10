@@ -20,8 +20,6 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
-from chess_sim.protocols import Embeddable
-
 D_MODEL: int = 256
 PIECE_VOCAB_SIZE: int = 8
 COLOR_VOCAB_SIZE: int = 3

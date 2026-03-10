@@ -12,9 +12,6 @@ from __future__ import annotations
 
 import argparse
 import functools
-import io
-import math
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +24,8 @@ import yaml
 from torch import Tensor
 from torch.utils.data import DataLoader
 
-from chess_sim.config import ChessModelV2Config, DecoderConfig, ModelConfig
 from chess_sim.data.move_tokenizer import MoveTokenizer
-from chess_sim.data.move_vocab import MoveVocab, PAD_IDX, SOS_IDX, EOS_IDX
+from chess_sim.data.move_vocab import PAD_IDX, SOS_IDX, MoveVocab
 from chess_sim.data.pgn_sequence_dataset import (
     PGNSequenceCollator,
     PGNSequenceDataset,

@@ -30,8 +30,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from typing import NamedTuple
-from unittest.mock import MagicMock, patch
 
 import torch
 from parameterized import parameterized
@@ -42,18 +40,17 @@ from chess_sim.config import (
     Phase2Config,
     load_v2_config,
 )
-from chess_sim.data.move_vocab import EOS_IDX, PAD_IDX, SOS_IDX, MoveVocab
 from chess_sim.data.move_tokenizer import MoveTokenizer
-from chess_sim.model.move_embedding import MoveEmbedding
-from chess_sim.model.decoder import MoveDecoder
+from chess_sim.data.move_vocab import EOS_IDX, PAD_IDX, SOS_IDX, MoveVocab
 from chess_sim.model.chess_model import ChessModel
+from chess_sim.model.decoder import MoveDecoder
+from chess_sim.model.move_embedding import MoveEmbedding
 from chess_sim.types import (
     DecoderOutput,
     GameTurnBatch,
     GameTurnSample,
     SelfPlayGame,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

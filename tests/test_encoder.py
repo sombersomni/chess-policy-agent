@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import MagicMock, patch
 
 import torch
 
 from chess_sim.model.embedding import D_MODEL
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.types import EncoderOutput
-from tests.utils import make_synthetic_batch
 
 
 class TestChessEncoderOutputShape(unittest.TestCase):

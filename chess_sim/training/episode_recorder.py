@@ -9,18 +9,39 @@ from __future__ import annotations
 
 import torch
 
-from chess_sim.protocols import Recordable  # noqa: F401
 from chess_sim.types import EpisodeRecord, PlyTuple
+
+
+def _apply_entropy_normalization(
+    plies: list[PlyTuple],
+    player_indices: list[int],
+) -> list[PlyTuple]:
+    """Softmax-normalize raw Shannon entropies at player_indices.
+
+    Returns a new list with normalized entropy values replacing raw
+    ones at player_indices. Normalized values sum to 1.0, enabling
+    cross-episode comparison.
+    """
+    new_plies = list(plies)
+    raw_entropies = torch.tensor(
+        [new_plies[i].entropy for i in player_indices],
+        dtype=torch.float32,
+    )
+    norm_entropies = torch.softmax(raw_entropies, dim=0)
+    for idx, norm_h in zip(
+        player_indices, norm_entropies.tolist()
+    ):
+        new_plies[idx] = new_plies[idx]._replace(entropy=norm_h)
+    return new_plies
 
 
 class EpisodeRecorder:
     """Accumulates per-ply data for both sides during an episode.
 
-    Implements the Recordable protocol. record() is called for every
-    half-move (both player and opponent plies). finalize() applies
-    episode-wide softmax entropy normalization over player plies
-    before sealing the record, so that normalized entropies sum to
-    1.0 and are comparable across episodes of different lengths.
+    Example:
+        >>> rec = EpisodeRecorder()
+        >>> rec.record(ply)
+        >>> episode = rec.finalize(outcome=1.0)
     """
 
     def __init__(self) -> None:
@@ -45,8 +66,8 @@ class EpisodeRecorder:
         returns an EpisodeRecord. Resets internal state after sealing.
 
         Args:
-            outcome: +1.0 for win, -1.0 for loss, draw_reward for
-                     draws.
+            outcome: +1.0 for win, -1.0 for loss,
+                     caller-defined reward for draws (e.g. 0.0).
 
         Returns:
             Sealed EpisodeRecord with all plies and normalized
@@ -57,17 +78,9 @@ class EpisodeRecorder:
             if p.is_player_ply
         ]
         if player_indices:
-            raw_entropies = torch.tensor(
-                [self._plies[i].entropy for i in player_indices],
-                dtype=torch.float32,
+            new_plies = _apply_entropy_normalization(
+                self._plies, player_indices
             )
-            norm_entropies = torch.softmax(raw_entropies, dim=0)
-            new_plies = list(self._plies)
-            for idx, norm_h in zip(
-                player_indices, norm_entropies.tolist()
-            ):
-                old = new_plies[idx]
-                new_plies[idx] = old._replace(entropy=norm_h)
         else:
             new_plies = list(self._plies)
         record = EpisodeRecord(

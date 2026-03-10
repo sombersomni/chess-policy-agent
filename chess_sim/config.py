@@ -447,6 +447,7 @@ class RLConfig:
     min_lr: float = 1e-5
     gradient_clip: float = 1.0
     epochs: int = 20
+    seed: int = 42
     checkpoint: str = ""
     resume: str = ""
     gamma: float = 0.99

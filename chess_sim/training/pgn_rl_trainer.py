@@ -235,6 +235,14 @@ class PGNRLTrainer:
         """Expose the underlying ChessModel."""
         return self._model
 
+    @property
+    def current_lrs(self) -> tuple[float, float]:
+        """Return (main_lr, value_lr) for the current step."""
+        return (
+            self._opt.param_groups[0]["lr"],
+            self._opt.param_groups[1]["lr"],
+        )
+
     def _build_board_snapshots(
         self,
         game: chess.pgn.Game,
@@ -400,10 +408,17 @@ class PGNRLTrainer:
         advantage: Tensor = (
             valid_rewards - q_preds_t.detach()
         )  # [N]
-        pg_loss = -(log_probs_t * advantage).sum()
-        value_loss = F.mse_loss(q_preds_t, valid_rewards)
+        # Whiten advantages so PG gradient scale is
+        # independent of reward magnitude and game length;
+        # keeps pg_loss on the same scale as ce_loss.
+        if advantage.numel() > 1:
+            advantage = (
+                advantage - advantage.mean()
+            ) / (advantage.std() + 1e-8)
         mean_adv = advantage.mean().item()
-        std_adv = advantage.std().item() if len(advantage) > 1 else 0.0
+        std_adv = advantage.std().item() if advantage.numel() > 1 else 0.0
+        pg_loss = -(log_probs_t * advantage).mean()
+        value_loss = F.mse_loss(q_preds_t, valid_rewards)
 
         targets_t = torch.tensor(
             all_targets, dtype=torch.long, device=self._device
@@ -710,15 +725,22 @@ class PGNRLTrainer:
                     except (KeyError, IndexError):
                         continue
 
-                fig = render_rl_ply(
-                    board=board_snap,
-                    actual_uci=ply.move_uci,
-                    top_k=top_pairs,
-                    reward=reward,
-                    entropy=entropy,
-                    ply_idx=int(idx),
-                )
-                figs.append(fig)
+                try:
+                    fig = render_rl_ply(
+                        board=board_snap,
+                        actual_uci=ply.move_uci,
+                        top_k=top_pairs,
+                        reward=reward,
+                        entropy=entropy,
+                        ply_idx=int(idx),
+                    )
+                    figs.append(fig)
+                except Exception:
+                    logger.warning(
+                        "render_rl_ply failed at idx %d",
+                        idx,
+                        exc_info=True,
+                    )
 
         return figs
 

@@ -1,8 +1,8 @@
 """Trainer: orchestrates the training loop for the chess encoder.
 
 Owns ChessEncoder, PredictionHeads, LossComputer, AdamW optimizer, and
-cosine LR scheduler with linear warmup. Handles gradient clipping,
-checkpointing, early stopping, and metric logging via decorators.
+cosine LR scheduler. Handles gradient clipping, checkpointing,
+and metric logging via decorators.
 
 Decorators (cross-cutting concerns):
   @log_metrics   -- emits structured loss/accuracy logs to stdout.
@@ -13,8 +13,9 @@ Decorators (cross-cutting concerns):
 from __future__ import annotations
 
 import functools
+import logging
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Callable, ParamSpec, TypeVar
 
 import torch
 import torch.nn as nn
@@ -24,24 +25,27 @@ from chess_sim.config import ModelConfig, TrainerConfig
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.model.heads import PredictionHeads
 from chess_sim.training.loss import LossComputer
-from chess_sim.types import ChessBatch
+from chess_sim.types import ChessBatch, LabelTensors
 
-F = TypeVar("F", bound=Callable[..., Any])
+logger = logging.getLogger(__name__)
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 # Optimizer hyperparameters (from design doc).
 LEARNING_RATE: float = 3e-4
 WEIGHT_DECAY: float = 0.01
-WARMUP_STEPS: int = 1000
 GRADIENT_CLIP: float = 1.0
-PATIENCE: int = 3  # early stopping patience in epochs
 
 
 # ---------------------------------------------------------------------------
 # Cross-cutting concern decorators
 # ---------------------------------------------------------------------------
 
-def log_metrics(fn: F) -> F:
-    """Decorator: logs loss and per-head accuracy to stdout after each call.
+def log_metrics(
+    fn: Callable[P, R],
+) -> Callable[P, R]:
+    """Decorator: logs loss and per-head accuracy to stdout.
 
     Wraps train_step or train_epoch. Emits structured log lines without
     modifying the return value. Implementation logs at minimum: step loss,
@@ -58,7 +62,7 @@ def log_metrics(fn: F) -> F:
         ... def train_step(self, batch): ...
     """
     @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         result = fn(*args, **kwargs)
         self_arg = args[0]
         lr = (
@@ -70,15 +74,17 @@ def log_metrics(fn: F) -> F:
             f"[log_metrics] loss={result:.4f} lr={lr:.2e}"
         )
         return result
-    return wrapper  # type: ignore[return-value]
+    return wrapper
 
 
-def device_aware(fn: F) -> F:
-    """Decorator: ensures all tensors in the batch are moved to the correct device.
+def device_aware(
+    fn: Callable[P, R],
+) -> Callable[P, R]:
+    """Decorator: moves batch tensors to the correct device.
 
-    Reads the device from the Trainer's encoder parameters. Moves all tensors
-    in the ChessBatch namedtuple to the target device before calling fn.
-    Defaults to GPU when available; CPU for unit tests.
+    Reads the device from the Trainer's encoder parameters. Moves all
+    tensors in the ChessBatch namedtuple to the target device before
+    calling fn. Defaults to GPU when available; CPU for unit tests.
 
     Args:
         fn: The function to wrap (train_step or train_epoch).
@@ -91,10 +97,10 @@ def device_aware(fn: F) -> F:
         ... def train_step(self, batch): ...
     """
     @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         self_arg = args[0]
         device = next(self_arg.encoder.parameters()).device
-        if len(args) > 1 and hasattr(args[1], '_fields'):
+        if len(args) > 1 and isinstance(args[1], ChessBatch):
             batch = args[1]
             moved = type(batch)(
                 *[
@@ -106,14 +112,16 @@ def device_aware(fn: F) -> F:
             )
             args = (self_arg, moved) + args[2:]
         return fn(*args, **kwargs)
-    return wrapper  # type: ignore[return-value]
+    return wrapper
 
 
-def timed(fn: F) -> F:
-    """Decorator: records wall-clock time of the wrapped call for profiling.
+def timed(
+    fn: Callable[P, R],
+) -> Callable[P, R]:
+    """Decorator: records wall-clock time for profiling.
 
-    No-op in the scaffold — records nothing. Implementation should log elapsed
-    ms to a profiling dict or stdout. Useful for profiling data pipeline stages.
+    Logs elapsed ms to stdout after each call. Useful for profiling
+    data pipeline stages.
 
     Args:
         fn: The function to profile.
@@ -126,7 +134,7 @@ def timed(fn: F) -> F:
         ... def heavy_preprocessing(): ...
     """
     @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
         import time
         start = time.perf_counter()
         result = fn(*args, **kwargs)
@@ -135,7 +143,7 @@ def timed(fn: F) -> F:
             f"[timed] {fn.__name__} took {elapsed_ms:.1f}ms"
         )
         return result
-    return wrapper  # type: ignore[return-value]
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -152,10 +160,10 @@ class Trainer:
       heads:     PredictionHeads
       loss_fn:   LossComputer
       optimizer: AdamW(lr=3e-4, weight_decay=0.01)
-      scheduler: CosineAnnealingLR with 1000-step linear warmup
+      scheduler: CosineAnnealingLR over total_steps
 
     Gradient clipping is applied at max_norm=1.0 before each optimizer step.
-    Checkpointing saves the best validation loss. Early stopping uses patience=3.
+    Checkpointing saves the best validation loss.
 
     Example:
         >>> trainer = Trainer(device='cpu')
@@ -178,8 +186,9 @@ class Trainer:
             device: torch device string. Use 'cpu' for tests, 'cuda' for training.
             total_steps: Optimizer steps across all epochs (epochs * batches_per_epoch).
                 Defaults to 10_000.
-            trainer_cfg: Optional TrainerConfig for lr, weight_decay, warmup_steps,
-                and gradient_clip. When None, module constants are used.
+            trainer_cfg: Optional TrainerConfig for lr, weight_decay,
+                warmup_fraction, and gradient_clip. When None, module
+                constants are used.
             model_cfg: Optional ModelConfig for encoder / heads architecture.
                 When None, the default architecture (d_model=256, 6 layers) is used.
 
@@ -197,12 +206,12 @@ class Trainer:
         self.encoder = ChessEncoder(model_cfg).to(device)
         self.heads = PredictionHeads(model_cfg).to(device)
         self.loss_fn = LossComputer()
-        params = (
+        self._params: list[nn.Parameter] = (
             list(self.encoder.parameters())
             + list(self.heads.parameters())
         )
         self.optimizer = torch.optim.AdamW(
-            params, lr=lr, weight_decay=wd
+            self._params, lr=lr, weight_decay=wd
         )
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.optimizer, T_max=total_steps
@@ -235,7 +244,6 @@ class Trainer:
             batch.trajectory_tokens,
         )
         preds = self.heads(output.cls_embedding)
-        from chess_sim.types import LabelTensors
         labels = LabelTensors(
             batch.src_sq, batch.tgt_sq,
         )
@@ -243,9 +251,7 @@ class Trainer:
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(
-            list(self.encoder.parameters())
-            + list(self.heads.parameters()),
-            self._gradient_clip,
+            self._params, self._gradient_clip
         )
         self.optimizer.step()
         self.scheduler.step()
@@ -269,7 +275,11 @@ class Trainer:
         for batch in loader:
             total += self.train_step(batch)
             count += 1
-        return total / count if count > 0 else 0.0
+        if count == 0:
+            raise ValueError(
+                "train_epoch called with an empty DataLoader"
+            )
+        return total / count
 
     def save_checkpoint(self, path: Path) -> None:
         """Save encoder and heads state_dicts to a .pt checkpoint file.
@@ -297,6 +307,24 @@ class Trainer:
         ckpt = torch.load(
             path, map_location=self.device, weights_only=True
         )
+        enc_missing = (
+            set(self.encoder.state_dict())
+            - set(ckpt['encoder'])
+        )
+        heads_missing = (
+            set(self.heads.state_dict())
+            - set(ckpt['heads'])
+        )
+        if enc_missing:
+            logger.warning(
+                "[load_checkpoint] %d missing encoder keys",
+                len(enc_missing),
+            )
+        if heads_missing:
+            logger.warning(
+                "[load_checkpoint] %d missing heads keys",
+                len(heads_missing),
+            )
         self.encoder.load_state_dict(
             ckpt['encoder'], strict=False
         )

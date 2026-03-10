@@ -174,6 +174,9 @@ def main() -> None:
                     figs = trainer.sample_visuals(
                         pgn_path,
                         n_plies=_VISUAL_N_PLIES,
+                        train_accuracy=val_metrics.get(
+                            "val_accuracy"
+                        ),
                     )
                     for i, fig in enumerate(figs):
                         tracker.track_image(

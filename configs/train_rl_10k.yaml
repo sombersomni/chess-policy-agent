@@ -26,6 +26,7 @@ rl:
   min_lr:               0.00001
   gradient_clip:        1.0
   epochs:               3
+  skip_draws:           true
   checkpoint:           checkpoints/chess_rl_10k.pt
   resume:               ""
   gamma:                0.99

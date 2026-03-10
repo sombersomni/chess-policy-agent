@@ -312,8 +312,13 @@ class PGNRLTrainer:
 
         Returns:
             Dict with loss metrics. Empty dict if game is
-            skipped (unknown result, no valid plies).
+            skipped (unknown result, draw, or no valid plies).
         """
+        if (
+            self._cfg.rl.skip_draws
+            and game.headers.get("Result") == "1/2-1/2"
+        ):
+            return {}
         plies = self._replayer.replay(game)
         train_white = self._cfg.rl.train_color == "white"
         plies = [
@@ -609,6 +614,8 @@ class PGNRLTrainer:
         pgn_path: Path,
         n_plies: int = 4,
         top_k: int = 8,
+        *,
+        train_accuracy: float | None = None,
     ) -> list[object]:
         """Generate matplotlib figures for sampled plies from the first game.
 
@@ -620,6 +627,7 @@ class PGNRLTrainer:
             pgn_path: Path to .pgn or .pgn.zst file.
             n_plies: Number of positions to sample per call.
             top_k: Number of top predicted moves to show in chart.
+            train_accuracy: Latest validation accuracy (0-1) for overlay.
 
         Returns:
             List of matplotlib Figure objects (may be empty on failure).
@@ -710,8 +718,11 @@ class PGNRLTrainer:
                 tt = ply.traj_tokens.unsqueeze(0).to(self._device)
                 prefix = ply.move_prefix.unsqueeze(0).to(self._device)
 
-                logits = self._model(bt, ct, tt, prefix, None)
-                last_logits = logits[0, -1]
+                last_logits, cls_emb, move_idx = (
+                    self._encode_and_decode(
+                        bt, ct, tt, prefix, ply.move_uci
+                    )
+                )
                 probs = F.softmax(last_logits, dim=-1)
                 log_p = torch.log(probs + 1e-10)
                 entropy = -(probs * log_p).sum().item()
@@ -725,6 +736,35 @@ class PGNRLTrainer:
                     except (KeyError, IndexError):
                         continue
 
+                # Opponent's last move from trajectory token roles 3/4.
+                traj_list: list[int] = ply.traj_tokens.tolist()
+                opp_from_sq: int | None = next(
+                    (i - 1 for i, v in enumerate(traj_list) if v == 3),
+                    None,
+                )
+                opp_to_sq: int | None = next(
+                    (i - 1 for i, v in enumerate(traj_list) if v == 4),
+                    None,
+                )
+
+                # Q-value reusing cls_emb — no extra forward pass.
+                q_val: float | None = None
+                if move_idx is not None:
+                    midx_t = torch.tensor(
+                        [move_idx],
+                        dtype=torch.long,
+                        device=self._device,
+                    )
+                    action_emb = self._model.move_token_emb(midx_t)
+                    q_raw = self._model.value_head(
+                        cls_emb.detach(), action_emb.detach()
+                    ).item()
+                    q_val = q_raw if abs(q_raw) <= 100 else None
+
+                advantage: float | None = (
+                    (reward - q_val) if q_val is not None else None
+                )
+
                 try:
                     fig = render_rl_ply(
                         board=board_snap,
@@ -733,6 +773,12 @@ class PGNRLTrainer:
                         reward=reward,
                         entropy=entropy,
                         ply_idx=int(idx),
+                        opp_from_sq=opp_from_sq,
+                        opp_to_sq=opp_to_sq,
+                        train_accuracy=train_accuracy,
+                        q_value=q_val,
+                        advantage=advantage,
+                        is_winner_ply=ply.is_winner_ply,
                     )
                     figs.append(fig)
                 except Exception:

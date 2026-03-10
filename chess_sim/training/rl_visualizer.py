@@ -42,9 +42,27 @@ _PIECE_UNICODE: dict[tuple[int, bool], str] = {
 
 _LIGHT_SQ = "#F0D9B5"
 _DARK_SQ = "#B58863"
-_SRC_COLOR = "#F6F669"   # yellow  — actual move source
-_TGT_COLOR = "#BACA44"   # green   — actual move target
-_PRED_COLOR = "#88BBDD"  # blue    — top-1 predicted target (when wrong)
+_SRC_COLOR = "#F6F669"      # yellow     — actual move source
+_TGT_COLOR = "#BACA44"      # green      — actual move target
+_PRED_COLOR = "#88BBDD"     # blue       — top-1 predicted target (when wrong)
+_PRED_SRC_COLOR = "#FFA500"  # orange    — top-1 predicted source square
+_OPP_FROM_COLOR = "#E87272"  # muted red — opponent's previous from-square
+_OPP_TO_COLOR = "#C03030"    # dark red  — opponent's previous to-square
+
+_PIECE_NAMES: dict[int, str] = {
+    chess.PAWN: "P",
+    chess.KNIGHT: "N",
+    chess.BISHOP: "B",
+    chess.ROOK: "R",
+    chess.QUEEN: "Q",
+    chess.KING: "K",
+}
+
+
+def _sq_name(board: chess.Board, sq: int) -> str:
+    """Return piece letter at sq, or '?' if empty."""
+    piece = board.piece_at(sq)
+    return _PIECE_NAMES.get(piece.piece_type, "?") if piece else "?"
 
 
 def render_rl_ply(
@@ -54,6 +72,13 @@ def render_rl_ply(
     reward: float,
     entropy: float,
     ply_idx: int,
+    *,
+    opp_from_sq: int | None = None,
+    opp_to_sq: int | None = None,
+    train_accuracy: float | None = None,
+    q_value: float | None = None,
+    advantage: float | None = None,
+    is_winner_ply: bool | None = None,
 ) -> "Figure":
     """Render a single ply as a board + prediction chart figure.
 
@@ -65,6 +90,12 @@ def render_rl_ply(
         reward: Scalar reward assigned to this ply.
         entropy: Shannon entropy (nats) of the full action distribution.
         ply_idx: Zero-based ply index within the game (for labelling).
+        opp_from_sq: Opponent's previous from-square (chess.Square int).
+        opp_to_sq: Opponent's previous to-square (chess.Square int).
+        train_accuracy: Latest validation accuracy (0-1) for stats box.
+        q_value: Q-function estimate for the actual move.
+        advantage: Raw advantage (reward - q_value).
+        is_winner_ply: True if this ply belongs to the winning side.
 
     Returns:
         matplotlib Figure with two subplots (board left, chart right).
@@ -73,13 +104,37 @@ def render_rl_ply(
     ax_board = fig.add_subplot(1, 2, 1)
     ax_pred = fig.add_subplot(1, 2, 2)
 
-    _draw_board(ax_board, board, actual_uci, top_k)
-    _draw_predictions(ax_pred, actual_uci, top_k, reward, entropy)
+    _draw_board(
+        ax_board, board, actual_uci, top_k,
+        opp_from_sq=opp_from_sq,
+        opp_to_sq=opp_to_sq,
+    )
+    _draw_predictions(
+        ax_pred, board, actual_uci, top_k, reward, entropy,
+        train_accuracy=train_accuracy,
+        q_value=q_value,
+        advantage=advantage,
+        is_winner_ply=is_winner_ply,
+    )
 
+    # Game phase from non-king piece count (rough heuristic).
+    non_king = sum(
+        1 for sq in chess.SQUARES
+        if board.piece_at(sq) is not None
+        and board.piece_at(sq).piece_type != chess.KING  # type: ignore[union-attr]
+    )
+    phase = (
+        "opening" if non_king > 20
+        else ("endgame" if non_king <= 8 else "mid")
+    )
     side = "White" if board.turn == chess.WHITE else "Black"
+    ply_tag = (
+        (" [W]" if is_winner_ply else " [L]")
+        if is_winner_ply is not None else ""
+    )
     fig.suptitle(
-        f"Ply {ply_idx} ({side} to move) | "
-        f"Reward={reward:+.3f} | H={entropy:.3f} nats",
+        f"Ply {ply_idx} ({side}{ply_tag}, {phase}) | "
+        f"R={reward:+.3f} | H={entropy:.3f}",
         fontsize=11,
         fontweight="bold",
     )
@@ -92,6 +147,9 @@ def _draw_board(
     board: chess.Board,
     actual_uci: str,
     top_k: list[tuple[str, float]],
+    *,
+    opp_from_sq: int | None = None,
+    opp_to_sq: int | None = None,
 ) -> None:
     """Draw the 8x8 board with piece symbols and move highlights.
 
@@ -100,31 +158,42 @@ def _draw_board(
         board: Board state before the move.
         actual_uci: UCI of the actual move.
         top_k: Top-K predictions for optional target highlight.
+        opp_from_sq: Opponent's previous from-square (chess.Square int).
+        opp_to_sq: Opponent's previous to-square (chess.Square int).
     """
     actual_move = chess.Move.from_uci(actual_uci)
     src_sq = actual_move.from_square
     tgt_sq = actual_move.to_square
 
+    # Build priority color map — last written wins; actual move is highest.
+    sq_colors: dict[int, str] = {}
+    if opp_from_sq is not None:
+        sq_colors[opp_from_sq] = _OPP_FROM_COLOR
+    if opp_to_sq is not None:
+        sq_colors[opp_to_sq] = _OPP_TO_COLOR
+
+    pred_src: int | None = None
     pred_tgt: int | None = None
     if top_k:
         try:
-            pred_move = chess.Move.from_uci(top_k[0][0])
-            pred_tgt = pred_move.to_square
+            pm = chess.Move.from_uci(top_k[0][0])
+            pred_src = pm.from_square
+            pred_tgt = pm.to_square
+            if pred_src != src_sq:
+                sq_colors[pred_src] = _PRED_SRC_COLOR
+            if pred_tgt != tgt_sq:
+                sq_colors[pred_tgt] = _PRED_COLOR
         except (ValueError, IndexError):
             pass
+
+    sq_colors[src_sq] = _SRC_COLOR  # actual move always wins
+    sq_colors[tgt_sq] = _TGT_COLOR
 
     for rank in range(8):
         for file in range(8):
             sq = chess.square(file, rank)
             is_light = (rank + file) % 2 == 0
-            color = _LIGHT_SQ if is_light else _DARK_SQ
-
-            if sq == src_sq:
-                color = _SRC_COLOR
-            elif sq == tgt_sq:
-                color = _TGT_COLOR
-            elif pred_tgt is not None and sq == pred_tgt and sq != tgt_sq:
-                color = _PRED_COLOR
+            color = sq_colors.get(sq, _LIGHT_SQ if is_light else _DARK_SQ)
 
             rect = mpatches.Rectangle(
                 (file, rank), 1, 1,
@@ -159,12 +228,19 @@ def _draw_board(
             ha="center", va="center", fontsize=8, color="#555555",
         )
 
-    # Legend patches
+    # Build conditional legend — only show entries that appear on board.
     legend = [
         mpatches.Patch(color=_SRC_COLOR, label="Actual src"),
         mpatches.Patch(color=_TGT_COLOR, label="Actual tgt"),
-        mpatches.Patch(color=_PRED_COLOR, label="Pred tgt (wrong)"),
     ]
+    if pred_src is not None and pred_src != src_sq:
+        legend.append(mpatches.Patch(color=_PRED_SRC_COLOR, label="Pred src"))
+    if pred_tgt is not None and pred_tgt != tgt_sq:
+        legend.append(mpatches.Patch(color=_PRED_COLOR, label="Pred tgt"))
+    if opp_from_sq is not None:
+        legend.append(mpatches.Patch(color=_OPP_FROM_COLOR, label="Opp from"))
+    if opp_to_sq is not None:
+        legend.append(mpatches.Patch(color=_OPP_TO_COLOR, label="Opp to"))
     ax.legend(
         handles=legend, fontsize=7,
         loc="upper right", framealpha=0.8,
@@ -179,19 +255,30 @@ def _draw_board(
 
 def _draw_predictions(
     ax: plt.Axes,
+    board: chess.Board,
     actual_uci: str,
     top_k: list[tuple[str, float]],
     reward: float,
     entropy: float,
+    *,
+    train_accuracy: float | None = None,
+    q_value: float | None = None,
+    advantage: float | None = None,
+    is_winner_ply: bool | None = None,
 ) -> None:
     """Draw a horizontal bar chart of top-K predicted move probabilities.
 
     Args:
         ax: Axes to draw onto.
+        board: Board state (used to annotate bars with piece letters).
         actual_uci: UCI of the actual move (highlighted green).
         top_k: List of (uci, probability) pairs, sorted descending.
         reward: Reward value shown in subtitle.
         entropy: Entropy value shown in subtitle.
+        train_accuracy: Latest validation accuracy (0-1) for text box.
+        q_value: Q-function estimate for the actual move.
+        advantage: Raw advantage (reward - q_value).
+        is_winner_ply: True if this ply belongs to the winning side.
     """
     if not top_k:
         ax.text(
@@ -201,11 +288,20 @@ def _draw_predictions(
         )
         return
 
-    moves = [m for m, _ in top_k]
+    def _label(uci: str) -> str:
+        """Prefix UCI with the moving piece letter."""
+        try:
+            m = chess.Move.from_uci(uci)
+            return f"{_sq_name(board, m.from_square)} {uci}"
+        except ValueError:
+            return uci
+
+    moves = [_label(m) for m, _ in top_k]
+    raw_ucis = [m for m, _ in top_k]
     probs = np.array([p for _, p in top_k], dtype=float)
     colors = [
         "#4CAF50" if m == actual_uci else "#2196F3"
-        for m in moves
+        for m in raw_ucis
     ]
 
     y_pos = np.arange(len(moves))
@@ -223,13 +319,39 @@ def _draw_predictions(
     ax.invert_yaxis()
 
     # Annotate each bar with its probability value
-    for i, (prob, move) in enumerate(zip(probs, moves)):
+    for i, prob in enumerate(probs):
         ax.text(
             prob + xlim * 0.01,
             i,
             f"{prob:.3f}",
             va="center",
             fontsize=8,
+        )
+
+    # Stats text box: accuracy, Q-value, advantage, winner/loser tag.
+    stats: list[str] = []
+    if train_accuracy is not None:
+        stats.append(f"Train acc: {train_accuracy:.1%}")
+    if q_value is not None:
+        stats.append(f"Q-value:  {q_value:+.3f}")
+    if advantage is not None:
+        stats.append(f"Advantage:{advantage:+.3f}")
+    if is_winner_ply is not None:
+        stats.append("WINNER ply" if is_winner_ply else "loser ply")
+    if stats:
+        ax.text(
+            0.02, 0.02,
+            "\n".join(stats),
+            transform=ax.transAxes,
+            fontsize=8,
+            va="bottom",
+            ha="left",
+            bbox=dict(
+                boxstyle="round,pad=0.3",
+                facecolor="lightyellow",
+                edgecolor="#AAAAAA",
+                alpha=0.85,
+            ),
         )
 
     legend = [

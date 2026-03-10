@@ -20,7 +20,7 @@ from chess_sim.config import (
     load_pgn_rl_config,
 )
 from chess_sim.model.chess_model import ChessModel
-from chess_sim.model.value_heads import ReturnValueHead
+from chess_sim.model.value_heads import ActionConditionedValueHead
 from chess_sim.training.pgn_replayer import PGNReplayer
 from chess_sim.training.pgn_rl_reward_computer import (
     PGNRLRewardComputer,
@@ -406,31 +406,30 @@ class TestPGNRLTrainerTracking(unittest.TestCase):
         )
 
 
-class TestReturnValueHead(unittest.TestCase):
-    """T19-T20: ReturnValueHead integration."""
-
-    def setUp(self) -> None:
-        """Build a ChessModel with default config."""
-        from chess_sim.config import ModelConfig
-
-        cfg = ModelConfig()
-        self.model = ChessModel(cfg)
+class TestActionConditionedValueHead(unittest.TestCase):
+    """T19-T20: ActionConditionedValueHead integration."""
 
     def test_t19_chess_model_has_value_head_attribute(
         self,
     ) -> None:
-        """ChessModel must have value_head as ReturnValueHead."""
-        self.assertTrue(hasattr(self.model, "value_head"))
+        """ChessModel must have value_head as ActionConditionedValueHead."""
+        from chess_sim.config import ModelConfig
+
+        model = ChessModel(ModelConfig())
+        self.assertTrue(hasattr(model, "value_head"))
         self.assertIsInstance(
-            self.model.value_head, ReturnValueHead
+            model.value_head,
+            ActionConditionedValueHead,
         )
 
-    def test_t20_return_value_head_output_shape(
+    def test_t20_action_conditioned_value_head_output_shape(
         self,
     ) -> None:
-        """ReturnValueHead(128).forward(rand(4, 128)) -> [4, 1]."""
-        head = ReturnValueHead(128)
-        out = head.forward(torch.rand(4, 128))
+        """ActionConditionedValueHead forward -> [4, 1]."""
+        head = ActionConditionedValueHead(128)
+        out = head.forward(
+            torch.rand(4, 128), torch.rand(4, 128)
+        )
         self.assertEqual(out.shape, torch.Size([4, 1]))
 
 

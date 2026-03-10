@@ -16,7 +16,7 @@ from torch import Tensor
 from chess_sim.config import DecoderConfig, ModelConfig
 from chess_sim.model.decoder import MoveDecoder
 from chess_sim.model.encoder import ChessEncoder
-from chess_sim.model.value_heads import ReturnValueHead
+from chess_sim.model.value_heads import ActionConditionedValueHead
 
 
 class ChessModel(nn.Module):
@@ -64,9 +64,28 @@ class ChessModel(nn.Module):
         decoder_cfg = decoder_cfg or DecoderConfig()
         self.encoder = ChessEncoder(model_cfg)
         self.decoder = MoveDecoder(decoder_cfg)
-        self.value_head: ReturnValueHead = ReturnValueHead(
-            model_cfg.d_model
+        self.value_head: ActionConditionedValueHead = (
+            ActionConditionedValueHead(model_cfg.d_model)
         )
+
+    @property
+    def move_token_emb(self) -> nn.Embedding:
+        """Return decoder's token embedding table (1971, d_model).
+
+        Provides a stable reference for the Q-head caller to
+        look up teacher action embeddings without exposing the
+        internal module hierarchy.
+
+        Returns:
+            nn.Embedding — the decoder's move token embedding.
+
+        Example:
+            >>> model = ChessModel()
+            >>> emb = model.move_token_emb
+            >>> emb is model.decoder.move_embedding.token_emb
+            True
+        """
+        raise NotImplementedError("To be implemented")
 
     def forward(
         self,

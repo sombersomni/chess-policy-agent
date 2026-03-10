@@ -18,6 +18,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch import Tensor
 
 from chess_sim.config import PGNRLConfig
 from chess_sim.data.move_tokenizer import MoveTokenizer
@@ -159,14 +160,31 @@ class PGNRLTrainer:
 
     def _encode_and_decode(
         self,
-        bt: torch.Tensor,
-        ct: torch.Tensor,
-        tt: torch.Tensor,
-        prefix: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Shared encode->decode path used by train_game and sample_visuals.
+        bt: Tensor,
+        ct: Tensor,
+        tt: Tensor,
+        prefix: Tensor,
+        move_uci: str,
+    ) -> tuple[Tensor, Tensor, int | None]:
+        """Shared encode->decode path; also resolves move_idx.
 
-        Returns (last_logits [1, vocab], cls_emb [1, d_model]).
+        Returns (last_logits [1, vocab], cls [1, d_model],
+        move_idx | None). move_idx is None when tokenize_move
+        raises KeyError for the given UCI string.
+
+        Args:
+            bt: [1, 65] board tokens.
+            ct: [1, 65] color tokens.
+            tt: [1, 65] trajectory tokens.
+            prefix: [1, T] decoder prefix tokens.
+            move_uci: UCI string of the teacher's move.
+
+        Returns:
+            Tuple of (last_logits, cls_embedding, move_idx).
+
+        Example:
+            >>> logits, cls, idx = trainer._encode_and_decode(
+            ...     bt, ct, tt, prefix, "e2e4")
         """
         raise NotImplementedError("To be implemented")
 
@@ -200,9 +218,9 @@ class PGNRLTrainer:
         )
         self._model.train()
 
-        log_probs: list[torch.Tensor] = []
-        v_preds: list[torch.Tensor] = []  # noqa: F841
-        all_logits: list[torch.Tensor] = []
+        log_probs: list[Tensor] = []
+        q_preds: list[Tensor] = []
+        all_logits: list[Tensor] = []
         all_targets: list[int] = []
         valid_reward_idxs: list[int] = []
 
@@ -220,15 +238,32 @@ class PGNRLTrainer:
                 self._device
             )
 
-            logits = self._model(bt, ct, tt, prefix, None)
-            last_logits = logits[0, -1]
-
-            try:
-                move_idx = self._move_tok.tokenize_move(
-                    ply.move_uci
+            last_logits, cls, move_idx = (
+                self._encode_and_decode(
+                    bt, ct, tt, prefix, ply.move_uci
                 )
-            except KeyError:
+            )
+            if move_idx is None:
                 continue
+
+            # Look up action embedding from shared token table
+            midx_t = torch.tensor(
+                [move_idx],
+                dtype=torch.long,
+                device=self._device,
+            )
+            action_emb: Tensor = (
+                self._model.move_token_emb(midx_t)
+            )  # [1, d_model]
+            # detach: value MSE must not train token_emb
+            # via Q-head path; CE trains token_emb separately
+            action_emb = action_emb.detach()
+
+            # detach cls: value MSE must not reshape encoder
+            q_t: Tensor = self._model.value_head(
+                cls.detach(), action_emb
+            )  # [1, 1]
+            q_preds.append(q_t.squeeze())  # scalar
 
             probs = F.softmax(last_logits, dim=-1)
             log_p = torch.log(probs + 1e-10)
@@ -246,7 +281,16 @@ class PGNRLTrainer:
             self._device
         )
 
-        pg_loss = -(log_probs_t * valid_rewards).sum()
+        # Compute value loss and advantage
+        q_preds_t: Tensor = torch.stack(q_preds)  # [N]
+        # detach: prevent Q-head gradient from flowing
+        # through advantage into pg_loss
+        advantage: Tensor = (
+            valid_rewards - q_preds_t.detach()
+        )  # [N]
+        pg_loss = -(log_probs_t * advantage).sum()
+        value_loss = F.mse_loss(q_preds_t, valid_rewards)
+        mean_adv = advantage.mean().item()
 
         targets_t = torch.tensor(
             all_targets, dtype=torch.long, device=self._device
@@ -258,7 +302,9 @@ class PGNRLTrainer:
         )
 
         total_loss = (
-            pg_loss + self._cfg.rl.lambda_ce * ce_loss
+            pg_loss
+            + self._cfg.rl.lambda_ce * ce_loss
+            + self._cfg.rl.lambda_value * value_loss
         )
 
         self._opt.zero_grad()
@@ -279,8 +325,8 @@ class PGNRLTrainer:
             "ce_loss": ce_loss.item(),
             "n_plies": len(plies),
             "mean_reward": mean_reward,
-            "value_loss": 0.0,
-            "mean_advantage": 0.0,
+            "value_loss": value_loss.item(),
+            "mean_advantage": mean_adv,
         }
 
     def train_epoch(

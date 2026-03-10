@@ -320,7 +320,7 @@ class TestConfigYAML(unittest.TestCase):
         self.assertEqual(cfg.rl.gamma, 0.99)
         self.assertEqual(cfg.model.d_model, 128)
         self.assertEqual(cfg.decoder.n_layers, 4)
-        self.assertEqual(cfg.rl.lambda_ce, 0.5)
+        self.assertEqual(cfg.rl.lambda_ce, 0.0)
 
 
 class TestPGNRLTrainerTracking(unittest.TestCase):

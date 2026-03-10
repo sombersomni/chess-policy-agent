@@ -335,7 +335,6 @@ class PGNRLTrainer:
         )
         self._model.train()
 
-        log_probs: list[Tensor] = []
         q_preds: list[Tensor] = []
         all_logits: list[Tensor] = []
         all_targets: list[int] = []
@@ -390,18 +389,13 @@ class PGNRLTrainer:
             )  # [1, 1]
             q_preds.append(q_t.squeeze())  # scalar
 
-            probs = F.softmax(last_logits, dim=-1)
-            log_p = torch.log(probs + 1e-10)
-
-            log_probs.append(log_p[move_idx])
             all_logits.append(last_logits)
             all_targets.append(move_idx)
             valid_reward_idxs.append(i)
 
-        if not log_probs:
+        if not all_logits:
             return {}
 
-        log_probs_t = torch.stack(log_probs)
         valid_rewards = rewards[valid_reward_idxs].to(
             self._device
         )
@@ -409,34 +403,37 @@ class PGNRLTrainer:
         # Compute value loss and advantage
         q_preds_t: Tensor = torch.stack(q_preds)  # [N]
         # detach: prevent Q-head gradient from flowing
-        # through advantage into pg_loss
+        # through advantage into the policy loss
         advantage: Tensor = (
             valid_rewards - q_preds_t.detach()
         )  # [N]
-        # Whiten advantages so PG gradient scale is
-        # independent of reward magnitude and game length;
-        # keeps pg_loss on the same scale as ce_loss.
+        # Whiten advantages so gradient scale is
+        # independent of reward magnitude and game length.
         if advantage.numel() > 1:
             advantage = (
                 advantage - advantage.mean()
             ) / (advantage.std() + 1e-8)
         mean_adv = advantage.mean().item()
-        std_adv = advantage.std().item() if advantage.numel() > 1 else 0.0
-        pg_loss = -(log_probs_t * advantage).mean()
+        std_adv = (
+            advantage.std().item()
+            if advantage.numel() > 1
+            else 0.0
+        )
         value_loss = F.mse_loss(q_preds_t, valid_rewards)
 
-        targets_t = torch.tensor(
-            all_targets, dtype=torch.long, device=self._device
+        # --- AWBC loss (replaces pg_loss + ce_loss) ---
+        awbc_loss = self._compute_awbc_loss(
+            all_logits=all_logits,
+            all_targets=all_targets,
+            advantage=advantage,
         )
-        ce_loss = F.cross_entropy(
-            torch.stack(all_logits),
-            targets_t,
-            label_smoothing=self._cfg.rl.label_smoothing,
+        entropy_bonus = self._compute_entropy_bonus(
+            all_logits=all_logits,
         )
 
         total_loss = (
-            pg_loss
-            + self._cfg.rl.lambda_ce * ce_loss
+            self._cfg.rl.lambda_awbc * awbc_loss
+            + self._cfg.rl.lambda_entropy * entropy_bonus
             + self._cfg.rl.lambda_value * value_loss
         )
 
@@ -454,13 +451,16 @@ class PGNRLTrainer:
 
         return {
             "total_loss": total_loss.item(),
-            "pg_loss": pg_loss.item(),
-            "ce_loss": ce_loss.item(),
+            "awbc_loss": awbc_loss.item(),
+            "entropy_bonus": entropy_bonus.item(),
             "n_plies": len(plies),
             "mean_reward": mean_reward,
             "value_loss": value_loss.item(),
             "mean_advantage": mean_adv,
             "std_advantage": std_adv,
+            # deprecated — retained for Aim dashboard compat
+            "pg_loss": 0.0,
+            "ce_loss": 0.0,
         }
 
     def train_epoch(
@@ -479,8 +479,8 @@ class PGNRLTrainer:
         """
         games = _stream_pgn(pgn_path, max_games)
         total_loss = 0.0
-        pg_loss = 0.0
-        ce_loss = 0.0
+        awbc_loss_sum: float = 0.0
+        entropy_bonus_sum: float = 0.0
         reward_sum = 0.0
         value_loss_sum: float = 0.0
         mean_adv_sum: float = 0.0
@@ -492,8 +492,8 @@ class PGNRLTrainer:
             if not metrics:
                 continue
             total_loss += metrics["total_loss"]
-            pg_loss += metrics["pg_loss"]
-            ce_loss += metrics["ce_loss"]
+            awbc_loss_sum += metrics["awbc_loss"]
+            entropy_bonus_sum += metrics["entropy_bonus"]
             reward_sum += metrics["mean_reward"]
             value_loss_sum += metrics["value_loss"]
             mean_adv_sum += metrics["mean_advantage"]
@@ -501,8 +501,10 @@ class PGNRLTrainer:
             n_games += 1
             self._tracker.track_scalars(
                 {
-                    "pg_loss": metrics["pg_loss"],
-                    "ce_loss": metrics["ce_loss"],
+                    "awbc_loss": metrics["awbc_loss"],
+                    "entropy_bonus": metrics[
+                        "entropy_bonus"
+                    ],
                     "total_loss": metrics["total_loss"],
                     "mean_reward": metrics["mean_reward"],
                     "value_loss": metrics["value_loss"],
@@ -512,6 +514,9 @@ class PGNRLTrainer:
                     "std_advantage": metrics[
                         "std_advantage"
                     ],
+                    # deprecated — backward compat
+                    "pg_loss": 0.0,
+                    "ce_loss": 0.0,
                 },
                 step=self._global_step,
             )
@@ -519,13 +524,16 @@ class PGNRLTrainer:
         denom = max(n_games, 1)
         return {
             "total_loss": total_loss / denom,
-            "pg_loss": pg_loss / denom,
-            "ce_loss": ce_loss / denom,
+            "awbc_loss": awbc_loss_sum / denom,
+            "entropy_bonus": entropy_bonus_sum / denom,
             "mean_reward": reward_sum / denom,
             "n_games": n_games,
             "value_loss": value_loss_sum / denom,
             "mean_advantage": mean_adv_sum / denom,
             "std_advantage": std_adv_sum / denom,
+            # deprecated — backward compat
+            "pg_loss": 0.0,
+            "ce_loss": 0.0,
         }
 
     def evaluate(
@@ -789,6 +797,53 @@ class PGNRLTrainer:
                     )
 
         return figs
+
+    def _compute_awbc_loss(
+        self,
+        all_logits: list[Tensor],
+        all_targets: list[int],
+        advantage: Tensor,
+    ) -> Tensor:
+        """Compute advantage-weighted behavioral cloning loss.
+
+        Weights per-ply CE by clamp(advantage, min=0) so only
+        positive-advantage moves contribute imitation gradient.
+        Normalizes weights to keep loss scale stable across
+        game lengths.
+
+        Args:
+            all_logits: Per-ply decoder logits, each [vocab].
+            all_targets: Per-ply teacher move indices (int).
+            advantage: Per-ply whitened advantage, shape [N].
+
+        Returns:
+            Scalar AWBC loss tensor.
+
+        Example:
+            >>> loss = trainer._compute_awbc_loss(
+            ...     logits, targets, adv)
+        """
+        raise NotImplementedError
+
+    def _compute_entropy_bonus(
+        self,
+        all_logits: list[Tensor],
+    ) -> Tensor:
+        """Compute mean policy entropy over all plies.
+
+        H = -sum(p * log(p+eps)). Returns 0.0 tensor when
+        lambda_entropy=0 to avoid unnecessary computation.
+
+        Args:
+            all_logits: Per-ply decoder logits, each [vocab].
+
+        Returns:
+            Scalar mean entropy tensor (caller negates).
+
+        Example:
+            >>> ent = trainer._compute_entropy_bonus(logits)
+        """
+        raise NotImplementedError
 
     def save_checkpoint(self, path: Path) -> None:
         """Save model, optimizer, and scheduler state.

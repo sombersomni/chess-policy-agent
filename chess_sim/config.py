@@ -455,8 +455,11 @@ class RLConfig:
     win_reward: float = 10.0
     loss_reward: float = -10.0
     draw_reward: float = 2.0
-    lambda_ce: float = 0.5
+    lambda_ce: float = 0.0  # deprecated: use lambda_awbc
     lambda_value: float = 1.0
+    lambda_awbc: float = 1.0
+    lambda_entropy: float = 0.0
+    awbc_eps: float = 1e-8
     label_smoothing: float = 0.1
     train_color: str = "white"
     value_lr_multiplier: float = 5.0
@@ -497,6 +500,21 @@ class RLConfig:
                 "draw_reward must satisfy "
                 "loss_reward < draw_reward < win_reward, "
                 f"got {self.draw_reward}"
+            )
+        if self.lambda_awbc < 0:
+            raise ValueError(
+                "lambda_awbc must be >= 0, "
+                f"got {self.lambda_awbc}"
+            )
+        if self.lambda_entropy < 0:
+            raise ValueError(
+                "lambda_entropy must be >= 0, "
+                f"got {self.lambda_entropy}"
+            )
+        if self.awbc_eps <= 0:
+            raise ValueError(
+                "awbc_eps must be > 0, "
+                f"got {self.awbc_eps}"
             )
         if self.warmup_fraction >= self.decay_start_fraction:
             raise ValueError(

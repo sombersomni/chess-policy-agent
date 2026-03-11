@@ -138,3 +138,21 @@
 - Script: `scripts/preprocess_rl.py` + `configs/preprocess_rl.yaml`
 - Tests: `tests/test_rl_hdf5_pipeline.py` — 47 tests
 - HDF5 schema: version="rl_1.0", 11 datasets (board_tokens, color_tokens, traj_tokens, move_prefix, prefix_lengths, move_uci, is_winner_ply, is_white_ply, is_draw_ply, game_id, ply_index)
+
+## RSCE V4 Batched Training Pipeline
+- `chess_sim/data/pgn_reward_preprocessor.py`: PGNRewardPreprocessor — PGN -> HDF5 with pre-normalized RSCE multipliers
+  - `_encode_board(bt, ct, tt)` -> (65,3) float32 via torch.stack
+  - HDF5 schema: board(N,65,3), color_tokens(N,65), target_move(N), multiplier(N), game_id(N), ply_idx(N), outcome(N)
+  - Cache: SHA-256(first 1MB + file_size + max_games) + config attrs in HDF5 attributes
+  - Per-game RSCE normalization: m = exp(-(R - r_ref)), m_hat = m * N / sum(m).clamp(1e-8)
+- `chess_sim/data/chess_rl_dataset.py`: ChessRLDataset — torch Dataset wrapping HDF5
+  - Lazy HDF5 open: `_h5 = None` until first `__getitem__` (h5py not fork-safe)
+  - Val split: last N% of unique game_ids (by sorted order)
+- `chess_sim/training/pgn_rl_trainer_v4.py`: PGNRLTrainerV4 — batched minibatch RSCE
+  - Standalone (no V2/V3 inheritance); SOS-only prefix [B,1] for decoder
+  - Board channels split from (65,3): bt=ch0.long(), ct=ch1.long(), tt=ch2.long()
+- `scripts/train_rl_v4.py`: entry point; preprocess -> build datasets -> epoch loop
+- Config: `RLConfig` added: hdf5_path, batch_size, num_workers, val_split_fraction, hdf5_chunk_size
+- Types: `RLRewardRow` in `chess_sim/types.py`
+- Tests: `tests/test_rsce_v4.py` — TC01-TC15 (15 tests)
+- Key gotcha: synthetic HDF5 board must use valid indices (0-7, 0-2, 0-4), not random floats

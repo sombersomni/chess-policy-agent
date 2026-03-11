@@ -1,6 +1,6 @@
 data:
   pgn:       data/lichess_db_standard_rated_2013-01.pgn.zst
-  max_games: 1000
+  max_games: 10000
 
 model:
   d_model:         128
@@ -26,7 +26,7 @@ rl:
   min_lr:               0.00001
   gradient_clip:        1.0
   epochs:               20
-  checkpoint:           checkpoints/chess_rl_v3.pt
+  checkpoint:           checkpoints/chess_rl_v3_10k.pt
   resume:               ""
   lambda_outcome:       1.0
   lambda_material:      0.1
@@ -47,6 +47,6 @@ rl:
 
 aim:
   enabled:           true
-  experiment_name:   chess_rl_v3_rsce
+  experiment_name:   chess_rl_v3_rsce_10k
   repo:              .aim
   log_every_n_steps: 10

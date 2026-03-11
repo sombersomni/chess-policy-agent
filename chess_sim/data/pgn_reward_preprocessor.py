@@ -16,11 +16,36 @@ HDF5 schema (datasets, all N-length along axis 0):
 """
 from __future__ import annotations
 
+import hashlib
+import logging
+import math
 from pathlib import Path
 
+import h5py
+import numpy as np
+import torch
 from torch import Tensor
 
 from chess_sim.config import PGNRLConfig
+from chess_sim.data.move_tokenizer import MoveTokenizer
+from chess_sim.training.pgn_replayer import PGNReplayer
+from chess_sim.training.pgn_rl_reward_computer import (
+    PGNRLRewardComputer,
+)
+from chess_sim.types import RLRewardRow
+
+logger = logging.getLogger(__name__)
+
+# HDF5 dataset names and their (dtype, per-row shape).
+_DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
+    "board": ("float32", (65, 3)),
+    "color_tokens": ("int8", (65,)),
+    "target_move": ("int32", ()),
+    "multiplier": ("float32", ()),
+    "game_id": ("int32", ()),
+    "ply_idx": ("int16", ()),
+    "outcome": ("int8", ()),
+}
 
 
 def _encode_board(
@@ -46,7 +71,12 @@ def _encode_board(
         >>> out.shape
         torch.Size([65, 3])
     """
-    raise NotImplementedError("To be implemented")
+    return torch.stack(
+        [board_tokens.float(),
+         color_tokens.float(),
+         traj_tokens.float()],
+        dim=-1,
+    )
 
 
 class PGNRewardPreprocessor:
@@ -77,7 +107,11 @@ class PGNRewardPreprocessor:
         Example:
             >>> pp = PGNRewardPreprocessor(PGNRLConfig())
         """
-        raise NotImplementedError("To be implemented")
+        self._cfg = cfg
+        self._device = device
+        self._replayer = PGNReplayer()
+        self._reward_fn = PGNRLRewardComputer()
+        self._move_tok = MoveTokenizer()
 
     def generate(
         self,
@@ -105,7 +139,198 @@ class PGNRewardPreprocessor:
             >>> path.exists()
             True
         """
-        raise NotImplementedError("To be implemented")
+        if self._is_cache_valid(hdf5_path, pgn_path, max_games):
+            logger.info(
+                "HDF5 cache hit: %s — skipping regeneration",
+                hdf5_path,
+            )
+            return hdf5_path
+
+        # Import _stream_pgn from v2 trainer module
+        from chess_sim.training.pgn_rl_trainer_v2 import (
+            _stream_pgn,
+        )
+
+        games = _stream_pgn(pgn_path, max_games)
+        rl = self._cfg.rl
+        train_white = rl.train_color == "white"
+        chunk_size = rl.hdf5_chunk_size
+
+        hdf5_path.parent.mkdir(parents=True, exist_ok=True)
+
+        rows: list[RLRewardRow] = []
+        cursor = 0
+
+        with h5py.File(hdf5_path, "w") as hf:
+            # Create resizable datasets
+            for name, (dtype, shape) in _DATASETS.items():
+                full_shape = (0,) + shape
+                max_shape = (None,) + shape
+                chunk_shape = (chunk_size,) + shape
+                hf.create_dataset(
+                    name,
+                    shape=full_shape,
+                    maxshape=max_shape,
+                    dtype=dtype,
+                    chunks=chunk_shape,
+                    compression="gzip",
+                    compression_opts=4,
+                )
+
+            for game_idx, game in enumerate(games):
+                if (
+                    rl.skip_draws
+                    and game.headers.get("Result")
+                    == "1/2-1/2"
+                ):
+                    continue
+
+                plies = self._replayer.replay(game)
+                plies = [
+                    p for p in plies
+                    if p.is_white_ply == train_white
+                ]
+                if not plies:
+                    continue
+                if len(plies) > rl.max_plies_per_game:
+                    continue
+
+                rewards = self._reward_fn.compute(
+                    plies, rl
+                )
+
+                # RSCE multipliers: m = exp(-(R - r_ref))
+                m = torch.exp(
+                    -(rewards - rl.rsce_r_ref)
+                )
+                if rl.rsbc_normalize_per_game:
+                    n = m.size(0)
+                    m = m * n / m.sum().clamp(min=1e-8)
+
+                for ply_i, ply in enumerate(plies):
+                    try:
+                        target_idx = (
+                            self._move_tok.tokenize_move(
+                                ply.move_uci
+                            )
+                        )
+                    except KeyError:
+                        continue
+
+                    board_enc = _encode_board(
+                        ply.board_tokens,
+                        ply.color_tokens,
+                        ply.traj_tokens,
+                    )
+
+                    # Outcome from side-to-move perspective
+                    if ply.is_draw_ply:
+                        outcome = 0
+                    elif ply.is_winner_ply:
+                        outcome = 1
+                    else:
+                        outcome = -1
+
+                    ct_np = (
+                        ply.color_tokens.numpy()
+                        .astype(np.int8)
+                    )
+
+                    rows.append(RLRewardRow(
+                        board=board_enc.numpy(),
+                        color_tokens=ct_np,
+                        target_move=target_idx,
+                        multiplier=float(m[ply_i]),
+                        game_id=game_idx,
+                        ply_idx=ply_i,
+                        outcome=outcome,
+                    ))
+
+                    if len(rows) >= chunk_size:
+                        cursor = self._write_batch(
+                            hf, rows, cursor
+                        )
+                        rows.clear()
+
+            # Flush remaining rows
+            if rows:
+                cursor = self._write_batch(
+                    hf, rows, cursor
+                )
+                rows.clear()
+
+            # Store config attributes for cache validation
+            checksum = self._compute_checksum(
+                pgn_path, max_games
+            )
+            hf.attrs["checksum"] = checksum
+            hf.attrs["max_games"] = max_games
+            hf.attrs["lambda_outcome"] = rl.lambda_outcome
+            hf.attrs["lambda_material"] = (
+                rl.lambda_material
+            )
+            hf.attrs["rsce_r_ref"] = rl.rsce_r_ref
+            hf.attrs["draw_reward_norm"] = (
+                rl.draw_reward_norm
+            )
+            hf.attrs["rsbc_normalize_per_game"] = (
+                rl.rsbc_normalize_per_game
+            )
+
+        logger.info(
+            "HDF5 generated: %s (%d rows)",
+            hdf5_path,
+            cursor,
+        )
+        return hdf5_path
+
+    def _write_batch(
+        self,
+        hf: h5py.File,
+        rows: list[RLRewardRow],
+        cursor: int,
+    ) -> int:
+        """Write a batch of RLRewardRow to open HDF5 file.
+
+        Resizes datasets and copies row data in bulk.
+
+        Args:
+            hf: Open h5py.File in write mode.
+            rows: List of RLRewardRow to write.
+            cursor: Current write position in the dataset.
+
+        Returns:
+            New cursor position after writing.
+        """
+        n = len(rows)
+        new_size = cursor + n
+
+        for name in _DATASETS:
+            hf[name].resize(new_size, axis=0)
+
+        boards = np.stack([r.board for r in rows])
+        hf["board"][cursor:new_size] = boards
+
+        ct = np.stack([r.color_tokens for r in rows])
+        hf["color_tokens"][cursor:new_size] = ct
+
+        hf["target_move"][cursor:new_size] = np.array(
+            [r.target_move for r in rows], dtype=np.int32
+        )
+        hf["multiplier"][cursor:new_size] = np.array(
+            [r.multiplier for r in rows], dtype=np.float32
+        )
+        hf["game_id"][cursor:new_size] = np.array(
+            [r.game_id for r in rows], dtype=np.int32
+        )
+        hf["ply_idx"][cursor:new_size] = np.array(
+            [r.ply_idx for r in rows], dtype=np.int16
+        )
+        hf["outcome"][cursor:new_size] = np.array(
+            [r.outcome for r in rows], dtype=np.int8
+        )
+
+        return new_size
 
     def _is_cache_valid(
         self,
@@ -132,7 +357,64 @@ class PGNRewardPreprocessor:
             >>> pp._is_cache_valid(Path("o.h5"), Path("g.pgn"), 0)
             False
         """
-        raise NotImplementedError("To be implemented")
+        if not hdf5_path.exists():
+            return False
+
+        try:
+            with h5py.File(hdf5_path, "r") as hf:
+                stored_checksum = hf.attrs.get("checksum")
+                expected = self._compute_checksum(
+                    pgn_path, max_games
+                )
+                if stored_checksum != expected:
+                    return False
+
+                rl = self._cfg.rl
+                checks = [
+                    (
+                        hf.attrs.get("max_games"),
+                        max_games,
+                    ),
+                    (
+                        hf.attrs.get("lambda_outcome"),
+                        rl.lambda_outcome,
+                    ),
+                    (
+                        hf.attrs.get("lambda_material"),
+                        rl.lambda_material,
+                    ),
+                    (
+                        hf.attrs.get("rsce_r_ref"),
+                        rl.rsce_r_ref,
+                    ),
+                    (
+                        hf.attrs.get("draw_reward_norm"),
+                        rl.draw_reward_norm,
+                    ),
+                    (
+                        hf.attrs.get(
+                            "rsbc_normalize_per_game"
+                        ),
+                        rl.rsbc_normalize_per_game,
+                    ),
+                ]
+                for stored, expected_val in checks:
+                    if stored is None:
+                        return False
+                    # Float comparison with tolerance
+                    if isinstance(expected_val, float):
+                        if not math.isclose(
+                            float(stored),
+                            expected_val,
+                            rel_tol=1e-9,
+                        ):
+                            return False
+                    elif stored != expected_val:
+                        return False
+
+                return True
+        except (OSError, KeyError):
+            return False
 
     def _compute_checksum(
         self,
@@ -157,4 +439,9 @@ class PGNRewardPreprocessor:
             >>> len(cs)
             64
         """
-        raise NotImplementedError("To be implemented")
+        h = hashlib.sha256()
+        with open(pgn_path, "rb") as f:
+            h.update(f.read(1024 * 1024))
+        h.update(str(pgn_path.stat().st_size).encode())
+        h.update(str(max_games).encode())
+        return h.hexdigest()

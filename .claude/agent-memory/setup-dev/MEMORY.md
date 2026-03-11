@@ -14,6 +14,23 @@ See [scaffolding-history.md](scaffolding-history.md) for all prior scaffolding d
 
 ---
 
+## Scaffolding Completed: RSCE V4 Batched Pipeline (2026-03-11)
+
+### Changes
+- `chess_sim/data/pgn_reward_preprocessor.py` — NEW: `PGNRewardPreprocessor` with NIE stubs: `generate`, `_is_cache_valid`, `_compute_checksum`; module-level `_encode_board` helper
+- `chess_sim/data/chess_rl_dataset.py` — NEW: `ChessRLDataset(Dataset)` with lazy h5py handle, train/val split by game_id, NIE stubs: `__init__`, `__len__`, `__getitem__`, `n_games`, `close`
+- `chess_sim/training/pgn_rl_trainer_v4.py` — NEW: `PGNRLTrainerV4` (standalone, no V2/V3 inheritance) with NIE stubs: `__init__`, `train_epoch`, `evaluate`, `save_checkpoint`, `load_checkpoint`, `_build_dataloader`, `_train_step`
+- `chess_sim/types.py` — `RLRewardRow` NamedTuple (7 fields: board ndarray, color_tokens ndarray, target_move, multiplier, game_id, ply_idx, outcome)
+- `chess_sim/config.py` — `RLConfig` gains `hdf5_path=""`, `batch_size=512`, `num_workers=4`, `val_split_fraction=0.1`, `hdf5_chunk_size=1024` + validation
+- `configs/train_rl_v4.yaml` — new V4 config with batch/worker/hdf5 fields
+- `scripts/train_rl_v4.py` — entry point stub
+- `tests/test_rsce_v4.py` — 15 test stubs (TC01-TC15), all pass (bodies are `pass`)
+
+### Test Results: 15 pass (all `pass` bodies)
+- Design doc at `docs/rsce_v4_batched_design.md`
+
+---
+
 ## Scaffolding Completed: RSCE Trainer v3 (2026-03-11)
 
 ### Changes

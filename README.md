@@ -1,228 +1,392 @@
 # chess-sim
 
-An encoder-decoder transformer for chess move prediction. The model treats move generation as a sequence-to-sequence translation problem: a 6-layer encoder reads the board state as a 65-token sequence (CLS + 64 squares, three parallel streams), producing a 65×d_model memory; a 4-layer autoregressive decoder cross-attends to that memory while generating the game's move sequence token-by-token from a 1971-token vocabulary. Trained with teacher forcing and cross-entropy loss.
+**An encoder-decoder transformer for chess move prediction, trained via supervised learning on PGN master games and fine-tuned with offline reinforcement learning.**
 
-## Architecture Overview
-
-### Token Construction
-
-```mermaid
-flowchart LR
-    PGN[".pgn / .pgn.zst"]
-    Board["Board State\n(chess.Board)"]
-
-    subgraph BoardTokens["Board Tokens — length 65 (CLS + a1…h8)"]
-        direction TB
-        BT["board_tokens\nvocab 8: CLS / empty / P N B R Q K"]
-        CT["color_tokens\nvocab 3: CLS / player / opponent"]
-        TT["trajectory_tokens\nvocab 5: none / player prev-src / player prev-tgt\n         / opp prev-src / opp prev-tgt"]
-    end
-
-    subgraph MoveSeq["Move Sequence (per ply t)"]
-        direction TB
-        MS["move_tokens  [T]\nSOS + moves 0 … t-1  (decoder input)"]
-        MT["target_tokens [T]\nmoves 0 … t          (teacher-forcing targets)"]
-    end
-
-    PGN --> Board
-    Board --> BT & CT & TT
-    PGN --> MS & MT
-```
-
-### Model Architecture & Training Objective
-
-```mermaid
-flowchart TB
-    subgraph Inputs["Encoder Inputs  [B, 65]"]
-        direction LR
-        BT2["board_tokens"]
-        CT2["color_tokens"]
-        TT2["trajectory_tokens"]
-    end
-
-    subgraph EmbLayer["EmbeddingLayer"]
-        direction LR
-        PE["piece_emb\n(8 → d)"]
-        CE2["color_emb\n(3 → d)"]
-        SE["square_emb\n(65 → d)\nsin/cos init"]
-        TE["traj_emb\n(5 → d)"]
-        SUM["element-wise sum\n+ LayerNorm → [B, 65, d]"]
-        PE & CE2 & SE & TE --> SUM
-    end
-
-    subgraph EncBlock["ChessEncoder — 6-layer Transformer Encoder"]
-        direction TB
-        SA["Bidirectional Self-Attention\n8 heads · Pre-LN · × 6 layers"]
-        MEM["memory  [B, 65, d_model]"]
-        SA --> MEM
-    end
-
-    subgraph DecInput["Decoder Input"]
-        direction TB
-        MT2["move_tokens  [B, T]\n(SOS + prior moves)"]
-        ME["MoveEmbedding\ntoken emb + positional emb\n→ [B, T, d]"]
-        MT2 --> ME
-    end
-
-    subgraph DecBlock["MoveDecoder — 4-layer Transformer Decoder"]
-        direction TB
-        CSA["Causal Self-Attention\n8 heads · autoregressive mask"]
-        XA["Cross-Attention\n← memory [B, 65, d]"]
-        PROJ["Linear projection\n→ [B, T, 1971]"]
-        CSA --> XA --> PROJ
-    end
-
-    subgraph Task["Training Objective"]
-        direction TB
-        LOSS["CrossEntropyLoss\n(teacher forcing · ignore PAD)\npredict next move token"]
-        TGT["target_tokens [B, T]"]
-        TGT --> LOSS
-        PROJ --> LOSS
-    end
-
-    BT2 & CT2 & TT2 --> EmbLayer
-    EmbLayer --> EncBlock
-    EncBlock --> DecBlock
-    DecInput --> DecBlock
-```
-
-### Token Sequence
-
-Each board is encoded as 65 tokens: `[CLS, a1, b1, ..., h8]`.
-
-| Stream | Vocab | Meaning |
-|--------|-------|---------|
-| `board_tokens` | 8 | Piece type: 0=CLS, 1=empty, 2=pawn, 3=knight, 4=bishop, 5=rook, 6=queen, 7=king |
-| `color_tokens` | 3 | Piece ownership: 0=empty/CLS, 1=player, 2=opponent |
-| `trajectory_tokens` | 5 | Last-move roles: 0=none/CLS, 1=player prev src, 2=player prev tgt, 3=opp prev src, 4=opp prev tgt |
-
-> `square_emb` is an internal positional embedding (65 positions, sin/cos geometric initialization) and is not passed as external input.
-
-### Model Hyperparameters
-
-| Parameter | Value |
-|-----------|-------|
-| `d_model` | 256 |
-| `nhead` | 8 |
-| `num_layers` | 6 |
-| `dim_feedforward` | 1024 |
-| `dropout` | 0.1 |
-| `max_seq_len` | 65 |
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
+![PyTorch](https://img.shields.io/badge/pytorch-2.x-ee4c2c)
+![License](https://img.shields.io/badge/license-private-lightgrey)
+![Ruff](https://img.shields.io/badge/linter-ruff-000000)
 
 ---
 
-## CI Pipeline
+## Overview
 
-Every PR triggers a Jenkins build on the Kubernetes cluster (`10.0.0.169`).
-The pipeline lints and tests only the Python files that changed in the PR,
-inside an ephemeral K8s pod built from `ghcr.io/<user>/chess-sim:ci`.
+chess-sim treats chess move generation as sequence-to-sequence translation. A 6-layer transformer encoder reads the board state as a 65-token sequence (CLS + 64 squares across three parallel embedding streams), producing a $65 \times d$ memory tensor. A 4-layer autoregressive decoder cross-attends to that memory and generates moves token-by-token from a 1971-token vocabulary.
+
+Two training paths are supported:
+
+| Path | Script | Loss | Data |
+|------|--------|------|------|
+| **Supervised Learning (SL)** | `scripts/train_v2.py` | Cross-entropy with teacher forcing | PGN / HDF5 |
+| **Offline RL** | `scripts/train_rl.py` | RSBC + value loss | PGN master games |
+
+**Current best checkpoint:** `chess_v2_1k.pt` -- $d_\text{model}=128$, 94.9% validation accuracy, 2.8M parameters.
+
+---
+
+## Architecture
+
+### Encoder-Decoder Pipeline
 
 ```mermaid
-flowchart LR
-    PR[GitHub PR] -->|webhook| JK[Jenkins on K8s\nhttps://jenkins.local:30443]
-    JK -->|K8s plugin| POD[chess-sim:ci pod\nCPU-only]
-    POD --> D[Detect changed .py files\ngit diff base...HEAD]
-    D --> L[ruff check changed files]
-    L --> T[unittest mapped test files]
-    T -->|commit status| GH[GitHub PR ✅ / ❌]
+graph LR
+    PGN[".pgn / .pgn.zst"] --> TOK["Tokenizer<br/>board + color + trajectory"]
+    TOK --> ENC["ChessEncoder<br/>6L, 8H, Pre-LN"]
+    ENC -->|"memory [B,65,d]"| DEC["MoveDecoder<br/>4L, 8H, causal"]
+    HIST["Move history<br/>SOS + prior moves"] --> DEC
+    DEC -->|"logits [B,T,1971]"| PRED["argmax / sample"]
 ```
 
-### Accessing Jenkins
+### Token Construction
 
-Jenkins is exposed via an nginx ingress controller with TLS termination.
+Each board position is encoded as 65 tokens in three parallel streams:
 
-| URL | Port | Notes |
-|-----|------|-------|
-| `https://jenkins.local:30443` | 30443 | Primary HTTPS entry point (requires hosts entry) |
-| `https://10.0.0.169:30443` | 30443 | Direct IP access — no hosts entry needed |
-| `http://10.0.0.169:30080` | 30080 | Legacy direct NodePort (HTTP only) |
+| Stream | Vocab | Description |
+|--------|-------|-------------|
+| `board_tokens` | 8 | Piece type: 0=CLS, 1=empty, 2=pawn, 3=knight, 4=bishop, 5=rook, 6=queen, 7=king |
+| `color_tokens` | 3 | Ownership: 0=empty/CLS, 1=player (side-to-move), 2=opponent |
+| `trajectory_tokens` | 5 | Last-move roles: 0=none, 1=player prev src, 2=player prev tgt, 3=opp prev src, 4=opp prev tgt |
 
-**Add to `/etc/hosts`** on every machine that will use the hostname:
-```
-10.0.0.169  jenkins.local
-```
+> **Note:** `square_emb` is an internal positional embedding (65 positions, sin/cos geometric init) -- not an external input stream.
 
-**Suppress the browser certificate warning** by trusting the home-lab CA once:
+### Embedding Layer
+
+Four learned embeddings are summed element-wise and normalized:
+
+$$\mathbf{h}_i = \text{LayerNorm}\!\Big(\mathbf{E}_{\text{piece}}[b_i] + \mathbf{E}_{\text{color}}[c_i] + \mathbf{E}_{\text{square}}[i] + \mathbf{E}_{\text{traj}}[t_i]\Big)$$
+
+where $b_i$, $c_i$, $t_i$ are the piece, color, and trajectory token at position $i \in \{0, \ldots, 64\}$.
+
+### Model Hyperparameters
+
+| Component | `d_model` | Heads | Layers | FFN dim | Dropout |
+|-----------|-----------|-------|--------|---------|---------|
+| Encoder | 128 | 8 | 6 | 512 | 0.1 |
+| Decoder | 128 | 8 | 4 | 512 | 0.1 |
+
+> **Note:** The default `ModelConfig` specifies $d_\text{model}=256$, but the current best checkpoint uses $d_\text{model}=128$ (3.6x fewer parameters with only 0.7% accuracy loss vs. 256).
+
+**Move vocabulary:** 1971 tokens covering all legal UCI move strings (including promotions).
+
+---
+
+## Training: Supervised Learning
+
+The SL path trains the decoder with teacher forcing, minimizing cross-entropy between predicted and actual moves:
+
+$$\mathcal{L}_{\text{CE}} = -\frac{1}{T}\sum_{t=1}^{T} \log p_\theta\!\big(m_t \mid m_{<t},\, \mathbf{s}\big)$$
+
+where $m_t$ is the ground-truth move at ply $t$, $m_{<t}$ is the move prefix, and $\mathbf{s}$ is the encoder memory from the board state.
+
+Optional label smoothing ($\epsilon$) redistributes probability mass to non-target tokens, reducing overfitting on small datasets.
+
 ```bash
-kubectl get secret jenkins-ca-secret -n cert-manager \
-  -o jsonpath='{.data.tls\.crt}' | base64 -d > jenkins-ca.crt
-# Import jenkins-ca.crt into your OS / browser CA trust store.
+source .venv/bin/activate
+
+# Train from HDF5 (recommended -- preprocessed data, fast I/O)
+python -m scripts.train_v2 --config configs/train_v2_10k.yaml --hdf5 data/processed/chess_dataset.h5
+
+# Train from raw PGN (on-the-fly tokenization)
+python -m scripts.train_real --pgn data/games.pgn --epochs 10 --checkpoint checkpoints/run_01.pt
 ```
 
-### Infrastructure overview
+### Checkpoint Results
 
-All Jenkins infrastructure is Helm-managed and stored under `jenkins/`.
+| Checkpoint | Data | $d_\text{model}$ | Epochs | Val Loss | Val Acc |  Params |
+|---|---|---|---|---|---|---|
+| `chess_v2_1k.pt` | 1k games | 128 | 20 | 0.229 | **94.9%** |  2.8M |
+| `chess_v2_10k.pt` | 10k games | 128 | 20 | 2.606* | 62.4% |  2.8M |
 
-| File | Purpose |
-|------|---------|
-| `jenkins/values.yaml` | Jenkins Helm values — NodePort 30080 for direct HTTP access |
-| `jenkins/ingress-controller-values.yaml` | nginx ingress — NodePort 30180 (HTTP) / 30443 (HTTPS) |
-| `jenkins/cert-manager-values.yaml` | cert-manager with CRDs bundled |
-| `jenkins/tls.yaml` | Self-signed CA ClusterIssuer, leaf Certificate, and Ingress |
-| `jenkins/pod-template.yaml` | K8s agent pod spec (chess-sim + jnlp containers) |
-| `jenkins/job-config.xml` | Jenkins job XML — imported via `create-job.groovy` |
+*\*Val loss inflated by `label_smoothing=0.1` -- not directly comparable to unsmoothed runs.*
 
-**Install or reinstall the full stack:**
+---
+
+## Training: Offline RL
+
+The offline RL path fine-tunes a pretrained checkpoint on PGN master games using **Result-Scaled Behavioral Cloning (RSBC)** combined with a learned **action-conditioned value head**.
+
+### Reward Function
+
+Each ply $t$ receives a composite reward:
+
+$$R(t) = \lambda_{\text{outcome}} \cdot \text{sign}(t) + \lambda_{\text{material}} \cdot \Delta_{\text{material}}(t)$$
+
+where:
+
+| Symbol | Definition | Default |
+|--------|-----------|---------|
+| $\text{sign}(t)$ | $+1$ (winner ply), $-1$ (loser ply), or $d$ (draw ply) | -- |
+| $d$ | `draw_reward_norm` | 0.5 |
+| $\lambda_{\text{outcome}}$ | Outcome signal weight | 1.0 |
+| $\lambda_{\text{material}}$ | Material delta weight | 0.1 |
+| $\Delta_{\text{material}}(t)$ | Piece-value change at ply $t$ (player perspective) | -- |
+
+### Loss Function
+
+The total training loss combines outcome-weighted behavioral cloning with a value regression term:
+
+$$\mathcal{L} = \lambda_{\text{rsbc}} \cdot \mathcal{L}_{\text{RSBC}} + \lambda_{\text{value}} \cdot \mathcal{L}_{\text{value}}$$
+
+**RSBC loss** applies per-ply CE weighted by game outcome:
+
+$$\mathcal{L}_{\text{RSBC}} = \frac{1}{N}\sum_{i=1}^{N} w_i \cdot \text{CE}\!\big(\hat{\mathbf{y}}_i,\, m_i\big)$$
+
+| Ply type | Weight $w_i$ |
+|----------|-------------|
+| Winner | 1.0 |
+| Draw | `draw_reward_norm` (0.5) |
+| Loser | `loser_ply_weight` (0.1) |
+
+**Value loss** trains a Q-head to predict discounted returns:
+
+$$\mathcal{L}_{\text{value}} = \text{MSE}\!\big(Q_\phi(\mathbf{z}_{\text{cls}}, \mathbf{e}_a),\; R(t)\big)$$
+
+where $\mathbf{z}_{\text{cls}}$ is the encoder CLS embedding and $\mathbf{e}_a$ is the action (move token) embedding.
+
+### Running RL Training
+
 ```bash
-HELM=/home/sombersomni/bin/helm
-
-# 1. Jenkins
-$HELM repo add jenkins https://charts.jenkins.io
-$HELM upgrade --install jenkins jenkins/jenkins \
-    --namespace jenkins --create-namespace \
-    --values jenkins/values.yaml
-
-# 2. nginx ingress controller
-$HELM repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-$HELM upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-    --namespace ingress-nginx --create-namespace \
-    --values jenkins/ingress-controller-values.yaml
-
-# 3. cert-manager
-$HELM repo add jetstack https://charts.jetstack.io
-$HELM upgrade --install cert-manager jetstack/cert-manager \
-    --namespace cert-manager --create-namespace \
-    --values jenkins/cert-manager-values.yaml
-
-# 4. TLS resources (wait for cert-manager pods first)
-kubectl wait --for=condition=ready pod \
-    -l app.kubernetes.io/instance=cert-manager \
-    -n cert-manager --timeout=120s
-kubectl apply -f jenkins/tls.yaml
+source .venv/bin/activate
+python -m scripts.train_rl --config configs/train_rl.yaml
 ```
 
-### CI image versioning
+### RL Configuration (`configs/train_rl.yaml`)
 
-The CI image (`Dockerfile.ci`) contains only Python deps — no source code.
-Rebuild and push a new version whenever **`requirements.txt`, the base image,
-or the system packages change**.
+```yaml
+data:
+  pgn:       data/lichess_db_standard_rated_2013-01.pgn.zst
+  max_games: 1000
 
-| Tag | Example | Use |
-|---|---|---|
-| `ci-vMAJOR.MINOR.PATCH` | `ci-v1.0.0` | Pinned release — use this in `jenkins/pod-template.yaml` |
-| `ci-sha-<7>` | `ci-sha-a3f9c1` | Immutable per-commit tag, always pushed alongside the version tag |
-| `ci-latest` | `ci-latest` | Convenience alias; never pin K8s manifests to this |
+model:
+  d_model: 128
+  n_heads: 8
+  n_layers: 6
+  dim_feedforward: 512
 
-**Build, tag, and push:**
+decoder:
+  d_model: 128
+  n_heads: 8
+  n_layers: 4
+  dim_feedforward: 512
+  move_vocab_size: 1971
+
+rl:
+  learning_rate:    0.0001
+  epochs:           20
+  lambda_rsbc:      1.0
+  lambda_value:     1.0
+  lambda_outcome:   1.0
+  lambda_material:  0.1
+  draw_reward_norm: 0.5
+  loser_ply_weight: 0.1
+  balance_outcomes: true
+  train_color:      white
+  checkpoint:       checkpoints/chess_rl.pt
+```
+
+### LR Schedule
+
+The RL trainer uses a three-phase schedule:
+
+$$\text{lr}(t) = \begin{cases}
+\text{lr}_{\max} \cdot \frac{t}{t_{\text{warmup}}} & t < t_{\text{warmup}} \\[4pt]
+\text{lr}_{\max} & t_{\text{warmup}} \le t < t_{\text{decay}} \\[4pt]
+\text{lr}_{\min} + \tfrac{1}{2}(\text{lr}_{\max} - \text{lr}_{\min})\!\left(1 + \cos\!\left(\pi \cdot \frac{t - t_{\text{decay}}}{t_{\text{total}} - t_{\text{decay}}}\right)\right) & t \ge t_{\text{decay}}
+\end{cases}$$
+
+where $t_{\text{warmup}} = \lfloor \texttt{warmup\_fraction} \cdot t_{\text{total}} \rfloor$ and $t_{\text{decay}} = \lfloor \texttt{decay\_start\_fraction} \cdot t_{\text{total}} \rfloor$.
+
+The value head receives a separate learning rate: $\text{lr}_{\text{value}} = \text{lr}_{\max} \times \texttt{value\_lr\_multiplier}$ (default 5x).
+
+---
+
+## Evaluation
+
 ```bash
-VERSION=ci-v1.0.0
-SHA=ci-sha-$(git rev-parse --short HEAD)
-REPO=ghcr.io/$(gh api user --jq .login)/chess-sim
-
-gh auth token | docker login ghcr.io -u $(gh api user --jq .login) --password-stdin
-
-docker build -f Dockerfile.ci \
-    -t ${REPO}:${VERSION} \
-    -t ${REPO}:${SHA} \
-    -t ${REPO}:ci-latest .
-
-docker push ${REPO}:${VERSION}
-docker push ${REPO}:${SHA}
-docker push ${REPO}:ci-latest
+python -m scripts.evaluate \
+    --checkpoint checkpoints/chess_v2_1k.pt \
+    --pgn data/games.pgn \
+    --game-index 0 \
+    --top-n 3
 ```
 
-After pushing, update `jenkins/pod-template.yaml` to the new
-`ci-vX.Y.Z` tag and commit both changes together.
+Output includes a per-ply table with CE loss, top-1 accuracy, and Shannon entropy $H$ for each prediction head:
+
+$$H = -\sum_{i=1}^{V} p_i \log p_i$$
+
+where $V = 1971$ is the move vocabulary size. Higher entropy indicates the model is less certain about the move.
+
+Use `--winners-only` to restrict evaluation to positions where the winning player is to move.
+
+---
+
+## Data Pipeline
+
+```mermaid
+graph LR
+    PGN[".pgn / .pgn.zst"] --> STREAM["StreamingPGNReader"]
+    STREAM --> SAMPLE["ReservoirSampler<br/>(Vitter's Algorithm R)"]
+    SAMPLE --> TOK["BoardTokenizer"]
+    TOK --> DS["ChessDataset / HDF5"]
+    DS --> DL["DataLoader"]
+```
+
+### 1. Stream games
+
+```python
+from chess_sim.data.reader import StreamingPGNReader
+reader = StreamingPGNReader()
+for game in reader.stream(Path("lichess_db.pgn.zst")):
+    process(game)
+```
+
+### 2. Sample uniformly at random
+
+```python
+from chess_sim.data.sampler import ReservoirSampler
+sampler = ReservoirSampler()
+games = sampler.sample(reader.stream(path), n=1_000_000)
+```
+
+### 3. Tokenize a board position
+
+```python
+import chess
+from chess_sim.data.tokenizer import BoardTokenizer
+
+tok = BoardTokenizer()
+board = chess.Board()
+result = tok.tokenize(board, chess.WHITE)
+# result.board_tokens  -> list[int], length 65
+# result.color_tokens  -> list[int], length 65
+```
+
+### 4. Generate trajectory tokens
+
+```python
+from chess_sim.data.tokenizer_utils import make_trajectory_tokens
+trajectory_tokens = make_trajectory_tokens(move_history)
+# list[int], length 65; values in {0,1,2,3,4}
+```
+
+### 5. Build a DataLoader
+
+```python
+from torch.utils.data import DataLoader
+from chess_sim.data.dataset import ChessDataset
+
+train_ds, val_ds = ChessDataset.split(examples, train_frac=0.95)
+loader = DataLoader(train_ds, batch_size=256, shuffle=True, num_workers=4)
+```
+
+---
+
+## Data Preparation (HDF5 Preprocessing)
+
+Training from raw PGN is slow (re-parses every run). The preprocessor writes all tokenized records to HDF5 once; subsequent runs read pre-baked integer arrays.
+
+```bash
+source .venv/bin/activate
+
+# Full dataset
+python -m scripts.preprocess --config configs/preprocess_v2.yaml
+
+# Smoke test (100 games)
+python -m scripts.preprocess \
+    --config configs/preprocess_v2.yaml \
+    --max-games 100 \
+    --output data/processed/chess_dataset_small.h5
+```
+
+### HDF5 Schema
+
+Each row is one board state at a specific game ply.
+
+| Dataset | Shape | Dtype | Description |
+|---------|-------|-------|-------------|
+| `board_tokens` | `[N, 65]` | `uint8` | Piece type per square (CLS at index 0) |
+| `color_tokens` | `[N, 65]` | `uint8` | Piece ownership per square |
+| `trajectory_tokens` | `[N, 65]` | `uint8` | Last-2-move trajectory roles |
+| `move_tokens` | `[N, 512]` | `uint16` | Decoder input: SOS + prior moves (padded) |
+| `target_tokens` | `[N, 512]` | `uint16` | Decoder targets (padded) |
+| `move_lengths` | `[N]` | `uint16` | Actual sequence length before padding |
+| `outcome` | `[N]` | `int8` | +1 win / 0 draw / -1 loss (player-to-move) |
+| `turn` | `[N]` | `uint16` | 0-indexed ply within the game |
+| `game_id` | `[N]` | `uint32` | Parent game index |
+
+Split groups: `train/` and `val/` (default 95/5 split, deterministic by `game_id`).
+
+---
+
+## Terminal Simulation
+
+Replay games, generate random playthroughs, or watch the model predict moves in real time.
+
+```
+8 r n b q k b n r   Ply 2  -  e7e5
+7 p p p p . p p p   Phase: opening
+6 . . . . . . . .   Material: 0
+5 . . . . p . . .
+4 . . . . P . . .   Move history:
+3 . . . . . . . .     1. e2e4
+2 P P P P . P P P     2. e7e5
+1 R N B Q K B N R
+  a b c d e f g h   -- Agent Predictions --
+                      1. e7e5    42.1%  correct
+                      2. c7c5    18.3%
+                      3. g8f6     9.7%
+```
+
+| Mode | Command | Description |
+|------|---------|-------------|
+| `pgn` | `--mode pgn --pgn data/games.pgn.zst` | Replay a recorded game |
+| `random` | `--mode random` | Random legal moves |
+| `agent` | `--mode agent --pgn ... --checkpoint ...` | Model predictions before each move |
+
+```bash
+source .venv/bin/activate
+
+# PGN replay
+python -m scripts.simulate --mode pgn \
+    --pgn data/lichess_db_standard_rated_2013-01.pgn.zst \
+    --game-index 0 --tick-rate 0.5
+
+# Agent prediction mode
+python -m scripts.simulate --mode agent \
+    --pgn data/lichess_db_standard_rated_2013-01.pgn.zst \
+    --checkpoint checkpoints/chess_v2_1k.pt \
+    --tick-rate 1.0 --top-n 3
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | -- | Path to `configs/simulate.yaml` |
+| `--mode` | -- | `pgn` / `random` / `agent` (required) |
+| `--pgn` | -- | Path to `.pgn` or `.pgn.zst` file |
+| `--game-index` | `0` | Zero-based game index in the PGN |
+| `--checkpoint` | -- | Path to `.pt` checkpoint (agent mode) |
+| `--tick-rate` | `0.5` | Seconds between plies |
+| `--top-n` | `3` | Number of predictions to display |
+| `--max-plies` | `200` | Truncation limit (random mode) |
+| `--no-unicode` | -- | Use ASCII piece symbols |
+
+The environment satisfies `gymnasium.Env` (`obs=(65,3) float32`, `action=Discrete(1971)`).
+
+---
+
+## GUI Viewer
+
+Step through a game visually: animated board on the left, per-ply metrics (loss, accuracy, entropy) and PCA embedding scatter on the right.
+
+```bash
+source .venv/bin/activate
+python -m scripts.gui.viewer \
+    --pgn data/games.pgn \
+    --checkpoint checkpoints/chess_v2_1k.pt \
+    --game-index 0
+```
+
+Controls: `Prev` / `Next` buttons or drag the slider.
 
 ---
 
@@ -247,457 +411,158 @@ pip install -e .
 
 ## Linting
 
-This project uses [ruff](https://docs.astral.sh/ruff/) for linting. Configuration lives in `pyproject.toml`.
-
-### Rules enforced
+Uses [ruff](https://docs.astral.sh/ruff/) (configured in `pyproject.toml`).
 
 | Code | Category | What it catches |
 |------|----------|----------------|
-| `E` | pycodestyle errors | Line too long (>88 chars), bad whitespace, indentation |
-| `W` | pycodestyle warnings | Trailing whitespace on lines |
+| `E` | pycodestyle errors | Line length (>88 chars), whitespace, indentation |
+| `W` | pycodestyle warnings | Trailing whitespace |
 | `F` | pyflakes | Unused imports, undefined names |
-| `ANN` | flake8-annotations | Missing type annotations on args and return types |
-| `I` | isort | Unsorted or ungrouped imports |
-
-`tests/` is exempt from `ANN` rules.
-
-### Run the linter
+| `ANN` | flake8-annotations | Missing type annotations (`tests/` exempt) |
+| `I` | isort | Unsorted imports |
 
 ```bash
 source .venv/bin/activate
-
-# Check for violations
-python -m ruff check .
-
-# Auto-fix safe issues (unused imports, import ordering)
-python -m ruff check . --fix
-
-# Summary by rule code
-python -m ruff check . --statistics
+python -m ruff check .           # Check
+python -m ruff check . --fix     # Auto-fix safe issues
+python -m ruff check . --statistics  # Summary by rule
 ```
 
 ---
 
-## Running Tests
+## Tests
 
 All tests are CPU-only and deterministic.
 
 ```bash
-# Activate virtual environment first
 source .venv/bin/activate
-
-# Run the full test suite
 python -m unittest discover -s tests -p "test_*.py"
-
-# Run a specific test file
-python -m unittest tests.test_encoder
-python -m unittest tests.test_trainer
-python -m unittest tests.test_dataset
 ```
 
-Test coverage spans T01–T20 (core components), T26–T40 (trajectory/encoder integration), and TEV01–TEV14 (evaluation metrics).
-
-| File | Tests |
-|------|-------|
-| `tests/test_tokenizer.py` | T01–T04: BoardTokenizer correctness |
-| `tests/test_embedding.py` | T05–T08: EmbeddingLayer output shapes and dtype |
-| `tests/test_encoder.py` | T09–T12: ChessEncoder forward pass and gradient flow |
-| `tests/test_heads.py` | T13–T14: PredictionHeads output shapes |
-| `tests/test_loss.py` | T15–T16: LossComputer correctness |
+| File | Coverage |
+|------|----------|
+| `tests/test_tokenizer.py` | T01--T04: BoardTokenizer correctness |
+| `tests/test_embedding.py` | T05--T08: EmbeddingLayer shapes and dtype |
+| `tests/test_encoder.py` | T09--T12: ChessEncoder forward pass and gradients |
+| `tests/test_heads.py` | T13--T14: PredictionHeads output shapes |
+| `tests/test_loss.py` | T15--T16: LossComputer correctness |
 | `tests/test_trainer.py` | T19: train_step, checkpoint roundtrip |
 | `tests/test_dataset.py` | T17, T20: DataLoader dtypes and move labels |
 | `tests/test_reader.py` | StreamingPGNReader streaming |
 | `tests/test_sampler.py` | ReservoirSampler uniform sampling |
-| `tests/test_chess_encoder.py` | T26–T40: trajectory tokens, embedding init priors, gradient flow, structural subtyping |
-| `tests/test_evaluate.py` | TEV01–TEV14: Shannon entropy, top-1 accuracy, per_head_ce, GameEvaluator integration, winner_color, winners_only filtering |
-| `tests/env/test_chess_sim_env.py` | T1–T12: PGNSource, RandomSource, ChessSimEnv spaces, ChessModelAgent, TerminalRenderer, gymnasium env_checker |
+| `tests/test_chess_encoder.py` | T26--T40: trajectory tokens, embedding init, gradient flow |
+| `tests/test_evaluate.py` | TEV01--TEV14: entropy, accuracy, per-head CE, GameEvaluator |
+| `tests/env/test_chess_sim_env.py` | T1--T12: PGNSource, RandomSource, ChessSimEnv, gymnasium env_checker |
 
 ---
 
-## Data Pipeline
+## CI Pipeline
 
-### 1. Stream games from a `.zst` PGN file
-
-```python
-from pathlib import Path
-from chess_sim.data.reader import StreamingPGNReader
-
-reader = StreamingPGNReader()
-for game in reader.stream(Path("lichess_db.pgn.zst")):
-    process(game)
-```
-
-### 2. Sample games uniformly at random
-
-```python
-from chess_sim.data.sampler import ReservoirSampler
-
-sampler = ReservoirSampler()
-games = sampler.sample(reader.stream(path), n=1_000_000)
-```
-
-### 3. Tokenize a board position
-
-```python
-import chess
-from chess_sim.data.tokenizer import BoardTokenizer
-
-tok = BoardTokenizer()
-board = chess.Board()
-result = tok.tokenize(board, chess.WHITE)
-
-# result.board_tokens  -> list[int] of length 65
-# result.color_tokens  -> list[int] of length 65
-```
-
-### 3b. Generate trajectory tokens
-
-```python
-from chess_sim.data.tokenizer_utils import make_trajectory_tokens
-import chess
-
-# move_history is populated as the game is replayed with board.push(move)
-move_history: list[chess.Move] = []
-trajectory_tokens = make_trajectory_tokens(move_history)
-
-# trajectory_tokens: list[int] of length 65
-# index 0 = CLS = 0 (always)
-# values: 0=none, 1=player prev src, 2=player prev tgt,
-#         3=opp prev src, 4=opp prev tgt
-```
-
-### 4. Build a dataset and DataLoader
-
-```python
-from torch.utils.data import DataLoader
-from chess_sim.data.dataset import ChessDataset
-from chess_sim.types import TrainingExample
-
-examples: list[TrainingExample] = [...]  # produced by preprocessing pipeline
-train_ds, val_ds = ChessDataset.split(examples, train_frac=0.95)
-
-loader = DataLoader(train_ds, batch_size=256, shuffle=True, num_workers=4)
-```
-
----
-
-## Data Preparation (V2 — HDF5 preprocessing)
-
-Training from raw PGN is slow because every run re-parses and tokenizes games on the CPU.
-Run the preprocessor **once** to write all tokenized turn records into an HDF5 file;
-subsequent training runs read pre-baked integer arrays directly.
+Every PR triggers a Jenkins build on the Kubernetes cluster (`10.0.0.169`).
 
 ```mermaid
-flowchart LR
-    PGN[".pgn / .pgn.zst"] --> Pre["scripts/preprocess.py\none-time run"]
-    Pre --> HDF5["data/processed/chess_dataset.h5"]
-    HDF5 --> Train["scripts/train_v2.py\n--hdf5 flag"]
+graph LR
+    PR["GitHub PR"] -->|webhook| JK["Jenkins<br/>K8s cluster"]
+    JK --> POD["chess-sim:ci pod"]
+    POD --> LINT["ruff check"]
+    LINT --> TEST["unittest"]
+    TEST -->|status| GH["GitHub PR"]
 ```
 
-### Step 1 — Edit the config
+### Accessing Jenkins
 
-Copy and edit `configs/preprocess_v2.yaml`:
+| URL | Port | Notes |
+|-----|------|-------|
+| `https://jenkins.local:30443` | 30443 | Primary HTTPS (requires `/etc/hosts` entry) |
+| `https://10.0.0.169:30443` | 30443 | Direct IP access |
+| `http://10.0.0.169:30080` | 30080 | Legacy HTTP NodePort |
 
-```yaml
-input:
-  pgn_path: data/raw/lichess_db_standard_rated_2013-01.pgn.zst
-  max_games: 0          # 0 = all games; set e.g. 10000 to cap for testing
-
-output:
-  hdf5_path:        data/processed/chess_dataset.h5
-  chunk_size:       1000   # write-buffer flush threshold (rows)
-  compression:      gzip
-  compression_opts: 4      # 1=fast, 9=smallest
-  max_seq_len:      512    # padded move sequence length
-
-filter:
-  min_elo:      0     # skip games where both players are below this Elo
-  min_moves:    5     # skip very short/incomplete games
-  max_moves:    512   # skip abnormally long games
-  winners_only: false # true = skip draws, include only decisive games
-
-split:
-  train: 0.95
-  val:   0.05
-
-processing:
-  workers: 4   # parallel game-parser processes
+Add to `/etc/hosts`:
+```
+10.0.0.169  jenkins.local
 ```
 
-### Step 2 — Run preprocessing (once)
+Trust the home-lab CA:
+```bash
+kubectl get secret jenkins-ca-secret -n cert-manager \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d > jenkins-ca.crt
+# Import jenkins-ca.crt into your OS / browser CA trust store.
+```
+
+### Infrastructure
+
+All Jenkins infrastructure is Helm-managed under `jenkins/`.
+
+| File | Purpose |
+|------|---------|
+| `jenkins/values.yaml` | Jenkins Helm values |
+| `jenkins/ingress-controller-values.yaml` | nginx ingress (HTTPS on 30443) |
+| `jenkins/cert-manager-values.yaml` | cert-manager with CRDs |
+| `jenkins/tls.yaml` | Self-signed CA, leaf cert, Ingress |
+| `jenkins/pod-template.yaml` | K8s agent pod spec |
+| `jenkins/job-config.xml` | Jenkins job XML |
+
+<details>
+<summary>Install or reinstall the full stack</summary>
 
 ```bash
-source .venv/bin/activate
+HELM=/home/sombersomni/bin/helm
 
-# Full dataset
-python -m scripts.preprocess --config configs/preprocess_v2.yaml
+# 1. Jenkins
+$HELM repo add jenkins https://charts.jenkins.io
+$HELM upgrade --install jenkins jenkins/jenkins \
+    --namespace jenkins --create-namespace \
+    --values jenkins/values.yaml
 
-# Quick smoke test (100 games, custom output)
-python -m scripts.preprocess \
-    --config configs/preprocess_v2.yaml \
-    --pgn data/raw/lichess_db_standard_rated_2013-01.pgn.zst \
-    --max-games 100 \
-    --output data/processed/chess_dataset_small.h5
+# 2. nginx ingress controller
+$HELM repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+$HELM upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+    --namespace ingress-nginx --create-namespace \
+    --values jenkins/ingress-controller-values.yaml
+
+# 3. cert-manager
+$HELM repo add jetstack https://charts.jetstack.io
+$HELM upgrade --install cert-manager jetstack/cert-manager \
+    --namespace cert-manager --create-namespace \
+    --values jenkins/cert-manager-values.yaml
+
+# 4. TLS resources
+kubectl wait --for=condition=ready pod \
+    -l app.kubernetes.io/instance=cert-manager \
+    -n cert-manager --timeout=120s
+kubectl apply -f jenkins/tls.yaml
 ```
 
-| Flag | Description |
-|------|-------------|
-| `--config` | Path to `preprocess_v2.yaml` (required) |
-| `--pgn` | Override `input.pgn_path` |
-| `--output` | Override `output.hdf5_path` |
-| `--max-games` | Override `input.max_games` |
+</details>
 
-The script prints progress every 10 000 games and runs `HDF5Validator` automatically
-on completion. It will raise a `ValueError` and exit non-zero if the output file fails
-schema validation.
+### CI Image Versioning
 
-### Step 3 — Train from HDF5
+The CI image (`Dockerfile.ci`) contains only Python deps. Rebuild when `requirements.txt`, base image, or system packages change.
+
+| Tag | Example | Use |
+|---|---|---|
+| `ci-vMAJOR.MINOR.PATCH` | `ci-v1.0.0` | Pinned release (use in pod-template) |
+| `ci-sha-<7>` | `ci-sha-a3f9c1` | Immutable per-commit tag |
+| `ci-latest` | `ci-latest` | Convenience alias (never pin to this) |
 
 ```bash
-python -m scripts.train_v2 \
-    --config configs/train_v2_10k.yaml \
-    --hdf5 data/processed/chess_dataset.h5
+VERSION=ci-v1.0.0
+SHA=ci-sha-$(git rev-parse --short HEAD)
+REPO=ghcr.io/$(gh api user --jq .login)/chess-sim
+
+gh auth token | docker login ghcr.io -u $(gh api user --jq .login) --password-stdin
+
+docker build -f Dockerfile.ci \
+    -t ${REPO}:${VERSION} \
+    -t ${REPO}:${SHA} \
+    -t ${REPO}:ci-latest .
+
+docker push ${REPO}:${VERSION}
+docker push ${REPO}:${SHA}
+docker push ${REPO}:ci-latest
 ```
 
-The `--hdf5` flag (or `data.hdf5_path` in YAML) switches the DataLoader from
-`PGNSequenceDataset` to `ChessHDF5Dataset`. Omit the flag and training falls back to
-on-the-fly PGN parsing as before.
-
-### HDF5 file schema
-
-Each row is one board state at a specific game ply.
-
-| Dataset | Shape | Dtype | Description |
-|---------|-------|-------|-------------|
-| `board_tokens` | `[N, 65]` | `uint8` | Piece type per square (CLS at index 0) |
-| `color_tokens` | `[N, 65]` | `uint8` | Piece ownership per square |
-| `trajectory_tokens` | `[N, 65]` | `uint8` | Last-2-move trajectory roles |
-| `move_tokens` | `[N, 512]` | `uint16` | Decoder input: SOS + prior moves (padded) |
-| `target_tokens` | `[N, 512]` | `uint16` | Decoder targets (padded) |
-| `move_lengths` | `[N]` | `uint16` | Actual sequence length before padding |
-| `outcome` | `[N]` | `int8` | +1 win / 0 draw / -1 loss (player-to-move) |
-| `turn` | `[N]` | `uint16` | 0-indexed ply within the game |
-| `game_id` | `[N]` | `uint32` | Parent game index |
-
-Split groups: `train/` and `val/` (default 95/5 split, deterministic by `game_id`).
-
----
-
-## Training
-
-### Single training step (programmatic)
-
-```python
-from chess_sim.training.trainer import Trainer
-
-# CPU for development, 'cuda' for full training
-trainer = Trainer(device="cuda")
-
-for batch in loader:
-    loss = trainer.train_step(batch)  # logs loss + lr to stdout
-```
-
-### Full epoch
-
-```python
-avg_loss = trainer.train_epoch(loader)
-print(f"Epoch loss: {avg_loss:.4f}")
-```
-
-### Save and load checkpoints
-
-```python
-from pathlib import Path
-
-trainer.save_checkpoint(Path("checkpoints/epoch_01.pt"))
-
-# Resume from checkpoint
-trainer.load_checkpoint(Path("checkpoints/epoch_01.pt"))
-```
-
-Checkpoint files store `encoder` and `heads` state dicts. The optimizer and scheduler state are not saved — checkpoints are intended for inference and fine-tuning, not resuming mid-training.
-
----
-
-## Running a Forward Pass
-
-```python
-import torch
-from chess_sim.model.encoder import ChessEncoder
-from chess_sim.model.heads import PredictionHeads
-
-enc = ChessEncoder().eval()
-heads = PredictionHeads().eval()
-
-# board_tokens, color_tokens, trajectory_tokens: [B, 65] long tensors
-board_tokens = torch.zeros(1, 65, dtype=torch.long)
-color_tokens = torch.zeros(1, 65, dtype=torch.long)
-trajectory_tokens = torch.zeros(1, 65, dtype=torch.long)
-
-with torch.no_grad():
-    encoder_out = enc(board_tokens, color_tokens, trajectory_tokens)
-    preds = heads(encoder_out.cls_embedding)
-
-# preds.src_sq_logits  -> [B, 64]
-# preds.tgt_sq_logits  -> [B, 64]
-
-src_sq = preds.src_sq_logits.argmax(dim=-1)   # predicted source square
-tgt_sq = preds.tgt_sq_logits.argmax(dim=-1)   # predicted target square
-```
-
----
-
-## Scripts
-
-### Preprocess PGN to HDF5 (run once before V2 training)
-
-```bash
-source .venv/bin/activate
-
-python -m scripts.preprocess --config configs/preprocess_v2.yaml
-```
-
-See [Data Preparation](#data-preparation-v2--hdf5-preprocessing) above for full options.
-
----
-
-### Train from a PGN file (V1)
-
-```bash
-# Activate virtual environment first
-source .venv/bin/activate
-
-# Train from a plain PGN file
-python -m scripts.train_real --pgn data/games.pgn --epochs 10 --checkpoint checkpoints/run_01.pt
-
-# Train from a compressed PGN (.zst)
-python -m scripts.train_real --pgn data/lichess_db.pgn.zst --epochs 10 --checkpoint checkpoints/run_01.pt
-
-# Winners-only filtering (skips draws; only uses positions where the winning side is to move)
-python -m scripts.train_real --pgn data/games.pgn --winners-only --checkpoint checkpoints/winner_run.pt
-
-# Synthetic games (no PGN file required)
-python -m scripts.train_real --num-games 100 --epochs 5 --checkpoint checkpoints/synthetic_run.pt
-```
-
-### Simulate a game in the terminal
-
-Replay a recorded game, generate a random playthrough, or watch the model predict moves in real time — all in the terminal without a display server.
-
-```mermaid
-flowchart LR
-    CLI["scripts/simulate.py"] --> mode{mode?}
-    mode -->|pgn| PGN["PGNSource\nreplay recorded game"]
-    mode -->|random| RND["RandomSource\nrandom legal moves"]
-    mode -->|agent| AGT["PGNSource + ChessModelAgent\npredictions before each move"]
-    PGN --> Env["ChessSimEnv\ngym.Env (obs 65×3, action 1971)"]
-    RND --> Env
-    AGT --> Env
-    Env --> Renderer["TerminalRenderer\nUnicode board + ANSI highlights"]
-```
-
-**Three modes:**
-
-| Mode | Requires | What you see |
-|------|----------|--------------|
-| `pgn` | PGN file | Board after each recorded move |
-| `random` | — | Board after each random legal move |
-| `agent` | PGN + checkpoint | Agent's top-N predictions *before* each move, then the actual move |
-
-**Sample terminal output (agent mode):**
-
-```
-8 ♜ ♞ ♝ ♛ ♚ ♝ ♞ ♜   Ply 2  -  e7e5
-7 ♟ ♟ ♟ ♟ . ♟ ♟ ♟   Phase: opening
-6 . . . . . . . .   Material: 0
-5 . . . . ♟ . . .
-4 . . . . ♙ . . .   Move history:
-3 . . . . . . . .     1. e2e4
-2 ♙ ♙ ♙ ♙ . ♙ ♙ ♙     2. e7e5
-1 ♖ ♘ ♗ ♕ ♔ ♗ ♘ ♖
-  a b c d e f g h   -- Agent Predictions --
-                      1. e7e5    42.1%  ✓ correct
-                      2. c7c5    18.3%
-                      3. g8f6     9.7%
-```
-
-Yellow highlight = source square · Cyan highlight = target square
-
-```bash
-source .venv/bin/activate
-
-# PGN replay (no model needed)
-python -m scripts.simulate --mode pgn \
-    --pgn data/lichess_db_standard_rated_2013-01.pgn.zst \
-    --game-index 0 \
-    --tick-rate 0.5
-
-# Random playthrough
-python -m scripts.simulate --mode random --tick-rate 0.3
-
-# Agent prediction mode (shows top-3 before each move)
-python -m scripts.simulate --mode agent \
-    --pgn data/lichess_db_standard_rated_2013-01.pgn.zst \
-    --checkpoint checkpoints/chess_v2_1k.pt \
-    --tick-rate 1.0 \
-    --top-n 3
-
-# Use ASCII pieces instead of Unicode (e.g. for narrow terminals)
-python -m scripts.simulate --mode random --no-unicode
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--config` | — | Path to `configs/simulate.yaml` (all flags below override it) |
-| `--mode` | — | `pgn` \| `random` \| `agent` (required) |
-| `--pgn` | — | Path to `.pgn` or `.pgn.zst` file |
-| `--game-index` | `0` | Zero-based game index in the PGN |
-| `--checkpoint` | — | Path to `.pt` checkpoint (agent mode only) |
-| `--tick-rate` | `0.5` | Seconds to pause between plies |
-| `--top-n` | `3` | Number of agent predictions to show |
-| `--max-plies` | `200` | Truncation limit for random mode |
-| `--no-unicode` | — | Use ASCII piece symbols (`P N B R Q K`) |
-
-The environment also satisfies the `gymnasium.Env` interface (`obs=(65,3) float32`, `action=Discrete(1971)`) so any compatible policy can be plugged in directly.
-
----
-
-### Launch the GUI viewer
-
-Visually step through a game with a split-panel window: left = animated board, right = per-ply loss/accuracy/entropy stats and a PCA scatter of the model's learned piece embeddings.
-
-```bash
-source .venv/bin/activate
-
-python -m scripts.gui.viewer \
-    --pgn data/games.pgn \
-    --checkpoint checkpoints/winner_run_01.pt \
-    --game-index 0
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--pgn` | `data/games.pgn` | Path to `.pgn` or `.pgn.zst` file |
-| `--checkpoint` | `checkpoints/winner_run_01.pt` | Path to trained `.pt` checkpoint |
-| `--game-index` | `0` | Zero-based index of the game to view |
-
-**Controls:** use the `◀ Prev` / `Next ▶` buttons or drag the slider to navigate plies. The board highlights the actual move's source square (yellow border) and target square (orange border). The right panel updates automatically with per-head CE loss, top-1 accuracy (✓/✗), Shannon entropy, and a mean-entropy bar.
-
----
-
-### Evaluate a trained checkpoint
-
-```bash
-python -m scripts.evaluate \
-    --checkpoint checkpoints/run_01.pt \
-    --pgn data/games.pgn \
-    --game-index 0 \
-    --top-n 3
-```
-
-Output includes a per-ply table with CE loss, top-1 accuracy, and Shannon entropy for each prediction head (src, tgt), plus an aggregate summary with the top-N highest-entropy positions.
-
-Use `--winners-only` to evaluate only positions where the winning player is to move (mirrors the training flag).
+After pushing, update `jenkins/pod-template.yaml` to the new `ci-vX.Y.Z` tag.
 
 ---
 
@@ -706,75 +571,67 @@ Use `--winners-only` to evaluate only positions where the winning player is to m
 ```
 chess-sim/
 ├── chess_sim/
-│   ├── protocols.py          # Structural type protocols (Tokenizable, Embeddable, Encodable, Predictable, Trainable, Samplable)
-│   ├── types.py              # NamedTuple containers: TokenizedBoard (board_tokens, color_tokens), TrainingExample, ChessBatch, EncoderOutput, PredictionOutput, LabelTensors
-│   ├── utils.py              # winner_color(): chess.pgn.Game -> Optional[chess.Color]
+│   ├── config.py              # Typed dataclass configs (YAML-loadable)
+│   ├── protocols.py           # Structural type protocols
+│   ├── types.py               # NamedTuple containers
+│   ├── utils.py               # winner_color() helper
 │   ├── data/
-│   │   ├── tokenizer.py          # BoardTokenizer: chess.Board -> TokenizedBoard
-│   │   ├── tokenizer_utils.py    # make_trajectory_tokens(): shared trajectory helper
-│   │   ├── reader.py             # StreamingPGNReader: .zst -> chess.pgn.Game iterator
-│   │   ├── sampler.py            # ReservoirSampler: uniform sampling (Vitter's Algorithm R)
-│   │   ├── dataset.py            # ChessDataset: torch Dataset + split(train_frac=0.9)
-│   │   ├── pgn_sequence_dataset.py # PGNSequenceDataset + PGNSequenceCollator (V2 on-the-fly)
-│   │   └── hdf5_dataset.py       # ChessHDF5Dataset: reads pre-baked HDF5; hdf5_worker_init
-│   ├── preprocess/
-│   │   ├── parse.py          # GameParser: chess.pgn.Game -> list[RawTurnRecord]
-│   │   ├── writer.py         # HDF5Writer: buffers + flushes to resizable h5py datasets
-│   │   ├── validate.py       # HDF5Validator: post-write schema + value-range checks
-│   │   └── preprocess.py     # HDF5Preprocessor: multiprocessing orchestrator
+│   │   ├── tokenizer.py       # BoardTokenizer: Board -> TokenizedBoard
+│   │   ├── tokenizer_utils.py # make_trajectory_tokens()
+│   │   ├── reader.py          # StreamingPGNReader: .zst -> Game iterator
+│   │   ├── sampler.py         # ReservoirSampler (Vitter's Algorithm R)
+│   │   ├── dataset.py         # ChessDataset + train/val split
+│   │   ├── pgn_sequence_dataset.py  # V2 on-the-fly PGN dataset
+│   │   ├── hdf5_dataset.py    # ChessHDF5Dataset (pre-baked HDF5)
+│   │   ├── move_tokenizer.py  # UCI string <-> vocab index
+│   │   └── move_vocab.py      # 1971-token move vocabulary
 │   ├── model/
-│   │   ├── embedding.py      # EmbeddingLayer: piece + color + square + trajectory -> [B, 65, 256]
-│   │   ├── encoder.py        # ChessEncoder: BERT-style transformer (6 layers)
-│   │   └── heads.py          # PredictionHeads: 2x Linear(256, 64)
+│   │   ├── embedding.py       # EmbeddingLayer (piece+color+square+traj)
+│   │   ├── encoder.py         # ChessEncoder (6-layer transformer)
+│   │   ├── decoder.py         # MoveDecoder (4-layer, causal)
+│   │   ├── chess_model.py     # ChessModel (top-level encoder-decoder)
+│   │   ├── heads.py           # PredictionHeads (src/tgt square)
+│   │   └── value_heads.py     # ActionConditionedValueHead (RL)
 │   ├── env/
-│   │   ├── __init__.py       # Protocols: SimSource, Policy, TerminalRenderable; NamedTuples: StepInfo, MovePrediction, RenderContext
-│   │   ├── sources.py        # PGNSource (PGN replay) and RandomSource (random legal moves)
-│   │   ├── chess_sim_env.py  # ChessSimEnv(gym.Env): obs=(65,3) float32, action=Discrete(1971)
-│   │   ├── terminal_renderer.py # TerminalRenderer: Unicode board + ANSI highlights + prediction panel
-│   │   └── agent_adapter.py  # ChessModelAgent: wraps ChessModel into Policy protocol
+│   │   ├── sources.py         # PGNSource, RandomSource
+│   │   ├── chess_sim_env.py   # ChessSimEnv(gym.Env)
+│   │   ├── terminal_renderer.py  # Unicode board + ANSI highlights
+│   │   └── agent_adapter.py   # ChessModelAgent (Policy protocol)
 │   └── training/
-│       ├── loss.py           # LossComputer: CrossEntropy x2 (src + tgt)
-│       └── trainer.py        # Trainer: AdamW + CosineAnnealingLR; decorators: @log_metrics, @device_aware, @timed
+│       ├── trainer.py         # SL Trainer (AdamW + cosine LR)
+│       ├── loss.py            # LossComputer (CE x2)
+│       ├── pgn_rl_trainer.py  # PGNRLTrainer (offline RL)
+│       ├── pgn_replayer.py    # PGN game -> OfflinePlyTuple list
+│       ├── pgn_rl_reward_computer.py  # Composite reward R(t)
+│       └── training_utils.py  # Shared training utilities
 ├── scripts/
-│   ├── __init__.py
-│   ├── preprocess.py         # CLI: PGN → HDF5 (run once before V2 training)
-│   ├── simulate.py           # CLI: terminal game simulation (pgn / random / agent modes)
-│   ├── train_v2.py           # CLI: V2 encoder-decoder training (--hdf5 or --pgn)
-│   ├── train_real.py         # CLI: V1 encoder training from PGN or synthetic games
-│   ├── evaluate.py           # CLI: per-move evaluation with GameEvaluator
-│   └── gui/
-│       ├── __init__.py       # Protocols: Renderable, Navigable, GameSource
-│       ├── formatters.py     # Pure helpers: _fmt_loss, _fmt_acc, _fmt_entropy
-│       ├── game_controller.py# GameController: tkinter-free GameSource implementation
-│       ├── board_panel.py    # BoardPanel(tk.Frame): animated board + ply navigation
-│       ├── stats_panel.py    # StatsPanel(tk.Frame): metrics table + embedding scatter
-│       └── viewer.py         # ChessViewer root window + main() CLI entry point
-├── tests/
-│   ├── utils.py              # Shared test fixtures (make_synthetic_batch, make_training_examples, etc.)
-│   ├── test_*.py             # Unit tests T01–T20
-│   ├── test_chess_encoder.py # Integration tests T26–T40
-│   └── test_evaluate.py      # Evaluation tests TEV01–TEV14
-├── checkpoints/              # Trained model .pt files
-├── data/                     # PGN files (gitignored)
+│   ├── preprocess.py          # PGN -> HDF5 (run once)
+│   ├── train_v2.py            # V2 SL training
+│   ├── train_real.py          # V1 SL training
+│   ├── train_rl.py            # Offline RL training
+│   ├── evaluate.py            # Per-move evaluation
+│   ├── simulate.py            # Terminal simulation
+│   └── gui/                   # Tkinter game viewer
+├── configs/                   # YAML configuration files
+├── checkpoints/               # Trained .pt files (gitignored)
+├── data/                      # PGN files (gitignored)
+├── tests/                     # Unit tests (T01-T40, TEV01-TEV14)
 ├── requirements.txt
-└── chess_encoder_final_design.md  # Full architecture design document
+└── chess_encoder_final_design.md
 ```
 
 ---
 
-## Key Design Notes
+## Key Design Decisions
 
-**Player-perspective prediction**
-Each ply is predicted from the side-to-move's perspective using two heads: `src_sq` (which piece moves) and `tgt_sq` (where it goes). When it's Black's turn, the board is tokenized with Black as "player" and White as "opponent" — the model always sees itself as the player. This simplifies the learning task compared to separate player/opponent heads.
+**Player-perspective prediction.** Each ply is predicted from the side-to-move's perspective. When it is Black's turn, the board is tokenized with Black as "player" and White as "opponent." The model always sees itself as the player.
 
-**Pre-Layer-Norm (Pre-LN) architecture**
-`TransformerEncoderLayer` is configured with `norm_first=True` to ensure stable gradient flow on CPU with PyTorch 2.x's scaled dot-product attention backend.
+**Pre-Layer-Norm (Pre-LN).** `TransformerEncoderLayer` uses `norm_first=True` for stable gradient flow with PyTorch 2.x's scaled dot-product attention.
 
-**Square indexing**
-Squares are always encoded in fixed geometric order: a1=index 1, b1=index 2, ..., h8=index 64. The board is never flipped. The `color_tokens` stream conveys whose pieces are whose relative to the player to move.
+**Square indexing.** Fixed geometric order: a1=1, b1=2, ..., h8=64. The board is never flipped; `color_tokens` convey piece ownership relative to the side-to-move.
 
-**Trajectory tokens**
-The fourth embedding stream encodes the role of each square in the last 2 half-moves via `_make_trajectory_tokens(move_history)` in `scripts/train_real.py`. Vocabulary is 5 bins: 0=none/CLS, 1=player previous source, 2=player previous target, 3=opponent previous source, 4=opponent previous target. Opponent marks overwrite player marks on collision (semantically correct for captures). `trajectory_emb: nn.Embedding(5, 256)`.
+**Trajectory tokens.** The trajectory stream encodes the role of each square in the last two half-moves. Opponent marks overwrite player marks on collision (correct for captures).
 
-**`--winners-only` training and evaluation flag**
-Both `scripts/train_real.py` and `scripts/evaluate.py` accept `--winners-only`. When set, only board positions where the game's winner is to move are included; draws are excluded entirely. Uses `winner_color()` from `chess_sim/utils.py`.
+**`--winners-only` / `--winners-side` flags.** Training and evaluation can filter to positions where the game's winner is to move. `winners_side=true` keeps all plies from draws (both players are non-losers) while skipping loser plies from decisive games.
+
+**Security.** All `torch.load()` calls use `weights_only=True` to prevent pickle-based arbitrary code execution. All YAML loading uses `yaml.safe_load()`.

@@ -8,6 +8,7 @@ lower CE weight; lower-reward plies get amplified gradient pressure.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import torch
@@ -260,3 +261,101 @@ class PGNRLTrainerV3(PGNRLTrainerV2):
             reduction="none",
         )
         return (multipliers * per_ply_ce).mean()
+
+    def train_epoch(
+        self,
+        pgn_path: Path,
+        max_games: int = 0,
+    ) -> dict[str, float]:
+        """Train one epoch, accumulating rsce_loss instead of rsbc_loss.
+
+        Args:
+            pgn_path: Path to PGN file.
+            max_games: Max games to load (0 = all).
+
+        Returns:
+            Dict with keys {total_loss, rsce_loss,
+            mean_reward, n_games}.
+        """
+        import random  # noqa: PLC0415
+
+        from chess_sim.training.pgn_rl_trainer_v2 import (  # noqa: PLC0415
+            _split_games_by_outcome,
+            _stream_pgn,
+        )
+
+        games = _stream_pgn(pgn_path, max_games)
+        train_white = self._cfg.rl.train_color == "white"
+        if self._cfg.rl.balance_outcomes:
+            win_games, loss_games, draw_games = (
+                _split_games_by_outcome(games, train_white)
+            )
+            if win_games and loss_games:
+                n = min(len(win_games), len(loss_games))
+                if len(win_games) > n:
+                    win_games = random.sample(win_games, n)
+                if len(loss_games) > n:
+                    loss_games = random.sample(
+                        loss_games, n
+                    )
+                draws = (
+                    []
+                    if self._cfg.rl.skip_draws
+                    else draw_games
+                )
+                games = [
+                    g
+                    for pair in zip(win_games, loss_games)
+                    for g in pair
+                ] + draws
+                dropped = abs(
+                    len(win_games) - len(loss_games)
+                )
+                logger.info(
+                    "Outcome balance: %d win + %d loss"
+                    " + %d draw = %d games"
+                    " (dropped %d from majority)",
+                    n,
+                    n,
+                    len(draws),
+                    2 * n + len(draws),
+                    dropped,
+                )
+            else:
+                logger.warning(
+                    "balance_outcomes=True but only one "
+                    "outcome class present (%d win, %d "
+                    "loss) — skipping balance",
+                    len(win_games),
+                    len(loss_games),
+                )
+
+        total_loss = 0.0
+        rsce_loss_sum: float = 0.0
+        reward_sum = 0.0
+        n_games = 0
+
+        for gi, game in enumerate(games):
+            metrics = self.train_game(game, game_idx=gi)
+            if not metrics:
+                continue
+            total_loss += metrics["total_loss"]
+            rsce_loss_sum += metrics["rsce_loss"]
+            reward_sum += metrics["mean_reward"]
+            n_games += 1
+            self._tracker.track_scalars(
+                {
+                    "rsce_loss": metrics["rsce_loss"],
+                    "total_loss": metrics["total_loss"],
+                    "mean_reward": metrics["mean_reward"],
+                },
+                step=self._global_step,
+            )
+
+        denom = max(n_games, 1)
+        return {
+            "total_loss": total_loss / denom,
+            "rsce_loss": rsce_loss_sum / denom,
+            "mean_reward": reward_sum / denom,
+            "n_games": n_games,
+        }

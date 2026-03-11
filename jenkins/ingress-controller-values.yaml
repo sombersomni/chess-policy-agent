@@ -1,0 +1,25 @@
+# Helm values for ingress-nginx — NodePort mode for bare-metal home lab.
+# HTTP  NodePort: 30180 (30080 is occupied by the Jenkins direct NodePort)
+# HTTPS NodePort: 30443
+controller:
+  service:
+    type: NodePort
+    nodePorts:
+      http: "30180"
+      https: "30443"
+  # Disable the admission webhook — simplifies bare-metal installs with no
+  # LoadBalancer; webhook cert bootstrap can stall without a working LB.
+  admissionWebhooks:
+    enabled: false
+  # Run only on the worker node so the controller pod gets a stable IP.
+  nodeSelector:
+    kubernetes.io/hostname: minisforum-gray-1
+  # Single replica is fine for a home lab.
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

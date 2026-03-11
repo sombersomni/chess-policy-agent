@@ -193,17 +193,24 @@ class TestRLConfigRSBC(unittest.TestCase):
     """Tests for RLConfig RSBC fields."""
 
     def test_lambda_rsbc_default_is_one(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R8: RLConfig() has lambda_rsbc == 1.0."""
+        from chess_sim.config import RLConfig
+        self.assertEqual(RLConfig().lambda_rsbc, 1.0)
 
     def test_lambda_rsbc_negative_raises_value_error(
         self,
     ) -> None:
-        self.skipTest("TODO: implement")
+        """T-R9: lambda_rsbc < 0 raises ValueError."""
+        from chess_sim.config import RLConfig
+        with self.assertRaises(ValueError):
+            RLConfig(lambda_rsbc=-0.1)
 
     def test_rsbc_normalize_per_game_default_true(
         self,
     ) -> None:
-        self.skipTest("TODO: implement")
+        """T-R10: rsbc_normalize_per_game defaults True."""
+        from chess_sim.config import RLConfig
+        self.assertTrue(RLConfig().rsbc_normalize_per_game)
 
 
 if __name__ == "__main__":

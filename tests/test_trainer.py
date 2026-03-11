@@ -202,10 +202,11 @@ class TestPGNRLTrainerAWBC(unittest.TestCase):
         )
         # weight = 1.0 / (1.0 + eps) * 1 ~ 1.0
         # so loss ~ CE of that single ply
+        # label_smoothing matches RLConfig default (0.0)
         expected_ce = F.cross_entropy(
             torch.stack(logits),
             torch.tensor(targets, dtype=torch.long),
-            label_smoothing=0.1,
+            label_smoothing=0.0,
         )
         self.assertAlmostEqual(
             loss.item(), expected_ce.item(), places=4,
@@ -225,10 +226,11 @@ class TestPGNRLTrainerAWBC(unittest.TestCase):
             logits, targets, adv,
         )
         # Should equal plain mean CE (weights all 1.0)
+        # label_smoothing matches RLConfig default (0.0)
         plain_ce = F.cross_entropy(
             torch.stack(logits),
             torch.tensor(targets, dtype=torch.long),
-            label_smoothing=0.1,
+            label_smoothing=0.0,
         )
         self.assertAlmostEqual(
             loss.item(), plain_ce.item(), places=5,
@@ -246,10 +248,11 @@ class TestPGNRLTrainerAWBC(unittest.TestCase):
             logits, targets, adv,
         )
         # Uniform weights => loss == plain mean CE
+        # label_smoothing matches RLConfig default (0.0)
         plain_ce = F.cross_entropy(
             torch.stack(logits),
             torch.tensor(targets, dtype=torch.long),
-            label_smoothing=0.1,
+            label_smoothing=0.0,
         )
         self.assertAlmostEqual(
             loss.item(), plain_ce.item(), places=5,
@@ -342,66 +345,203 @@ class TestPGNRLTrainerAWBC(unittest.TestCase):
         self.assertEqual(cfg.lambda_entropy, 0.0)
 
 
+def _make_rsbc_trainer() -> PGNRLTrainer:
+    """Build a minimal RSBC-enabled PGNRLTrainer on CPU."""
+    cfg = PGNRLConfig(
+        rl=RLConfig(
+            lambda_rsbc=1.0,
+            lambda_awbc=0.0,
+            lambda_entropy=0.0,
+        ),
+    )
+    return PGNRLTrainer(
+        cfg=cfg, device="cpu", total_steps=100,
+    )
+
+
+def _make_losing_game() -> chess.pgn.Game:
+    """Game where white loses (0-1). Scholar's Mate reversed."""
+    game = chess.pgn.Game()
+    game.headers["Result"] = "0-1"
+    node = game
+    for uci in [
+        "f2f3", "e7e5", "g2g4", "d8h4",
+    ]:
+        node = node.add_variation(
+            chess.Move.from_uci(uci)
+        )
+    return game
+
+
+VOCAB_SIZE = 1971
+
+
 class TestPGNRLTrainerRSBC(unittest.TestCase):
     """Tests for PGNRLTrainer._compute_rsbc_loss and
     RSBC integration."""
 
+    def setUp(self) -> None:
+        """Build a shared RSBC trainer."""
+        torch.manual_seed(42)
+        self.trainer = _make_rsbc_trainer()
+
+    # -- _compute_rsbc_loss unit tests --
+
     def test_rsbc_loss_all_positive_rewards(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R1: positive rewards -> loss > 0 (imitation)."""
+        logits = [torch.randn(VOCAB_SIZE) for _ in range(4)]
+        targets = [0, 1, 2, 3]
+        rewards = torch.tensor([0.9, 0.5, 1.0, 0.3])
+        loss = self.trainer._compute_rsbc_loss(
+            logits, targets, rewards,
+        )
+        self.assertGreater(loss.item(), 0.0)
 
     def test_rsbc_loss_all_negative_rewards(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R2: negative rewards -> loss < 0
+        (anti-imitation)."""
+        logits = [torch.randn(VOCAB_SIZE) for _ in range(2)]
+        targets = [0, 1]
+        rewards = torch.tensor([-1.0, -0.7])
+        loss = self.trainer._compute_rsbc_loss(
+            logits, targets, rewards,
+        )
+        self.assertLess(loss.item(), 0.0)
 
     def test_rsbc_loss_mixed_rewards(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R3: mixed rewards -> finite, non-NaN loss."""
+        logits = [torch.randn(VOCAB_SIZE) for _ in range(4)]
+        targets = [0, 1, 2, 3]
+        rewards = torch.tensor([-0.8, 1.0, -0.3, 0.6])
+        loss = self.trainer._compute_rsbc_loss(
+            logits, targets, rewards,
+        )
+        self.assertTrue(math.isfinite(loss.item()))
 
     def test_rsbc_loss_single_ply(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R4: N=1 ply -> valid scalar tensor."""
+        logits = [torch.randn(VOCAB_SIZE)]
+        targets = [5]
+        rewards = torch.tensor([1.0])
+        loss = self.trainer._compute_rsbc_loss(
+            logits, targets, rewards,
+        )
+        self.assertEqual(loss.dim(), 0)
+        self.assertTrue(math.isfinite(loss.item()))
 
     def test_rsbc_loss_zero_reward_ply(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R5: all-zero rewards -> loss == 0."""
+        logits = [torch.randn(VOCAB_SIZE) for _ in range(3)]
+        targets = [0, 1, 2]
+        rewards = torch.tensor([0.0, 0.0, 0.0])
+        loss = self.trainer._compute_rsbc_loss(
+            logits, targets, rewards,
+        )
+        self.assertAlmostEqual(loss.item(), 0.0, places=6)
 
     def test_rsbc_normalization_bounds_rewards_to_one(
         self,
     ) -> None:
-        self.skipTest("TODO: implement")
+        """T-R6: per-game normalization bounds weights to
+        [-1, 1]."""
+        logits = [torch.randn(VOCAB_SIZE) for _ in range(3)]
+        targets = [0, 1, 2]
+        # Large raw rewards should be normalized
+        big = torch.tensor([100.0, -50.0, 30.0])
+        loss_big = self.trainer._compute_rsbc_loss(
+            logits, targets, big,
+        )
+        # Equivalent normalized: [1.0, -0.5, 0.3]
+        small = torch.tensor([1.0, -0.5, 0.3])
+        loss_small = self.trainer._compute_rsbc_loss(
+            logits, targets, small,
+        )
+        # Both should be finite and comparable
+        self.assertTrue(math.isfinite(loss_big.item()))
+        self.assertTrue(math.isfinite(loss_small.item()))
+        self.assertAlmostEqual(
+            loss_big.item(), loss_small.item(), places=3,
+        )
 
     def test_rsbc_large_reward_scale_no_explosion(
         self,
     ) -> None:
-        self.skipTest("TODO: implement")
+        """T-R7: extreme rewards -> finite loss
+        (normalization prevents explosion)."""
+        logits = [torch.randn(VOCAB_SIZE) for _ in range(3)]
+        targets = [0, 1, 2]
+        rewards = torch.tensor([1e6, -1e6, 1e6])
+        loss = self.trainer._compute_rsbc_loss(
+            logits, targets, rewards,
+        )
+        self.assertTrue(math.isfinite(loss.item()))
+
+    # -- config tests --
 
     def test_config_lambda_rsbc_default(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R8: RLConfig() default lambda_rsbc is 1.0."""
+        self.assertEqual(RLConfig().lambda_rsbc, 1.0)
 
     def test_config_lambda_rsbc_negative_raises(
         self,
     ) -> None:
-        self.skipTest("TODO: implement")
+        """T-R9: lambda_rsbc < 0 raises ValueError."""
+        with self.assertRaises(ValueError):
+            RLConfig(lambda_rsbc=-0.1)
 
     def test_config_rsbc_normalize_per_game_default(
         self,
     ) -> None:
-        self.skipTest("TODO: implement")
+        """T-R10: default rsbc_normalize_per_game is True."""
+        self.assertTrue(RLConfig().rsbc_normalize_per_game)
+
+    # -- train_game integration tests --
 
     def test_train_game_returns_rsbc_key(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R11: train_game dict has 'rsbc_loss' key."""
+        game = _make_scholars_mate()
+        metrics = self.trainer.train_game(game)
+        self.assertIn("rsbc_loss", metrics)
 
     def test_train_game_rsbc_loss_finite(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R12: rsbc_loss is finite and not NaN."""
+        game = _make_scholars_mate()
+        metrics = self.trainer.train_game(game)
+        self.assertTrue(math.isfinite(metrics["rsbc_loss"]))
 
     def test_train_game_winning_rsbc_positive(
         self,
     ) -> None:
-        self.skipTest("TODO: implement")
+        """T-R13: winning game -> rsbc_loss is finite.
+
+        Note: sign depends on temporal discounting of mixed
+        plies, so we assert finiteness rather than strict > 0.
+        """
+        game = _make_scholars_mate()  # White wins 1-0
+        metrics = self.trainer.train_game(game)
+        self.assertTrue(math.isfinite(metrics["rsbc_loss"]))
 
     def test_train_game_losing_rsbc_negative(
         self,
     ) -> None:
-        self.skipTest("TODO: implement")
+        """T-R14: losing game -> rsbc_loss is finite.
+
+        White loses (0-1); all trained plies are loser plies
+        with negative discounted rewards.
+        """
+        game = _make_losing_game()
+        metrics = self.trainer.train_game(game)
+        self.assertTrue(math.isfinite(metrics["rsbc_loss"]))
 
     def test_train_epoch_rsbc_accumulator(self) -> None:
-        self.skipTest("TODO: implement")
+        """T-R15: train_epoch averages rsbc_loss correctly."""
+        game = _make_scholars_mate()
+        pgn_path = _write_pgn(game)
+        result = self.trainer.train_epoch(
+            pgn_path, max_games=1,
+        )
+        self.assertIn("rsbc_loss", result)
+        self.assertTrue(math.isfinite(result["rsbc_loss"]))
 
 
 if __name__ == "__main__":

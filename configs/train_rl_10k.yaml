@@ -34,16 +34,18 @@ rl:
   loss_reward:          -10.0
   draw_reward:          2.0
   lambda_ce:            0.0
-  lambda_awbc:          1.0
-  lambda_entropy:       0.01
+  lambda_awbc:              0.0
+  lambda_rsbc:              1.0
+  lambda_entropy:           0.0
   awbc_eps:             1.0e-8
-  label_smoothing:      0.1
+  label_smoothing:          0.0
+  rsbc_normalize_per_game:  true
   train_color:          white
   lambda_value:         0.1
   value_lr_multiplier:  1.0
 
 aim:
   enabled:           true
-  experiment_name:   chess_rl_10k_v2
+  experiment_name:   chess_rl_10k_rsbc
   repo:              .aim
   log_every_n_steps: 10

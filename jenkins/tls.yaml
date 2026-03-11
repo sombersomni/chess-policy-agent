@@ -1,0 +1,118 @@
+# Self-signed CA ClusterIssuer, Certificate, and Ingress for Jenkins HTTPS.
+#
+# Apply order matters:
+#   1. ClusterIssuer (selfsigned-ca-issuer) — bootstraps the root CA keypair
+#   2. Certificate (jenkins-ca)             — issues the CA cert into a Secret
+#   3. ClusterIssuer (jenkins-ca-issuer)    — signs leaf certs using that CA
+#   4. Certificate (jenkins-tls)            — leaf cert for jenkins.local
+#   5. Ingress (jenkins)                    — wires TLS + routing
+#
+# IMPORTANT: The CA Certificate (jenkins-ca) MUST live in the cert-manager
+# namespace. cert-manager resolves a ClusterIssuer's CA secret from its own
+# controller namespace (cert-manager), NOT from the namespace of the
+# Certificate that references the ClusterIssuer. The leaf Certificate
+# (jenkins-tls) stays in the jenkins namespace.
+---
+# Step 1: Bootstrap issuer — signs nothing except the root CA cert itself.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned-ca-issuer
+spec:
+  selfSigned: {}
+---
+# Step 2: Self-signed root CA certificate.
+# Must be in the cert-manager namespace — ClusterIssuer reads CA secrets from
+# its controller namespace, not from the namespace of the requesting Certificate.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: jenkins-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: jenkins-home-lab-ca
+  secretName: jenkins-ca-secret
+  duration: 87600h    # 10 years — rotate manually if needed
+  renewBefore: 720h   # renew 30 days before expiry
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: selfsigned-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# Step 3: CA issuer that uses the root CA cert to sign leaf certificates.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: jenkins-ca-issuer
+spec:
+  ca:
+    secretName: jenkins-ca-secret
+---
+# Step 4: Leaf TLS certificate for jenkins.local.
+# The Secret jenkins-tls is consumed by the Ingress below.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: jenkins-tls
+  namespace: jenkins
+spec:
+  secretName: jenkins-tls
+  duration: 8760h     # 1 year
+  renewBefore: 720h   # renew 30 days before expiry
+  commonName: jenkins.local
+  dnsNames:
+    - jenkins.local
+  # IP SANs allow curl/browser access directly by IP without a hosts entry.
+  ipAddresses:
+    - 10.0.0.169
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: jenkins-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# Step 5: Ingress — routes jenkins.local HTTPS traffic to the Jenkins service.
+# The Jenkins service listens on port 8080 (cluster-internal); the NodePort
+# 30443 on the ingress controller is the external HTTPS entry point.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jenkins
+  namespace: jenkins
+  annotations:
+    # Tell the ingress controller that the upstream (Jenkins) speaks plain HTTP.
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    # Jenkins uses relative redirects; rewrite the Location header so the
+    # browser follows them to the HTTPS NodePort, not port 80.
+    nginx.ingress.kubernetes.io/proxy-redirect-from: "http://jenkins.local/"
+    nginx.ingress.kubernetes.io/proxy-redirect-to:   "https://jenkins.local:30443/"
+    # Increase proxy timeouts — Jenkins can be slow to respond during startup
+    # and on heavy builds.
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-read-timeout:    "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout:    "120"
+    # Forward the real client IP so Jenkins logs are useful.
+    nginx.ingress.kubernetes.io/use-forwarded-headers: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - jenkins.local
+      secretName: jenkins-tls
+  rules:
+    - host: jenkins.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: jenkins
+                port:
+                  number: 8080

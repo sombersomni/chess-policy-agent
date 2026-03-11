@@ -114,16 +114,81 @@ Each board is encoded as 65 tokens: `[CLS, a1, b1, ..., h8]`.
 ## CI Pipeline
 
 Every PR triggers a Jenkins build on the Kubernetes cluster (`10.0.0.169`).
-The pipeline runs two stages — lint then tests — inside an ephemeral K8s pod
-built from `ghcr.io/<user>/chess-sim:ci`.
+The pipeline lints and tests only the Python files that changed in the PR,
+inside an ephemeral K8s pod built from `ghcr.io/<user>/chess-sim:ci`.
 
 ```mermaid
 flowchart LR
-    PR[GitHub PR] -->|webhook| JK[Jenkins on K8s]
+    PR[GitHub PR] -->|webhook| JK[Jenkins on K8s\nhttps://jenkins.local:30443]
     JK -->|K8s plugin| POD[chess-sim:ci pod\nCPU-only]
-    POD --> L[ruff check .]
-    L --> T[unittest discover]
+    POD --> D[Detect changed .py files\ngit diff base...HEAD]
+    D --> L[ruff check changed files]
+    L --> T[unittest mapped test files]
     T -->|commit status| GH[GitHub PR ✅ / ❌]
+```
+
+### Accessing Jenkins
+
+Jenkins is exposed via an nginx ingress controller with TLS termination.
+
+| URL | Port | Notes |
+|-----|------|-------|
+| `https://jenkins.local:30443` | 30443 | Primary HTTPS entry point (requires hosts entry) |
+| `https://10.0.0.169:30443` | 30443 | Direct IP access — no hosts entry needed |
+| `http://10.0.0.169:30080` | 30080 | Legacy direct NodePort (HTTP only) |
+
+**Add to `/etc/hosts`** on every machine that will use the hostname:
+```
+10.0.0.169  jenkins.local
+```
+
+**Suppress the browser certificate warning** by trusting the home-lab CA once:
+```bash
+kubectl get secret jenkins-ca-secret -n cert-manager \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d > jenkins-ca.crt
+# Import jenkins-ca.crt into your OS / browser CA trust store.
+```
+
+### Infrastructure overview
+
+All Jenkins infrastructure is Helm-managed and stored under `jenkins/`.
+
+| File | Purpose |
+|------|---------|
+| `jenkins/values.yaml` | Jenkins Helm values — NodePort 30080 for direct HTTP access |
+| `jenkins/ingress-controller-values.yaml` | nginx ingress — NodePort 30180 (HTTP) / 30443 (HTTPS) |
+| `jenkins/cert-manager-values.yaml` | cert-manager with CRDs bundled |
+| `jenkins/tls.yaml` | Self-signed CA ClusterIssuer, leaf Certificate, and Ingress |
+| `jenkins/pod-template.yaml` | K8s agent pod spec (chess-sim + jnlp containers) |
+| `jenkins/job-config.xml` | Jenkins job XML — imported via `create-job.groovy` |
+
+**Install or reinstall the full stack:**
+```bash
+HELM=/home/sombersomni/bin/helm
+
+# 1. Jenkins
+$HELM repo add jenkins https://charts.jenkins.io
+$HELM upgrade --install jenkins jenkins/jenkins \
+    --namespace jenkins --create-namespace \
+    --values jenkins/values.yaml
+
+# 2. nginx ingress controller
+$HELM repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+$HELM upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+    --namespace ingress-nginx --create-namespace \
+    --values jenkins/ingress-controller-values.yaml
+
+# 3. cert-manager
+$HELM repo add jetstack https://charts.jetstack.io
+$HELM upgrade --install cert-manager jetstack/cert-manager \
+    --namespace cert-manager --create-namespace \
+    --values jenkins/cert-manager-values.yaml
+
+# 4. TLS resources (wait for cert-manager pods first)
+kubectl wait --for=condition=ready pod \
+    -l app.kubernetes.io/instance=cert-manager \
+    -n cert-manager --timeout=120s
+kubectl apply -f jenkins/tls.yaml
 ```
 
 ### CI image versioning
@@ -156,7 +221,7 @@ docker push ${REPO}:${SHA}
 docker push ${REPO}:ci-latest
 ```
 
-After pushing, update `jenkins/pod-template.yaml` line 32 to the new
+After pushing, update `jenkins/pod-template.yaml` to the new
 `ci-vX.Y.Z` tag and commit both changes together.
 
 ---

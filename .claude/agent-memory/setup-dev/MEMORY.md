@@ -14,6 +14,18 @@ See [scaffolding-history.md](scaffolding-history.md) for all prior scaffolding d
 
 ---
 
+## Scaffolding Completed: RSBC Test Skeletons (2026-03-10)
+
+### Changes
+- `tests/test_trainer.py` — `TestPGNRLTrainerRSBC` (15 skipTest stubs) added after `TestPGNRLTrainerAWBC`
+- `tests/test_config.py` — `TestRLConfigRSBC` (3 skipTest stubs) added before `if __name__`
+- No production code changes — config/trainer stubs already existed
+
+### Test Results: 18 skipped (all `skipTest("TODO: implement")`)
+- Pre-existing failure in `TestPGNRLTrainerAWBC::test_awbc_loss_no_advantage_collapse` — unrelated
+
+---
+
 ## Scaffolding Completed: AWBC Loss Redesign (2026-03-10)
 
 ### Changes

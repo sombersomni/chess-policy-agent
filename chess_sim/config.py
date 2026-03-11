@@ -457,10 +457,12 @@ class RLConfig:
     draw_reward: float = 2.0
     lambda_ce: float = 0.0  # deprecated: use lambda_awbc
     lambda_value: float = 1.0
-    lambda_awbc: float = 1.0
+    lambda_awbc: float = 0.0  # deprecated: use lambda_rsbc
+    lambda_rsbc: float = 1.0
+    rsbc_normalize_per_game: bool = True
     lambda_entropy: float = 0.0
     awbc_eps: float = 1e-8
-    label_smoothing: float = 0.1
+    label_smoothing: float = 0.0
     train_color: str = "white"
     value_lr_multiplier: float = 5.0
 
@@ -505,6 +507,11 @@ class RLConfig:
             raise ValueError(
                 "lambda_awbc must be >= 0, "
                 f"got {self.lambda_awbc}"
+            )
+        if self.lambda_rsbc < 0:
+            raise ValueError(
+                "lambda_rsbc must be >= 0, "
+                f"got {self.lambda_rsbc}"
             )
         if self.lambda_entropy < 0:
             raise ValueError(

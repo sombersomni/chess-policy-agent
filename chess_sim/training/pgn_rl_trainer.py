@@ -400,15 +400,14 @@ class PGNRLTrainer:
             self._device
         )
 
-        # Compute value loss and advantage
+        # Compute value loss and advantage (diagnostic)
         q_preds_t: Tensor = torch.stack(q_preds)  # [N]
         # detach: prevent Q-head gradient from flowing
         # through advantage into the policy loss
         advantage: Tensor = (
             valid_rewards - q_preds_t.detach()
         )  # [N]
-        # Whiten advantages so gradient scale is
-        # independent of reward magnitude and game length.
+        # Whiten advantages for diagnostic logging only.
         if advantage.numel() > 1:
             advantage = (
                 advantage - advantage.mean()
@@ -421,19 +420,15 @@ class PGNRLTrainer:
         )
         value_loss = F.mse_loss(q_preds_t, valid_rewards)
 
-        # --- AWBC loss (replaces pg_loss + ce_loss) ---
-        awbc_loss = self._compute_awbc_loss(
+        # --- RSBC loss (reward-signed behavioral cloning) ---
+        rsbc_loss = self._compute_rsbc_loss(
             all_logits=all_logits,
             all_targets=all_targets,
-            advantage=advantage,
-        )
-        entropy_bonus = self._compute_entropy_bonus(
-            all_logits=all_logits,
+            rewards=valid_rewards,
         )
 
         total_loss = (
-            self._cfg.rl.lambda_awbc * awbc_loss
-            + self._cfg.rl.lambda_entropy * entropy_bonus
+            self._cfg.rl.lambda_rsbc * rsbc_loss
             + self._cfg.rl.lambda_value * value_loss
         )
 
@@ -451,16 +446,17 @@ class PGNRLTrainer:
 
         return {
             "total_loss": total_loss.item(),
-            "awbc_loss": awbc_loss.item(),
-            "entropy_bonus": entropy_bonus.item(),
+            "rsbc_loss": rsbc_loss.item(),
             "n_plies": len(plies),
             "mean_reward": mean_reward,
             "value_loss": value_loss.item(),
             "mean_advantage": mean_adv,
             "std_advantage": std_adv,
-            # deprecated — retained for Aim dashboard compat
+            # deprecated — backward compat for Aim dashboard
             "pg_loss": 0.0,
             "ce_loss": 0.0,
+            "awbc_loss": 0.0,
+            "entropy_bonus": 0.0,
         }
 
     def train_epoch(
@@ -479,8 +475,7 @@ class PGNRLTrainer:
         """
         games = _stream_pgn(pgn_path, max_games)
         total_loss = 0.0
-        awbc_loss_sum: float = 0.0
-        entropy_bonus_sum: float = 0.0
+        rsbc_loss_sum: float = 0.0
         reward_sum = 0.0
         value_loss_sum: float = 0.0
         mean_adv_sum: float = 0.0
@@ -492,8 +487,7 @@ class PGNRLTrainer:
             if not metrics:
                 continue
             total_loss += metrics["total_loss"]
-            awbc_loss_sum += metrics["awbc_loss"]
-            entropy_bonus_sum += metrics["entropy_bonus"]
+            rsbc_loss_sum += metrics["rsbc_loss"]
             reward_sum += metrics["mean_reward"]
             value_loss_sum += metrics["value_loss"]
             mean_adv_sum += metrics["mean_advantage"]
@@ -501,12 +495,11 @@ class PGNRLTrainer:
             n_games += 1
             self._tracker.track_scalars(
                 {
-                    "awbc_loss": metrics["awbc_loss"],
-                    "entropy_bonus": metrics[
-                        "entropy_bonus"
-                    ],
+                    "rsbc_loss": metrics["rsbc_loss"],
                     "total_loss": metrics["total_loss"],
-                    "mean_reward": metrics["mean_reward"],
+                    "mean_reward": metrics[
+                        "mean_reward"
+                    ],
                     "value_loss": metrics["value_loss"],
                     "mean_advantage": metrics[
                         "mean_advantage"
@@ -517,6 +510,8 @@ class PGNRLTrainer:
                     # deprecated — backward compat
                     "pg_loss": 0.0,
                     "ce_loss": 0.0,
+                    "awbc_loss": 0.0,
+                    "entropy_bonus": 0.0,
                 },
                 step=self._global_step,
             )
@@ -524,8 +519,7 @@ class PGNRLTrainer:
         denom = max(n_games, 1)
         return {
             "total_loss": total_loss / denom,
-            "awbc_loss": awbc_loss_sum / denom,
-            "entropy_bonus": entropy_bonus_sum / denom,
+            "rsbc_loss": rsbc_loss_sum / denom,
             "mean_reward": reward_sum / denom,
             "n_games": n_games,
             "value_loss": value_loss_sum / denom,
@@ -534,6 +528,8 @@ class PGNRLTrainer:
             # deprecated — backward compat
             "pg_loss": 0.0,
             "ce_loss": 0.0,
+            "awbc_loss": 0.0,
+            "entropy_bonus": 0.0,
         }
 
     def evaluate(
@@ -875,6 +871,54 @@ class PGNRLTrainer:
         # (which adds lambda_entropy * bonus) then maximizes
         # entropy, since d(total)/d(entropy) < 0.
         return -entropy_per_ply.mean()
+
+    def _compute_rsbc_loss(
+        self,
+        all_logits: list[Tensor],
+        all_targets: list[int],
+        rewards: Tensor,
+    ) -> Tensor:
+        """Compute reward-signed behavioral cloning loss.
+
+        Weights per-ply CE by per-game-normalized reward
+        r_hat_t in [-1, 1]. Positive reward -> imitate
+        (lower log-prob of teacher move). Negative reward
+        -> avoid (raise log-prob of teacher move).
+        No label smoothing: smoothing opposes anti-imitation
+        on negative plies.
+
+        Args:
+            all_logits: Per-ply decoder logits, each [vocab].
+            all_targets: Per-ply teacher move indices (int).
+            rewards: Raw per-ply discounted rewards [N].
+
+        Returns:
+            Scalar RSBC loss tensor (may be negative when
+            losing plies dominate).
+
+        Example:
+            >>> loss = trainer._compute_rsbc_loss(
+            ...     logits, targets, rewards)
+        """
+        targets_t = torch.tensor(
+            all_targets,
+            dtype=torch.long,
+            device=self._device,
+        )
+        # No label_smoothing: smoothing opposes anti-imitation
+        # on negative-reward plies.
+        per_ply_ce: Tensor = F.cross_entropy(
+            torch.stack(all_logits),
+            targets_t,
+            label_smoothing=0.0,
+            reduction="none",
+        )  # [N]
+        if self._cfg.rl.rsbc_normalize_per_game:
+            max_abs = rewards.abs().max()
+            r_hat: Tensor = rewards / (max_abs + 1e-8)
+        else:
+            r_hat = rewards
+        return (r_hat * per_ply_ce).mean()
 
     def save_checkpoint(self, path: Path) -> None:
         """Save model, optimizer, and scheduler state.

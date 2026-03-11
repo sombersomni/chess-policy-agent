@@ -111,7 +111,7 @@
 - `chess_sim/training/training_utils.py`: shared `material_balance`, `l1_normalize`
 - `chess_sim/training/pgn_replayer.py`: PGNReplayer -> list[OfflinePlyTuple] (Replayable protocol)
 - `chess_sim/training/pgn_rl_reward_computer.py`: temporal gamma^(T-1-t) + material + check shaping (OfflineComputable protocol)
-- `chess_sim/training/pgn_rl_trainer.py`: PGNRLTrainer (REINFORCE PG + optional CE aux loss on winner plies)
+- `chess_sim/training/pgn_rl_trainer.py`: PGNRLTrainer with RSBC loss (reward-signed behavioral cloning)
 - Config: `RLConfig`, `PGNRLConfig`, `load_pgn_rl_config` in `chess_sim/config.py`
 - Types: `OfflinePlyTuple` in `chess_sim/types.py`
 - Protocols: `Replayable`, `OfflineComputable` in `chess_sim/protocols.py`
@@ -120,6 +120,12 @@
 - Key design: trains BOTH sides simultaneously (not just player plies like SelfPlayLoop)
 - Temporal discount: gamma^(T-1-t) so LAST ply gets gamma^0=1.0 (opposite of RewardComputer buggy direction)
 - LR schedule: identical SequentialLR (warmup -> constant -> cosine) from Phase1Trainer
+- **RSBC loss**: `_compute_rsbc_loss` replaces AWBC in `train_game`; formula: `mean(r_hat * CE)` where `r_hat = r / max(|r|)` per game
+  - `label_smoothing=0.0` hardcoded (smoothing opposes anti-imitation on negative plies)
+  - AWBC and entropy_bonus methods retained for backward compat but not called
+  - Config: `lambda_rsbc=1.0`, `rsbc_normalize_per_game=True`, `lambda_awbc=0.0` (deprecated)
+  - Tests: `TestPGNRLTrainerRSBC` (15 tests) + `TestRLConfigRSBC` (3 tests) in `tests/test_trainer.py` and `tests/test_config.py`
+  - Design doc: `docs/rsbc_loss_redesign.md`
 
 ## RL HDF5 Preprocessing Pipeline
 - `chess_sim/preprocess/rl_reader.py`: RLPGNReader — streams .pgn/.zst via StreamingPGNReader delegation

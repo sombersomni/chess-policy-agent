@@ -538,20 +538,23 @@ class PGNRLTrainer:
         # Bulk increment ply counter before snapshot logging
         self._ply_step += len(plies)
 
-        # Board snapshot logging with offset-based cadence
+        # Board snapshot logging with offset-based cadence.
+        # _log_board_snapshot reads self._ply_step for the % 100
+        # check, so temporarily set it to the per-ply value.
+        saved_ply_step = self._ply_step
         base_step = self._ply_step - len(plies)
         for j, snap in enumerate(board_snaps):
-            local_step = base_step + j + 1
-            if local_step % 100 == 0:
-                self._log_board_snapshot(
-                    snap,
-                    plies[j].move_uci,
-                    game_idx,
-                    is_winner_ply=plies[j].is_winner_ply,
-                    reward=float(rewards[j]),
-                    last_logits=last_logits_all[j],
-                    move_idx=move_idxs[j],
-                )
+            self._ply_step = base_step + j + 1
+            self._log_board_snapshot(
+                snap,
+                plies[j].move_uci,
+                game_idx,
+                is_winner_ply=plies[j].is_winner_ply,
+                reward=float(rewards[j]),
+                last_logits=last_logits_all[j],
+                move_idx=move_idxs[j],
+            )
+        self._ply_step = saved_ply_step
 
         # Filter to valid (non-OOV) plies
         valid_mask: list[int] = [
@@ -562,12 +565,25 @@ class PGNRLTrainer:
         if not valid_mask:
             return {}
 
-        valid_rewards = rewards[valid_reward_idxs].to(
+        # Batch value head: look up action embeddings at once
+        valid_midx = torch.tensor(
+            [move_idxs[i] for i in valid_mask],
+            dtype=torch.long,
+            device=self._device,
+        )
+        action_embs: Tensor = (
+            self._model.move_token_emb(valid_midx)
+        )  # [N, d_model]
+        action_embs = action_embs.detach()
+        q_preds_t: Tensor = self._model.value_head(
+            cls_all[valid_mask].detach(), action_embs
+        ).squeeze(-1)  # [N]
+
+        valid_rewards = rewards[valid_mask].to(
             self._device
         )
 
         # Compute value loss and advantage (diagnostic)
-        q_preds_t: Tensor = torch.stack(q_preds)  # [N]
         # detach: prevent Q-head gradient from flowing
         # through advantage into the policy loss
         advantage: Tensor = (
@@ -586,6 +602,18 @@ class PGNRLTrainer:
         )
         value_loss = F.mse_loss(q_preds_t, valid_rewards)
 
+        # Collect logits/targets for valid plies only
+        all_logits: list[Tensor] = [
+            last_logits_all[i] for i in valid_mask
+        ]
+        all_targets: list[int] = [
+            move_idxs[i] for i in valid_mask  # type: ignore[misc]
+        ]
+        all_color_tokens: list[Tensor] = [
+            plies[i].color_tokens.to(self._device)
+            for i in valid_mask
+        ]
+
         # --- Outcome weights: winner=1.0, draw=draw_reward_norm,
         # loser=loser_ply_weight. Always positive — no anti-imitation.
         ply_weights = torch.tensor(
@@ -597,7 +625,7 @@ class PGNRLTrainer:
                     if plies[i].is_winner_ply
                     else self._cfg.rl.loser_ply_weight
                 )
-                for i in valid_reward_idxs
+                for i in valid_mask
             ],
             dtype=torch.float32,
             device=self._device,

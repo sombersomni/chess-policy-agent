@@ -8,3 +8,4 @@ h5py>=3.9  # HDF5 dataset storage for V2 preprocess pipeline
 aim>=3.17  # aim: experiment tracking UI; optional at runtime (NoOpTracker fallback)
 gymnasium>=0.29  # gym.Env base class for ChessSimEnv terminal simulation
 ruff>=0.4
+watchdog>=3.0

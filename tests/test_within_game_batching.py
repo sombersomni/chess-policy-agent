@@ -23,7 +23,6 @@ from chess_sim.config import (
 )
 from chess_sim.training.pgn_rl_trainer import PGNRLTrainer
 
-
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------

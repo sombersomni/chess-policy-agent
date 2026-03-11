@@ -28,12 +28,12 @@ from chess_sim.data.structural_mask import StructuralMaskBuilder
 from chess_sim.model.chess_model import ChessModel
 from chess_sim.protocols import StructuralMaskable
 from chess_sim.tracking.noop_tracker import NoOpTracker
-from chess_sim.types import OfflinePlyTuple
 from chess_sim.tracking.protocol import MetricTracker
 from chess_sim.training.pgn_replayer import PGNReplayer
 from chess_sim.training.pgn_rl_reward_computer import (
     PGNRLRewardComputer,
 )
+from chess_sim.types import OfflinePlyTuple
 
 logger = logging.getLogger(__name__)
 

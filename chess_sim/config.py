@@ -473,6 +473,7 @@ class RLConfig:
     loser_ply_weight: float = 0.1
     use_structural_mask: bool = False
     max_plies_per_game: int = 150
+    rsce_r_ref: float = 0.0
 
     def __post_init__(self) -> None:
         """Validate RL hyperparameter ranges."""

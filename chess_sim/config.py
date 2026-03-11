@@ -472,9 +472,15 @@ class RLConfig:
     balance_outcomes: bool = True
     loser_ply_weight: float = 0.1
     use_structural_mask: bool = False
+    max_plies_per_game: int = 150
 
     def __post_init__(self) -> None:
         """Validate RL hyperparameter ranges."""
+        if self.max_plies_per_game < 1:
+            raise ValueError(
+                "max_plies_per_game must be >= 1, "
+                f"got {self.max_plies_per_game}"
+            )
         if self.train_color not in ("white", "black"):
             raise ValueError(
                 "train_color must be 'white' or 'black'"

@@ -43,6 +43,7 @@ rl:
   lambda_value:         0.1
   value_lr_multiplier:  1.0
   balance_outcomes:     true
+  max_plies_per_game:   150
 
 aim:
   enabled:           true

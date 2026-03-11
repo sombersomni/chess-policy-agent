@@ -28,6 +28,7 @@ from chess_sim.data.structural_mask import StructuralMaskBuilder
 from chess_sim.model.chess_model import ChessModel
 from chess_sim.protocols import StructuralMaskable
 from chess_sim.tracking.noop_tracker import NoOpTracker
+from chess_sim.types import OfflinePlyTuple
 from chess_sim.tracking.protocol import MetricTracker
 from chess_sim.training.pgn_replayer import PGNReplayer
 from chess_sim.training.pgn_rl_reward_computer import (
@@ -272,6 +273,115 @@ class PGNRLTrainer:
             move_idx = None
         return (last_logits, enc_out.cls_embedding, move_idx)
 
+    def _pad_prefixes(
+        self,
+        prefixes: list[Tensor],
+    ) -> tuple[Tensor, Tensor]:
+        """Pad variable-length prefix tensors to a common max length.
+
+        Returns zero-padded tensor and a boolean mask where True = PAD.
+
+        Args:
+            prefixes: List of T 1-D long tensors, each [L_i].
+
+        Returns:
+            Tuple of (padded [T, max_len] long, mask [T, max_len] bool).
+        """
+        max_len = max(p.size(0) for p in prefixes)
+        T = len(prefixes)
+        padded = torch.zeros(
+            T, max_len, dtype=torch.long, device=self._device,
+        )
+        for i, p in enumerate(prefixes):
+            padded[i, : p.size(0)] = p.to(self._device)
+        # True where value is 0 (PAD) after filling real values
+        mask = padded == 0
+        # Un-mask real zeros: positions within prefix length are real
+        for i, p in enumerate(prefixes):
+            mask[i, : p.size(0)] = False
+        return padded, mask
+
+    def _encode_and_decode_batch(
+        self,
+        plies: list[OfflinePlyTuple],
+        move_ucis: list[str],
+    ) -> tuple[Tensor, Tensor, list[int | None]]:
+        """Batched encode-decode over all T plies of one game.
+
+        Executes a single encoder call and a single decoder call,
+        then extracts per-ply last logits via prefix-length indexing.
+
+        Args:
+            plies: T OfflinePlyTuples from one game.
+            move_ucis: T UCI strings, aligned with plies.
+
+        Returns:
+            Tuple of (last_logits [T, vocab], cls [T, d_model],
+            move_idxs list[int | None] of length T).
+        """
+        # Step 1: resolve move UCIs to vocab indices
+        move_idxs: list[int | None] = []
+        for uci in move_ucis:
+            try:
+                move_idxs.append(
+                    self._move_tok.tokenize_move(uci)
+                )
+            except KeyError:
+                move_idxs.append(None)
+
+        # Step 2: stack board/color/traj tokens -> [T, 65]
+        bt = torch.stack(
+            [p.board_tokens for p in plies]
+        ).to(self._device)
+        ct = torch.stack(
+            [p.color_tokens for p in plies]
+        ).to(self._device)
+        tt = torch.stack(
+            [p.traj_tokens for p in plies]
+        ).to(self._device)
+
+        # Step 3: pad prefixes -> [T, max_len], mask [T, max_len]
+        padded, mask = self._pad_prefixes(
+            [p.move_prefix for p in plies]
+        )
+
+        # Step 4: single batched encoder call
+        enc_out = self._model.encoder.encode(bt, ct, tt)
+
+        # Step 5: build memory = [CLS, squares] -> [T, 65, d]
+        memory = torch.cat(
+            [
+                enc_out.cls_embedding.unsqueeze(1),
+                enc_out.square_embeddings,
+            ],
+            dim=1,
+        )
+
+        # Step 6: single batched decoder call
+        dec_out = self._model.decoder.decode(
+            padded, memory, mask
+        )
+
+        # Step 7: compute prefix lengths
+        prefix_lens: list[int] = [
+            p.move_prefix.size(0) for p in plies
+        ]
+
+        # Step 8: extract last valid logit per ply
+        # logits[i, prefix_lens[i]-1, :] is the prediction
+        # at the last real (non-PAD) position for ply i
+        last_logits = torch.stack([
+            dec_out.logits[i, prefix_lens[i] - 1, :]
+            for i in range(len(plies))
+        ])  # [T, vocab]
+
+        # Step 9: return batched results
+        return (
+            last_logits,
+            enc_out.cls_embedding,
+            move_idxs,
+        )
+
     @property
     def model(self) -> ChessModel:
         """Expose the underlying ChessModel."""
@@ -404,6 +514,11 @@ class PGNRLTrainer:
         ]
         if not plies:
             return {}
+
+        # VRAM guard: skip unusually long games
+        if len(plies) > self._cfg.rl.max_plies_per_game:
+            return {}
+
         board_snaps = self._build_board_snapshots(
             game, train_white
         )
@@ -413,71 +528,38 @@ class PGNRLTrainer:
         )
         self._model.train()
 
-        q_preds: list[Tensor] = []
-        all_logits: list[Tensor] = []
-        all_targets: list[int] = []
-        all_color_tokens: list[Tensor] = []
-        valid_reward_idxs: list[int] = []
+        # Single batched forward pass for all plies
+        last_logits_all, cls_all, move_idxs = (
+            self._encode_and_decode_batch(
+                plies, [p.move_uci for p in plies]
+            )
+        )
 
-        for i, ply in enumerate(plies):
-            self._ply_step += 1
+        # Bulk increment ply counter before snapshot logging
+        self._ply_step += len(plies)
 
-            bt = ply.board_tokens.unsqueeze(0).to(
-                self._device
-            )
-            ct = ply.color_tokens.unsqueeze(0).to(
-                self._device
-            )
-            tt = ply.traj_tokens.unsqueeze(0).to(
-                self._device
-            )
-            prefix = ply.move_prefix.unsqueeze(0).to(
-                self._device
-            )
-
-            last_logits, cls, move_idx = (
-                self._encode_and_decode(
-                    bt, ct, tt, prefix, ply.move_uci
-                )
-            )
-            if i < len(board_snaps):
+        # Board snapshot logging with offset-based cadence
+        base_step = self._ply_step - len(plies)
+        for j, snap in enumerate(board_snaps):
+            local_step = base_step + j + 1
+            if local_step % 100 == 0:
                 self._log_board_snapshot(
-                    board_snaps[i],
-                    ply.move_uci,
+                    snap,
+                    plies[j].move_uci,
                     game_idx,
-                    is_winner_ply=ply.is_winner_ply,
-                    reward=float(rewards[i]),
-                    last_logits=last_logits,
-                    move_idx=move_idx,
+                    is_winner_ply=plies[j].is_winner_ply,
+                    reward=float(rewards[j]),
+                    last_logits=last_logits_all[j],
+                    move_idx=move_idxs[j],
                 )
-            if move_idx is None:
-                continue
 
-            # Look up action embedding from shared token table
-            midx_t = torch.tensor(
-                [move_idx],
-                dtype=torch.long,
-                device=self._device,
-            )
-            action_emb: Tensor = (
-                self._model.move_token_emb(midx_t)
-            )  # [1, d_model]
-            # detach: value MSE must not train token_emb
-            # via Q-head path; CE trains token_emb separately
-            action_emb = action_emb.detach()
+        # Filter to valid (non-OOV) plies
+        valid_mask: list[int] = [
+            i for i, idx in enumerate(move_idxs)
+            if idx is not None
+        ]
 
-            # detach cls: value MSE must not reshape encoder
-            q_t: Tensor = self._model.value_head(
-                cls.detach(), action_emb
-            )  # [1, 1]
-            q_preds.append(q_t.squeeze())  # scalar
-
-            all_logits.append(last_logits)
-            all_targets.append(move_idx)
-            all_color_tokens.append(ct.squeeze(0))  # [65]
-            valid_reward_idxs.append(i)
-
-        if not all_logits:
+        if not valid_mask:
             return {}
 
         valid_rewards = rewards[valid_reward_idxs].to(

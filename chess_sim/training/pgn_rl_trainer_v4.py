@@ -63,7 +63,72 @@ def rsce_dual_loss(
         >>> m["frac_repulsion"]
         0.5
     """
-    raise NotImplementedError("rsce_dual_loss")
+    b = logits.size(0)
+    if b == 0:
+        return (
+            torch.tensor(0.0, requires_grad=True),
+            {
+                "loss_imitation": 0.0,
+                "loss_repulsion": 0.0,
+                "frac_repulsion": 0.0,
+            },
+        )
+
+    # Imitation branch: standard cross-entropy
+    ce_loss = F.cross_entropy(
+        logits, targets,
+        reduction="none",
+        label_smoothing=label_smoothing,
+    )
+
+    # Repulsion branch: -log(1 - p_played)
+    probs = torch.softmax(logits, dim=-1)
+    p_played = probs.gather(
+        1, targets.unsqueeze(1)
+    ).squeeze(1)
+    p_played = p_played.clamp(max=1.0 - 1e-6)
+    repulsion_loss = -torch.log(1.0 - p_played)
+
+    # Branch masks
+    imit_mask = (loss_modes == 1).float()
+    repul_mask = (loss_modes == -1).float()
+
+    # Combine per-sample loss
+    per_sample = (
+        imit_mask * ce_loss
+        + repul_mask * repulsion_weight * repulsion_loss
+    )
+
+    # Weighted mean
+    loss = (multipliers * per_sample).mean()
+
+    # Branch metrics
+    with torch.no_grad():
+        imit_bool = loss_modes == 1
+        repul_bool = loss_modes == -1
+        weighted_ce = multipliers * ce_loss
+        weighted_rep = (
+            multipliers * repulsion_weight * repulsion_loss
+        )
+
+        loss_imit = (
+            float(weighted_ce[imit_bool].mean().item())
+            if imit_bool.any() else 0.0
+        )
+        loss_repul = (
+            float(weighted_rep[repul_bool].mean().item())
+            if repul_bool.any() else 0.0
+        )
+        frac_repul = float(repul_mask.mean().item())
+
+    return (
+        loss,
+        {
+            "loss_imitation": loss_imit,
+            "loss_repulsion": loss_repul,
+            "frac_repulsion": frac_repul,
+        },
+    )
 
 
 class PGNRLTrainerV4:
@@ -332,6 +397,8 @@ class PGNRLTrainerV4:
         total_ce = 0.0
         correct = 0
         total = 0
+        repul_correct = 0
+        repul_total = 0
         # Stratified: {outcome_val: [n_correct, n_total]}
         strat: dict[int, list[int]] = {
             1: [0, 0], 0: [0, 0], -1: [0, 0]
@@ -396,6 +463,22 @@ class PGNRLTrainerV4:
                 )
                 strat[o][1] += int(omask.sum().item())
 
+            # Repulsion avoidance: fraction of
+            # loss_mode=-1 where top-1 != target
+            lm_cpu = _loss_modes.cpu()
+            repul_mask = lm_cpu == -1
+            if repul_mask.any():
+                avoided = (
+                    preds.cpu()[repul_mask]
+                    != targets.cpu()[repul_mask]
+                )
+                repul_correct += int(
+                    avoided.sum().item()
+                )
+                repul_total += int(
+                    repul_mask.sum().item()
+                )
+
         denom = max(total, 1)
         return {
             "val_loss": total_ce / denom,
@@ -413,9 +496,9 @@ class PGNRLTrainerV4:
                 strat[-1][0] / strat[-1][1]
                 if strat[-1][1] > 0 else 0.0
             ),
-            # TODO: compute actual repulsion avoidance
-            # from loss_mode=-1 samples.
-            "repulsion_top1_avoidance": 0.0,
+            "repulsion_top1_avoidance": (
+                repul_correct / max(repul_total, 1)
+            ),
         }
 
     def save_checkpoint(self, path: Path) -> None:
@@ -501,6 +584,34 @@ class PGNRLTrainerV4:
             pin_memory=(str(self._device) != "cpu"),
         )
 
+    def _effective_repulsion_weight(self) -> float:
+        """Compute effective repulsion weight with warmup ramp.
+
+        Linearly ramps from 0 to rsce_repulsion_weight over
+        the first rsce_repulsion_warmup fraction of total steps.
+
+        Returns:
+            Effective repulsion weight at current global step.
+
+        Example:
+            >>> trainer._effective_repulsion_weight()
+            0.5
+        """
+        base_w = self._cfg.rl.rsce_repulsion_weight
+        warmup_frac = self._cfg.rl.rsce_repulsion_warmup
+        if warmup_frac <= 0.0:
+            return base_w
+        warmup_steps = int(
+            warmup_frac * self._total_steps
+        )
+        if warmup_steps <= 0:
+            return base_w
+        if self._global_step >= warmup_steps:
+            return base_w
+        return base_w * (
+            self._global_step / warmup_steps
+        )
+
     def _train_step(
         self,
         board: Tensor,
@@ -561,17 +672,15 @@ class PGNRLTrainerV4:
                 ~smask, float("-inf")
             )
 
-        # TODO: call rsce_dual_loss instead of plain CE
-        # to bifurcate into imitation + repulsion branches,
-        # using loss_modes to route each sample.
-        per_ce = F.cross_entropy(
-            last_logits,
-            targets,
-            reduction="none",
-            label_smoothing=self._cfg.rl.label_smoothing,
+        eff_w = self._effective_repulsion_weight()
+        loss, branch_metrics = rsce_dual_loss(
+            last_logits, targets, multipliers,
+            loss_modes,
+            repulsion_weight=eff_w,
+            label_smoothing=(
+                self._cfg.rl.label_smoothing
+            ),
         )
-
-        loss = (multipliers * per_ce).mean()
 
         self._opt.zero_grad()
         loss.backward()
@@ -602,7 +711,13 @@ class PGNRLTrainerV4:
             "mean_entropy": entropy.item(),
             "mean_multiplier": multipliers.mean().item(),
             "grad_norm": grad_norm,
-            "loss_imitation": 0.0,
-            "loss_repulsion": 0.0,
-            "frac_repulsion": 0.0,
+            "loss_imitation": branch_metrics[
+                "loss_imitation"
+            ],
+            "loss_repulsion": branch_metrics[
+                "loss_repulsion"
+            ],
+            "frac_repulsion": branch_metrics[
+                "frac_repulsion"
+            ],
         }

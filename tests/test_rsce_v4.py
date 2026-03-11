@@ -788,36 +788,139 @@ class TestRSCEDualLoss(unittest.TestCase):
         self,
     ) -> None:
         """Preprocessor stores correct loss_mode per outcome."""
-        # Stub: will be filled in by feature-dev
-        # After generate(), winner plies -> loss_mode=+1,
-        # loser plies -> loss_mode=-1,
-        # draw plies -> loss_mode=+1
-        # (draw_reward_norm=0.5 > r_ref=0.0)
-        pass  # TODO: implement after preprocessor changes
+        with tempfile.TemporaryDirectory() as td:
+            pgn_path = Path(td) / "games.pgn"
+            _make_minimal_pgn(pgn_path)
+            hdf5_path = Path(td) / "out.h5"
+
+            cfg = _make_cfg(
+                draw_reward_norm=0.5,
+                rsce_r_ref=0.0,
+            )
+            pp = PGNRewardPreprocessor(cfg)
+            pp.generate(
+                pgn_path, hdf5_path, max_games=3
+            )
+
+            with h5py.File(hdf5_path, "r") as hf:
+                outcomes = hf["outcome"][:]
+                loss_modes = hf["loss_mode"][:]
+
+                # Winners -> imitation (+1)
+                winner_mask = outcomes == 1
+                if winner_mask.any():
+                    self.assertTrue(
+                        (loss_modes[winner_mask] == 1)
+                        .all()
+                    )
+                # Losers -> repulsion (-1)
+                loser_mask = outcomes == -1
+                if loser_mask.any():
+                    self.assertTrue(
+                        (loss_modes[loser_mask] == -1)
+                        .all()
+                    )
+                # Draws -> imitation (+1)
+                # (draw_reward_norm=0.5 > r_ref=0.0)
+                draw_mask = outcomes == 0
+                if draw_mask.any():
+                    self.assertTrue(
+                        (loss_modes[draw_mask] == 1)
+                        .all()
+                    )
 
     def test_tc22_preprocessor_multiplier_sign(
         self,
     ) -> None:
         """Preprocessor stores corrected multiplier sign."""
-        # Stub: will be filled in by feature-dev
-        pass  # TODO: implement after preprocessor changes
+        with tempfile.TemporaryDirectory() as td:
+            pgn_path = Path(td) / "games.pgn"
+            _make_minimal_pgn(pgn_path)
+            hdf5_path = Path(td) / "out.h5"
+
+            cfg = _make_cfg(
+                rsbc_normalize_per_game=False,
+                rsce_r_ref=0.0,
+            )
+            pp = PGNRewardPreprocessor(cfg)
+            pp.generate(
+                pgn_path, hdf5_path, max_games=3
+            )
+
+            with h5py.File(hdf5_path, "r") as hf:
+                mults = hf["multiplier"][:]
+                outcomes = hf["outcome"][:]
+
+                # With exp(+(R - r_ref)):
+                # Winner plies (R > 0) -> m > 1
+                winner_mask = outcomes == 1
+                if winner_mask.any():
+                    self.assertTrue(
+                        (mults[winner_mask] > 1.0)
+                        .all(),
+                        "Winner multipliers should "
+                        "be > 1.0 after sign flip",
+                    )
+                # Loser plies (R < 0) -> m < 1
+                loser_mask = outcomes == -1
+                if loser_mask.any():
+                    self.assertTrue(
+                        (mults[loser_mask] < 1.0)
+                        .all(),
+                        "Loser multipliers should "
+                        "be < 1.0 after sign flip",
+                    )
 
     def test_tc23_warmup_step_zero(self) -> None:
         """warmup>0 at step 0: effective repul weight 0."""
-        # Stub: check _effective_repulsion_weight(0)
-        pass  # TODO: implement after trainer changes
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            PGNRLTrainerV4,
+        )
+        cfg = _make_cfg(
+            rsce_repulsion_weight=2.0,
+            rsce_repulsion_warmup=0.2,
+        )
+        trainer = PGNRLTrainerV4(
+            cfg, device="cpu", total_steps=100
+        )
+        trainer._global_step = 0
+        eff_w = trainer._effective_repulsion_weight()
+        self.assertAlmostEqual(eff_w, 0.0)
 
     def test_tc24_warmup_at_warmup_steps(
         self,
     ) -> None:
         """At step=warmup_steps, full weight applies."""
-        # Stub: check _effective_repulsion_weight
-        pass  # TODO: implement after trainer changes
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            PGNRLTrainerV4,
+        )
+        cfg = _make_cfg(
+            rsce_repulsion_weight=2.0,
+            rsce_repulsion_warmup=0.2,
+        )
+        trainer = PGNRLTrainerV4(
+            cfg, device="cpu", total_steps=100
+        )
+        # warmup_steps = 0.2 * 100 = 20
+        trainer._global_step = 20
+        eff_w = trainer._effective_repulsion_weight()
+        self.assertAlmostEqual(eff_w, 2.0)
 
     def test_tc25_warmup_disabled(self) -> None:
         """warmup=0 gives full weight at all steps."""
-        # Stub: check _effective_repulsion_weight(0)
-        pass  # TODO: implement after trainer changes
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            PGNRLTrainerV4,
+        )
+        cfg = _make_cfg(
+            rsce_repulsion_weight=2.0,
+            rsce_repulsion_warmup=0.0,
+        )
+        trainer = PGNRLTrainerV4(
+            cfg, device="cpu", total_steps=100
+        )
+        trainer._global_step = 0
+        eff_w = trainer._effective_repulsion_weight()
+        self.assertAlmostEqual(eff_w, 2.0)
 
     def test_tc26_config_negative_repulsion_weight(
         self,
@@ -835,8 +938,32 @@ class TestRSCEDualLoss(unittest.TestCase):
         self,
     ) -> None:
         """evaluate returns repul_top1_avoidance in [0,1]."""
-        # Stub: run evaluate() on synthetic HDF5
-        pass  # TODO: implement after trainer changes
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            PGNRLTrainerV4,
+        )
+        cfg = _make_cfg()
+        trainer = PGNRLTrainerV4(
+            cfg, device="cpu", total_steps=100
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "data.h5"
+            _write_synthetic_hdf5(
+                path, n_rows=20, n_games=2
+            )
+            ds = ChessRLDataset(
+                path,
+                val_split_fraction=0.5,
+                split="val",
+            )
+            try:
+                metrics = trainer.evaluate(ds)
+                avoidance = metrics[
+                    "repulsion_top1_avoidance"
+                ]
+                self.assertGreaterEqual(avoidance, 0.0)
+                self.assertLessEqual(avoidance, 1.0)
+            finally:
+                ds.close()
 
     def test_tc29_synthetic_hdf5_has_loss_mode(
         self,

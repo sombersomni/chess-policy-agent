@@ -201,13 +201,20 @@ class PGNRewardPreprocessor:
                     plies, rl
                 )
 
-                # RSCE multipliers: m = exp(-(R - r_ref))
+                # RSCE multipliers: m = exp(+(R - r_ref))
                 m = torch.exp(
-                    -(rewards - rl.rsce_r_ref)
+                    rewards - rl.rsce_r_ref
                 )
-                # TODO: compute loss_mode per ply:
-                # loss_mode = +1 if R(t) >= r_ref else -1
-                # Use rl.rsce_r_ref as the threshold.
+                # loss_mode: +1 imitation, -1 repulsion
+                loss_mode_vals = torch.where(
+                    rewards >= rl.rsce_r_ref,
+                    torch.ones_like(
+                        rewards, dtype=torch.int8
+                    ),
+                    -torch.ones_like(
+                        rewards, dtype=torch.int8
+                    ),
+                )
                 if rl.rsbc_normalize_per_game:
                     n = m.size(0)
                     m = m * n / m.sum().clamp(min=1e-8)
@@ -241,10 +248,8 @@ class PGNRewardPreprocessor:
                         .astype(np.int8)
                     )
 
-                    # TODO: derive loss_mode from reward
-                    # vs r_ref; stub uses outcome sign.
-                    _loss_mode = (
-                        1 if outcome >= 0 else -1
+                    _loss_mode = int(
+                        loss_mode_vals[ply_i]
                     )
 
                     rows.append(RLRewardRow(

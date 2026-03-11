@@ -21,6 +21,36 @@ from chess_sim.types import OfflinePlyTuple
 
 logger = logging.getLogger(__name__)
 
+# Standard piece values for material evaluation.
+_PIECE_VALUES: dict[chess.PieceType, float] = {
+    chess.PAWN: 1.0,
+    chess.KNIGHT: 3.0,
+    chess.BISHOP: 3.0,
+    chess.ROOK: 5.0,
+    chess.QUEEN: 9.0,
+    chess.KING: 0.0,
+}
+
+
+def _material_of(
+    board: chess.Board, color: chess.Color,
+) -> float:
+    """Sum of piece values for color on board.
+
+    Args:
+        board: Current board state.
+        color: chess.WHITE or chess.BLACK.
+
+    Returns:
+        Total material value for the given color.
+
+    Example:
+        >>> _material_of(chess.Board(), chess.WHITE)
+        39.0
+    """
+    raise NotImplementedError("To be implemented")
+
+
 # Result header -> (white_wins, black_wins) mapping
 _RESULT_MAP: dict[str, tuple[bool, bool]] = {
     "1-0": (True, False),
@@ -64,12 +94,27 @@ class PGNReplayer:
         board = game.board()
         move_history: list[chess.Move] = []
         plies: list[OfflinePlyTuple] = []
+        last_material: dict[chess.Color, float | None] = {
+            chess.WHITE: None,
+            chess.BLACK: None,
+        }
 
         for move in game.mainline_moves():
             is_white_ply = board.turn == chess.WHITE
             is_winner = (
                 white_wins if is_white_ply else black_wins
             )
+            side = board.turn
+
+            # Material delta: current minus last (0 if first)
+            cur_mat = _material_of(board, side)
+            prev_mat = last_material[side]
+            delta = (
+                cur_mat - prev_mat
+                if prev_mat is not None
+                else 0.0
+            )
+            last_material[side] = cur_mat
 
             # Tokenize board BEFORE push
             tb = self._board_tok.tokenize(board, board.turn)
@@ -98,6 +143,7 @@ class PGNReplayer:
                 is_winner_ply=is_winner,
                 is_white_ply=is_white_ply,
                 is_draw_ply=is_draw,
+                material_delta=delta,
             ))
             move_history.append(move)
 

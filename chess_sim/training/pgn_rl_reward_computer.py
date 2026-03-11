@@ -1,12 +1,10 @@
-"""PGNRLRewardComputer: converts offline ply tuples into reward tensors.
+"""PGNRLRewardComputer: composite reward from outcome sign + material delta.
 
-Implements the OfflineComputable protocol. Pure temporal discount:
-last ply gets gamma^0=1.0, first ply gets the largest discount.
-Outcome: win_reward / draw_reward / loss_reward per ply type.
+R(t) = lambda_outcome * sign_outcome(t) + lambda_material * material_delta(t)
+where sign_outcome = +1.0 (winner), -1.0 (loser), draw_reward_norm (draw).
 """
 from __future__ import annotations
 
-import torch
 from torch import Tensor
 
 from chess_sim.config import RLConfig
@@ -18,8 +16,11 @@ class PGNRLRewardComputer:
 
     Implements the OfflineComputable protocol.
 
-    R(t) = base_outcome * gamma^(T-1-t)
-    where base_outcome is draw_reward, win_reward, or loss_reward.
+    R(t) = lambda_outcome * sign_outcome(t)
+         + lambda_material * material_delta(t)
+
+    where sign_outcome is +1.0 (winner), -1.0 (loser),
+    or draw_reward_norm (draw).
     """
 
     def compute(
@@ -29,28 +30,23 @@ class PGNRLRewardComputer:
     ) -> Tensor:
         """Return reward tensor of shape [T], one value per ply.
 
+        Composite formula:
+        R(t) = lambda_outcome * sign_outcome(t)
+             + lambda_material * material_delta(t)
+        where sign_outcome = +1.0 (winner), -1.0 (loser),
+        draw_reward_norm (draw).
+
         Args:
             plies: List of OfflinePlyTuple from PGNReplayer.
-            cfg: RLConfig with gamma and reward values.
+            cfg: RLConfig with lambda_outcome, lambda_material,
+                and draw_reward_norm.
 
         Returns:
-            FloatTensor of shape [T] with temporally discounted rewards.
-        """
-        T = len(plies)
-        if T == 0:
-            return torch.zeros(0)
+            FloatTensor of shape [T] with composite rewards.
 
-        return torch.tensor(
-            [
-                (
-                    cfg.draw_reward
-                    if p.is_draw_ply
-                    else cfg.win_reward
-                    if p.is_winner_ply
-                    else cfg.loss_reward
-                )
-                * (cfg.gamma ** (T - 1 - t))
-                for t, p in enumerate(plies)
-            ],
-            dtype=torch.float32,
-        )
+        Example:
+            >>> r = PGNRLRewardComputer().compute(plies, cfg)
+            >>> r.shape
+            torch.Size([10])
+        """
+        raise NotImplementedError("To be implemented")

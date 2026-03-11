@@ -189,6 +189,47 @@ class TestTrainerConfig(unittest.TestCase):
             load_v2_config(tmp)
 
 
+class TestRLConfigCompositeReward(unittest.TestCase):
+    """Tests for RLConfig composite reward fields."""
+
+    def test_lambda_outcome_default(self) -> None:
+        """lambda_outcome defaults to 1.0."""
+        from chess_sim.config import RLConfig
+        self.assertEqual(RLConfig().lambda_outcome, 1.0)
+
+    def test_lambda_material_default(self) -> None:
+        """lambda_material defaults to 0.1."""
+        from chess_sim.config import RLConfig
+        self.assertEqual(RLConfig().lambda_material, 0.1)
+
+    def test_draw_reward_norm_default(self) -> None:
+        """draw_reward_norm defaults to 0.0."""
+        from chess_sim.config import RLConfig
+        self.assertEqual(RLConfig().draw_reward_norm, 0.0)
+
+    def test_lambda_outcome_negative_raises(self) -> None:
+        """T-CR11: lambda_outcome < 0 raises ValueError."""
+        from chess_sim.config import RLConfig
+        with self.assertRaises(ValueError):
+            RLConfig(lambda_outcome=-0.1)
+
+    def test_lambda_material_negative_raises(self) -> None:
+        """T-CR12: lambda_material < 0 raises ValueError."""
+        from chess_sim.config import RLConfig
+        with self.assertRaises(ValueError):
+            RLConfig(lambda_material=-0.5)
+
+    def test_draw_reward_norm_out_of_range_raises(
+        self,
+    ) -> None:
+        """T-CR13: draw_reward_norm outside [-1, 1] raises."""
+        from chess_sim.config import RLConfig
+        with self.assertRaises(ValueError):
+            RLConfig(draw_reward_norm=1.5)
+        with self.assertRaises(ValueError):
+            RLConfig(draw_reward_norm=-1.5)
+
+
 class TestRLConfigRSBC(unittest.TestCase):
     """Tests for RLConfig RSBC fields."""
 

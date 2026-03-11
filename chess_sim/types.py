@@ -232,7 +232,8 @@ class OfflinePlyTuple(NamedTuple):
     move_uci: str
     is_winner_ply: bool        # True = positive reward side
     is_white_ply: bool         # True when white is side-to-move
-    is_draw_ply: bool = False  # True for all plies in a drawn game
+    is_draw_ply: bool          # True for all plies in a drawn game
+    material_delta: float      # net material gain since last ply
 
 
 class PlyTuple(NamedTuple):

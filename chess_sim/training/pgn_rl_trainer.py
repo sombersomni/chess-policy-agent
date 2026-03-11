@@ -23,7 +23,6 @@ from torch import Tensor
 from chess_sim.config import PGNRLConfig
 from chess_sim.data.move_tokenizer import MoveTokenizer
 from chess_sim.data.move_vocab import MoveVocab
-from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.model.chess_model import ChessModel
 from chess_sim.tracking.noop_tracker import NoOpTracker
 from chess_sim.tracking.protocol import MetricTracker
@@ -31,7 +30,6 @@ from chess_sim.training.pgn_replayer import PGNReplayer
 from chess_sim.training.pgn_rl_reward_computer import (
     PGNRLRewardComputer,
 )
-from chess_sim.training.phase2_trainer import _make_trajectory_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -507,11 +505,6 @@ class PGNRLTrainer:
                     "std_advantage": metrics[
                         "std_advantage"
                     ],
-                    # deprecated — backward compat
-                    "pg_loss": 0.0,
-                    "ce_loss": 0.0,
-                    "awbc_loss": 0.0,
-                    "entropy_bonus": 0.0,
                 },
                 step=self._global_step,
             )
@@ -643,66 +636,29 @@ class PGNRLTrainer:
             return []
 
         game = games[0]
-        result = game.headers.get("Result", "*")
-        _RESULT_MAP = {
-            "1-0": (True, False),
-            "0-1": (False, True),
-            "1/2-1/2": (True, True),
-        }
-        if result not in _RESULT_MAP:
-            return []
-
-        white_wins, black_wins = _RESULT_MAP[result]
-        is_draw = white_wins and black_wins
-        board_tok = BoardTokenizer()
-        move_tok = MoveTokenizer()
         vocab = MoveVocab()
 
-        # Collect all (board_snapshot, ply_tuple) pairs
+        # Replay via shared replayer and compute rewards via
+        # shared reward function — no inline reimplementation.
+        all_plies = self._replayer.replay(game)
+        if not all_plies:
+            return []
+        rewards = self._reward_fn.compute(
+            all_plies, self._cfg.rl
+        )
+
+        # Build (board_snapshot, ply, reward) triples by
+        # re-walking the mainline to capture board copies.
         board = game.board()
-        move_history: list[chess.Move] = []
-        snapshots: list[tuple[chess.Board, object]] = []
-        T = sum(1 for _ in game.mainline_moves())
-
-        for move in game.mainline_moves():
-            is_white = board.turn == chess.WHITE
-            is_winner = white_wins if is_white else black_wins
-
+        snapshots: list[
+            tuple[chess.Board, object, float]
+        ] = []
+        for i, move in enumerate(game.mainline_moves()):
             board_copy = board.copy()
-            tb = board_tok.tokenize(board, board.turn)
-            bt = torch.tensor(tb.board_tokens, dtype=torch.long)
-            ct = torch.tensor(tb.color_tokens, dtype=torch.long)
-            traj = _make_trajectory_tokens(move_history)
-            tt = torch.tensor(traj, dtype=torch.long)
-            prior = [m.uci() for m in move_history]
-            prefix_t = move_tok.tokenize_game(prior)[:-1]
-
             board.push(move)
-            reward_base = (
-                self._cfg.rl.draw_reward
-                if is_draw
-                else self._cfg.rl.win_reward
-                if is_winner
-                else self._cfg.rl.loss_reward
+            snapshots.append(
+                (board_copy, all_plies[i], float(rewards[i]))
             )
-            t = len(move_history)
-            reward = reward_base * (
-                self._cfg.rl.gamma ** max(T - 1 - t, 0)
-            )
-
-            from chess_sim.types import OfflinePlyTuple
-            ply = OfflinePlyTuple(
-                board_tokens=bt,
-                color_tokens=ct,
-                traj_tokens=tt,
-                move_prefix=prefix_t,
-                move_uci=move.uci(),
-                is_winner_ply=is_winner,
-                is_white_ply=is_white,
-                is_draw_ply=is_draw,
-            )
-            snapshots.append((board_copy, ply, float(reward)))
-            move_history.append(move)
 
         if not snapshots:
             return []

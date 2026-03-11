@@ -451,10 +451,9 @@ class RLConfig:
     skip_draws: bool = False
     checkpoint: str = ""
     resume: str = ""
-    gamma: float = 0.99
-    win_reward: float = 10.0
-    loss_reward: float = -10.0
-    draw_reward: float = 2.0
+    lambda_outcome: float = 1.0
+    lambda_material: float = 0.1
+    draw_reward_norm: float = 0.0
     lambda_ce: float = 0.0  # deprecated: use lambda_awbc
     lambda_value: float = 1.0
     lambda_awbc: float = 0.0  # deprecated: use lambda_rsbc
@@ -473,6 +472,21 @@ class RLConfig:
                 "train_color must be 'white' or 'black'"
                 f", got '{self.train_color}'"
             )
+        if self.lambda_outcome < 0:
+            raise ValueError(
+                "lambda_outcome must be >= 0, "
+                f"got {self.lambda_outcome}"
+            )
+        if self.lambda_material < 0:
+            raise ValueError(
+                "lambda_material must be >= 0, "
+                f"got {self.lambda_material}"
+            )
+        if not (-1.0 <= self.draw_reward_norm <= 1.0):
+            raise ValueError(
+                "draw_reward_norm must be in [-1, 1], "
+                f"got {self.draw_reward_norm}"
+            )
         if self.lambda_ce < 0:
             raise ValueError(
                 f"lambda_ce must be >= 0, got {self.lambda_ce}"
@@ -481,27 +495,6 @@ class RLConfig:
             raise ValueError(
                 f"lambda_value must be >= 0, "
                 f"got {self.lambda_value}"
-            )
-        if not (0 < self.gamma <= 1):
-            raise ValueError(
-                f"gamma must be in (0, 1], got {self.gamma}"
-            )
-        if self.win_reward <= 0:
-            raise ValueError(
-                f"win_reward must be > 0, got {self.win_reward}"
-            )
-        if self.loss_reward >= 0:
-            raise ValueError(
-                "loss_reward must be < 0, "
-                f"got {self.loss_reward}"
-            )
-        if not (
-            self.loss_reward < self.draw_reward < self.win_reward
-        ):
-            raise ValueError(
-                "draw_reward must satisfy "
-                "loss_reward < draw_reward < win_reward, "
-                f"got {self.draw_reward}"
             )
         if self.lambda_awbc < 0:
             raise ValueError(
@@ -562,8 +555,8 @@ def load_pgn_rl_config(path: Path) -> PGNRLConfig:
 
     Example:
         >>> cfg = load_pgn_rl_config(Path("configs/train_rl.yaml"))
-        >>> cfg.rl.gamma
-        0.99
+        >>> cfg.rl.lambda_outcome
+        1.0
     """
     raw: dict[str, Any] = (
         yaml.safe_load(path.read_text()) or {}

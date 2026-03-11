@@ -147,6 +147,12 @@ class RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]):
         is_white_ply = bool(grp["is_white_ply"][idx])
         is_draw_ply = bool(grp["is_draw_ply"][idx])
 
+        material_delta: float = float(
+            grp["material_delta"][idx]
+            if "material_delta" in grp
+            else 0.0
+        )
+
         return OfflinePlyTuple(
             board_tokens=board_tokens,
             color_tokens=color_tokens,
@@ -156,6 +162,7 @@ class RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]):
             is_winner_ply=is_winner_ply,
             is_white_ply=is_white_ply,
             is_draw_ply=is_draw_ply,
+            material_delta=material_delta,
         )
 
 

@@ -14,6 +14,18 @@ See [scaffolding-history.md](scaffolding-history.md) for all prior scaffolding d
 
 ---
 
+## Scaffolding Completed: AWBC Loss Redesign (2026-03-10)
+
+### Changes
+- `chess_sim/config.py` — `RLConfig` gains `lambda_awbc=1.0`, `lambda_entropy=0.0`, `awbc_eps=1e-8`; `lambda_ce` default `0.0` (deprecated); validation in `__post_init__`
+- `chess_sim/training/pgn_rl_trainer.py` — `train_game()`: `pg_loss+ce_loss` -> `awbc_loss+entropy_bonus`; removed `log_probs`; added `_compute_awbc_loss()` + `_compute_entropy_bonus()` stubs (NIE); `train_epoch()` accumulators updated; return dicts: `awbc_loss`/`entropy_bonus` + deprecated `pg_loss: 0.0`/`ce_loss: 0.0`
+- `configs/train_rl.yaml` + `configs/train_rl_10k.yaml` — new AWBC fields; `lambda_ce: 0.0`
+- `tests/test_trainer.py` — `TestPGNRLTrainerAWBC` (16 test stubs, all NIE)
+- `tests/test_pgn_rl_trainer.py` — T12 assertion updated `lambda_ce==0.5` -> `0.0`
+- Design doc at `docs/awbc_loss_redesign.md`
+
+---
+
 ## Scaffolding Completed: RL HDF5 Pipeline (2026-03-09)
 
 ### Module Layout

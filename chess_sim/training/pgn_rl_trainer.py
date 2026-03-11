@@ -823,7 +823,25 @@ class PGNRLTrainer:
             >>> loss = trainer._compute_awbc_loss(
             ...     logits, targets, adv)
         """
-        raise NotImplementedError
+        n: int = len(all_logits)
+        targets_t = torch.tensor(
+            all_targets,
+            dtype=torch.long,
+            device=self._device,
+        )
+        per_ply_ce: Tensor = F.cross_entropy(
+            torch.stack(all_logits),
+            targets_t,
+            label_smoothing=self._cfg.rl.label_smoothing,
+            reduction="none",
+        )  # [N]
+        weights_raw: Tensor = advantage.clamp(min=0.0)
+        weight_sum: Tensor = (
+            weights_raw.sum() + self._cfg.rl.awbc_eps
+        )
+        # normalize so mean weight ~ 1 over positive-adv plies
+        weights: Tensor = weights_raw / weight_sum * n
+        return (weights * per_ply_ce).mean()
 
     def _compute_entropy_bonus(
         self,
@@ -843,7 +861,20 @@ class PGNRLTrainer:
         Example:
             >>> ent = trainer._compute_entropy_bonus(logits)
         """
-        raise NotImplementedError
+        if self._cfg.rl.lambda_entropy == 0.0:
+            return torch.zeros(1, device=self._device)
+        logits_t: Tensor = torch.stack(all_logits)  # [N, V]
+        probs: Tensor = F.softmax(logits_t, dim=-1)
+        log_probs: Tensor = torch.log(
+            probs + self._cfg.rl.awbc_eps
+        )
+        entropy_per_ply: Tensor = -(probs * log_probs).sum(
+            dim=-1
+        )  # [N]
+        # Return negative mean entropy: minimizing total_loss
+        # (which adds lambda_entropy * bonus) then maximizes
+        # entropy, since d(total)/d(entropy) < 0.
+        return -entropy_per_ply.mean()
 
     def save_checkpoint(self, path: Path) -> None:
         """Save model, optimizer, and scheduler state.

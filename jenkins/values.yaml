@@ -1,0 +1,22 @@
+# ============================================================
+# Helm values for the Jenkins controller (jenkins/jenkins chart).
+#
+# Apply with:
+#   helm upgrade jenkins jenkins/jenkins \
+#     --namespace jenkins \
+#     --values jenkins/values.yaml
+#
+# After upgrade, the admin panel is permanently reachable at:
+#   http://10.0.0.130:30080
+#   http://10.0.0.169:30080  (either node)
+#
+# Retrieve the initial admin password:
+#   kubectl exec -n jenkins -it jenkins-0 -c jenkins -- \
+#     cat /var/jenkins_home/secrets/initialAdminPassword
+# ============================================================
+
+controller:
+  # Expose Jenkins on a fixed NodePort so the admin panel is always
+  # reachable via any cluster node without port-forwarding.
+  serviceType: NodePort
+  nodePort: 30080

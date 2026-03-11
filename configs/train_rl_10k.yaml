@@ -39,11 +39,11 @@ rl:
   awbc_eps:             1.0e-8
   label_smoothing:      0.1
   train_color:          white
-  lambda_value:         1.0
-  value_lr_multiplier:  5.0
+  lambda_value:         0.1
+  value_lr_multiplier:  1.0
 
 aim:
   enabled:           true
-  experiment_name:   chess_rl_10k
+  experiment_name:   chess_rl_10k_v2
   repo:              .aim
   log_every_n_steps: 10

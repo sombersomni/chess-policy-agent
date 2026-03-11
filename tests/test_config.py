@@ -189,5 +189,22 @@ class TestTrainerConfig(unittest.TestCase):
             load_v2_config(tmp)
 
 
+class TestRLConfigRSBC(unittest.TestCase):
+    """Tests for RLConfig RSBC fields."""
+
+    def test_lambda_rsbc_default_is_one(self) -> None:
+        self.skipTest("TODO: implement")
+
+    def test_lambda_rsbc_negative_raises_value_error(
+        self,
+    ) -> None:
+        self.skipTest("TODO: implement")
+
+    def test_rsbc_normalize_per_game_default_true(
+        self,
+    ) -> None:
+        self.skipTest("TODO: implement")
+
+
 if __name__ == "__main__":
     unittest.main()

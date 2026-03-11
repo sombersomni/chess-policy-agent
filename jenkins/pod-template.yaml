@@ -15,8 +15,8 @@
 #     --docker-password=$(gh auth token)
 #
 # The 'chess-sim' container runs the lint and test stages.
-# The default 'jnlp' sidecar (added automatically by the K8s plugin)
-# handles the Jenkins agent connection — no extra config needed.
+# The 'jnlp' sidecar is overridden here to give the JDK 21 JVM enough
+# memory — the default 256Mi is too tight and causes SIGTERM mid-build.
 # ============================================================
 
 apiVersion: v1
@@ -45,3 +45,12 @@ spec:
         limits:
           cpu: "4"
           memory: "8Gi"
+    - name: jnlp
+      # Override the default 256Mi — JDK 21 JVM needs more headroom.
+      resources:
+        requests:
+          cpu: "200m"
+          memory: "512Mi"
+        limits:
+          cpu: "500m"
+          memory: "1Gi"

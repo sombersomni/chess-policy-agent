@@ -13,6 +13,7 @@ HDF5 schema (datasets, all N-length along axis 0):
     game_id:      int32   (N,)       — source game index
     ply_idx:      int16   (N,)       — 0-indexed ply within game
     outcome:      int8    (N,)       — +1 / 0 / -1
+    loss_mode:    int8    (N,)       — +1 imitation / -1 repulsion
 """
 from __future__ import annotations
 
@@ -45,6 +46,7 @@ _DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
     "game_id": ("int32", ()),
     "ply_idx": ("int16", ()),
     "outcome": ("int8", ()),
+    "loss_mode": ("int8", ()),
 }
 
 
@@ -203,6 +205,9 @@ class PGNRewardPreprocessor:
                 m = torch.exp(
                     -(rewards - rl.rsce_r_ref)
                 )
+                # TODO: compute loss_mode per ply:
+                # loss_mode = +1 if R(t) >= r_ref else -1
+                # Use rl.rsce_r_ref as the threshold.
                 if rl.rsbc_normalize_per_game:
                     n = m.size(0)
                     m = m * n / m.sum().clamp(min=1e-8)
@@ -236,11 +241,18 @@ class PGNRewardPreprocessor:
                         .astype(np.int8)
                     )
 
+                    # TODO: derive loss_mode from reward
+                    # vs r_ref; stub uses outcome sign.
+                    _loss_mode = (
+                        1 if outcome >= 0 else -1
+                    )
+
                     rows.append(RLRewardRow(
                         board=board_enc.numpy(),
                         color_tokens=ct_np,
                         target_move=target_idx,
                         multiplier=float(m[ply_i]),
+                        loss_mode=_loss_mode,
                         game_id=game_idx,
                         ply_idx=ply_i,
                         outcome=outcome,
@@ -275,6 +287,9 @@ class PGNRewardPreprocessor:
             )
             hf.attrs["rsbc_normalize_per_game"] = (
                 rl.rsbc_normalize_per_game
+            )
+            hf.attrs["rsce_repulsion_weight"] = (
+                rl.rsce_repulsion_weight
             )
 
         logger.info(
@@ -328,6 +343,9 @@ class PGNRewardPreprocessor:
         )
         hf["outcome"][cursor:new_size] = np.array(
             [r.outcome for r in rows], dtype=np.int8
+        )
+        hf["loss_mode"][cursor:new_size] = np.array(
+            [r.loss_mode for r in rows], dtype=np.int8
         )
 
         return new_size
@@ -396,6 +414,12 @@ class PGNRewardPreprocessor:
                             "rsbc_normalize_per_game"
                         ),
                         rl.rsbc_normalize_per_game,
+                    ),
+                    (
+                        hf.attrs.get(
+                            "rsce_repulsion_weight"
+                        ),
+                        rl.rsce_repulsion_weight,
                     ),
                 ]
                 for stored, expected_val in checks:

@@ -1,7 +1,9 @@
 """ChessRLDataset: PyTorch Dataset wrapping a preprocessed RSCE HDF5 file.
 
-Returns (board [65,3], target_move, multiplier, color_tokens [65], outcome)
-per sample. Supports train/val splitting by game_id: the last
+Returns 6-tuple per sample:
+    (board [65,3], target_move, multiplier, color_tokens [65],
+     outcome, loss_mode)
+Supports train/val splitting by game_id: the last
 val_split_fraction of unique game_ids form the val set.
 
 The HDF5 file handle is opened lazily on first __getitem__ call
@@ -30,7 +32,7 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
 
     Example:
         >>> ds = ChessRLDataset(Path("data.h5"), split="train")
-        >>> board, target, mult, ct, outcome = ds[0]
+        >>> board, tgt, mult, ct, outcome, lm = ds[0]
         >>> board.shape
         torch.Size([65, 3])
     """
@@ -111,11 +113,12 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
 
     def __getitem__(
         self, idx: int,
-    ) -> tuple[Tensor, int, float, Tensor, int]:
-        """Return one sample: (board, target_move, mult, color_tokens, outcome).
+    ) -> tuple[Tensor, int, float, Tensor, int, int]:
+        """Return one sample as a 6-tuple.
 
-        Opens the HDF5 file lazily on first call. Maps the
-        split-local index to the global HDF5 row index.
+        Returns (board, target_move, multiplier, color_tokens,
+        outcome, loss_mode). Opens the HDF5 file lazily on
+        first call. Maps split-local index to global HDF5 row.
 
         Args:
             idx: Index into this split (0-based).
@@ -127,12 +130,13 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
                 multiplier: float (pre-normalized m_hat)
                 color_tokens: long tensor [65]
                 outcome: int (+1 winner, 0 draw, -1 loser)
+                loss_mode: int (+1 imitation, -1 repulsion)
 
         Raises:
             IndexError: If idx is out of range.
 
         Example:
-            >>> board, tgt, mult, ct, outcome = ds[0]
+            >>> board, tgt, mult, ct, out, lm = ds[0]
             >>> isinstance(mult, float)
             True
         """
@@ -162,8 +166,14 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
             dtype=torch.long,
         )
         outcome = int(self._h5["outcome"][global_idx])
+        loss_mode = int(
+            self._h5["loss_mode"][global_idx]
+        )
 
-        return board, target_move, multiplier, color_tokens, outcome
+        return (
+            board, target_move, multiplier,
+            color_tokens, outcome, loss_mode,
+        )
 
     @property
     def n_games(self) -> int:

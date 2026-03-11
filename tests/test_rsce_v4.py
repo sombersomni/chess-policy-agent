@@ -5,6 +5,8 @@ TC06-TC10: ChessRLDataset (len, getitem, splits, multipliers)
 TC11-TC13: PGNRLTrainerV4 (train_step, train_epoch, evaluate)
 TC14:      Checkpoint round-trip
 TC15:      Lazy HDF5 handle opening
+TC16-TC30: Dual-direction RSCE loss (rsce_dual_loss, config,
+           preprocessor loss_mode, warmup, evaluate avoidance)
 """
 from __future__ import annotations
 
@@ -80,7 +82,9 @@ def _write_synthetic_hdf5(
         hf.create_dataset("game_id", data=game_ids)
 
         ply_idx = np.tile(
-            np.arange(n_rows // n_games, dtype=np.int16),
+            np.arange(
+                n_rows // n_games, dtype=np.int16
+            ),
             n_games,
         )[:n_rows]
         hf.create_dataset("ply_idx", data=ply_idx)
@@ -90,12 +94,19 @@ def _write_synthetic_hdf5(
         ).astype(np.int8)
         hf.create_dataset("outcome", data=outcome)
 
+        # loss_mode: +1 for winners/draws, -1 for losers
+        loss_mode = np.where(
+            outcome >= 0, 1, -1
+        ).astype(np.int8)
+        hf.create_dataset("loss_mode", data=loss_mode)
+
 
 def _make_minimal_pgn(path: Path) -> None:
     """Write a tiny PGN file with 3 short games."""
     pgn = (
         '[Event "Test"]\n[Result "1-0"]\n\n'
-        "1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7# 1-0\n\n"
+        "1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 "
+        "4. Qxf7# 1-0\n\n"
         '[Event "Test"]\n[Result "0-1"]\n\n'
         "1. f3 e5 2. g4 Qh4# 0-1\n\n"
         '[Event "Test"]\n[Result "1/2-1/2"]\n\n'
@@ -142,7 +153,9 @@ def _make_cfg(**rl_overrides: object) -> PGNRLConfig:
 class TestPGNRewardPreprocessor(unittest.TestCase):
     """Tests for PGNRewardPreprocessor behavior."""
 
-    def test_tc01_checksum_deterministic(self) -> None:
+    def test_tc01_checksum_deterministic(
+        self,
+    ) -> None:
         """_compute_checksum returns same value for same inputs."""
         with tempfile.TemporaryDirectory() as td:
             pgn_path = Path(td) / "games.pgn"
@@ -170,7 +183,7 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
     def test_tc03_generate_creates_correct_datasets(
         self,
     ) -> None:
-        """generate() creates HDF5 with all 7 required datasets."""
+        """generate() creates HDF5 with all 8 required datasets."""
         with tempfile.TemporaryDirectory() as td:
             pgn_path = Path(td) / "games.pgn"
             _make_minimal_pgn(pgn_path)
@@ -191,6 +204,7 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
                 "game_id",
                 "ply_idx",
                 "outcome",
+                "loss_mode",
             }
             with h5py.File(hdf5_path, "r") as hf:
                 self.assertEqual(
@@ -214,11 +228,15 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
 
             cfg = _make_cfg()
             pp = PGNRewardPreprocessor(cfg)
-            pp.generate(pgn_path, hdf5_path, max_games=3)
+            pp.generate(
+                pgn_path, hdf5_path, max_games=3
+            )
             mtime1 = hdf5_path.stat().st_mtime
 
             # Second call should be a cache hit
-            pp.generate(pgn_path, hdf5_path, max_games=3)
+            pp.generate(
+                pgn_path, hdf5_path, max_games=3
+            )
             mtime2 = hdf5_path.stat().st_mtime
             self.assertEqual(mtime1, mtime2)
 
@@ -254,12 +272,16 @@ class TestChessRLDataset(unittest.TestCase):
         """__len__ returns correct count for train split."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
-            _write_synthetic_hdf5(path, n_rows=200, n_games=10)
+            _write_synthetic_hdf5(
+                path, n_rows=200, n_games=10
+            )
             ds = ChessRLDataset(
-                path, val_split_fraction=0.1, split="train"
+                path,
+                val_split_fraction=0.1,
+                split="train",
             )
             try:
-                # 10 games, val=last 1 game, train=9 games
+                # 10 games, val=last 1, train=9 games
                 # 9 games * 20 rows = 180
                 self.assertEqual(len(ds), 180)
             finally:
@@ -271,12 +293,18 @@ class TestChessRLDataset(unittest.TestCase):
         """__len__ returns correct count for val split."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
-            _write_synthetic_hdf5(path, n_rows=200, n_games=10)
+            _write_synthetic_hdf5(
+                path, n_rows=200, n_games=10
+            )
             train_ds = ChessRLDataset(
-                path, val_split_fraction=0.1, split="train"
+                path,
+                val_split_fraction=0.1,
+                split="train",
             )
             val_ds = ChessRLDataset(
-                path, val_split_fraction=0.1, split="val"
+                path,
+                val_split_fraction=0.1,
+                split="val",
             )
             try:
                 # Total must equal 200
@@ -288,24 +316,39 @@ class TestChessRLDataset(unittest.TestCase):
                 train_ds.close()
                 val_ds.close()
 
-    def test_tc08_getitem_shapes_and_types(self) -> None:
-        """__getitem__ returns correct shapes and types."""
+    def test_tc08_getitem_shapes_and_types(
+        self,
+    ) -> None:
+        """__getitem__ returns correct 6-tuple shapes."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
-            _write_synthetic_hdf5(path, n_rows=20, n_games=2)
+            _write_synthetic_hdf5(
+                path, n_rows=20, n_games=2
+            )
             ds = ChessRLDataset(
-                path, val_split_fraction=0.1, split="train"
+                path,
+                val_split_fraction=0.1,
+                split="train",
             )
             try:
-                board, tgt, mult, ct, outcome = ds[0]
+                (
+                    board, tgt, mult,
+                    ct, outcome, loss_mode,
+                ) = ds[0]
                 self.assertEqual(board.shape, (65, 3))
-                self.assertEqual(board.dtype, torch.float32)
+                self.assertEqual(
+                    board.dtype, torch.float32
+                )
                 self.assertIsInstance(tgt, int)
                 self.assertIsInstance(mult, float)
                 self.assertEqual(ct.shape, (65,))
-                self.assertEqual(ct.dtype, torch.int64)
+                self.assertEqual(
+                    ct.dtype, torch.int64
+                )
                 self.assertIsInstance(outcome, int)
                 self.assertIn(outcome, (-1, 0, 1))
+                self.assertIsInstance(loss_mode, int)
+                self.assertIn(loss_mode, (-1, +1))
             finally:
                 ds.close()
 
@@ -315,19 +358,26 @@ class TestChessRLDataset(unittest.TestCase):
         """Train + val splits are non-overlapping by game_id."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
-            _write_synthetic_hdf5(path, n_rows=200, n_games=10)
+            _write_synthetic_hdf5(
+                path, n_rows=200, n_games=10
+            )
             train_ds = ChessRLDataset(
-                path, val_split_fraction=0.2, split="train"
+                path,
+                val_split_fraction=0.2,
+                split="train",
             )
             val_ds = ChessRLDataset(
-                path, val_split_fraction=0.2, split="val"
+                path,
+                val_split_fraction=0.2,
+                split="val",
             )
             try:
                 train_gids = train_ds._game_ids_set
                 val_gids = val_ds._game_ids_set
                 self.assertEqual(
                     len(train_gids & val_gids), 0,
-                    "Train and val game_ids must not overlap",
+                    "Train and val game_ids must "
+                    "not overlap",
                 )
             finally:
                 train_ds.close()
@@ -336,7 +386,7 @@ class TestChessRLDataset(unittest.TestCase):
     def test_tc10_multipliers_positive_mean_one(
         self,
     ) -> None:
-        """Multipliers from generate() are positive, per-game mean~1.0."""
+        """Multipliers from generate() are positive, mean~1."""
         with tempfile.TemporaryDirectory() as td:
             pgn_path = Path(td) / "games.pgn"
             _make_minimal_pgn(pgn_path)
@@ -346,7 +396,9 @@ class TestChessRLDataset(unittest.TestCase):
                 rsbc_normalize_per_game=True,
             )
             pp = PGNRewardPreprocessor(cfg)
-            pp.generate(pgn_path, hdf5_path, max_games=3)
+            pp.generate(
+                pgn_path, hdf5_path, max_games=3
+            )
 
             with h5py.File(hdf5_path, "r") as hf:
                 multipliers = hf["multiplier"][:]
@@ -362,14 +414,17 @@ class TestChessRLDataset(unittest.TestCase):
                 for gid in np.unique(game_ids):
                     mask = game_ids == gid
                     game_mult = multipliers[mask]
-                    mean_val = float(game_mult.mean())
+                    mean_val = float(
+                        game_mult.mean()
+                    )
                     self.assertAlmostEqual(
                         mean_val,
                         1.0,
                         places=4,
                         msg=(
-                            f"game {gid}: mean multiplier "
-                            f"= {mean_val}, expected ~1.0"
+                            f"game {gid}: mean "
+                            f"multiplier = {mean_val}"
+                            ", expected ~1.0"
                         ),
                     )
 
@@ -390,35 +445,50 @@ class TestPGNRLTrainerV4(unittest.TestCase):
         )
         return trainer, cfg
 
-    def test_tc11_train_step_finite_loss(self) -> None:
-        """_train_step returns finite loss for a random batch."""
+    def test_tc11_train_step_finite_loss(
+        self,
+    ) -> None:
+        """_train_step returns finite loss for random batch."""
         trainer, _ = self._make_trainer()
         B = 4
-        # Board channels: piece[0-7], color[0-2], traj[0-4]
         ch0 = torch.randint(0, 8, (B, 65)).float()
         ch1 = torch.randint(0, 3, (B, 65)).float()
         ch2 = torch.randint(0, 5, (B, 65)).float()
-        board = torch.stack([ch0, ch1, ch2], dim=-1)
+        board = torch.stack(
+            [ch0, ch1, ch2], dim=-1
+        )
         targets = torch.randint(3, 1970, (B,))
         mults = torch.ones(B)
-        ct = torch.randint(0, 3, (B, 65), dtype=torch.long)
+        ct = torch.randint(
+            0, 3, (B, 65), dtype=torch.long
+        )
+        loss_modes = torch.ones(
+            B, dtype=torch.int8
+        )
 
         result = trainer._train_step(
-            board, targets, mults, ct
+            board, targets, mults, ct, loss_modes
         )
         self.assertIn("loss", result)
         self.assertTrue(
             np.isfinite(result["loss"]),
-            f"Loss must be finite, got {result['loss']}",
+            f"Loss must be finite, got "
+            f"{result['loss']}",
         )
         self.assertGreaterEqual(result["loss"], 0.0)
         self.assertEqual(result["n_total"], B)
         self.assertIn("grad_norm", result)
         self.assertTrue(
             np.isfinite(result["grad_norm"]),
-            f"grad_norm must be finite, got {result['grad_norm']}",
+            f"grad_norm must be finite, got "
+            f"{result['grad_norm']}",
         )
-        self.assertGreaterEqual(result["grad_norm"], 0.0)
+        self.assertGreaterEqual(
+            result["grad_norm"], 0.0
+        )
+        self.assertIn("loss_imitation", result)
+        self.assertIn("loss_repulsion", result)
+        self.assertIn("frac_repulsion", result)
 
     def test_tc12_train_epoch_returns_all_keys(
         self,
@@ -427,7 +497,9 @@ class TestPGNRLTrainerV4(unittest.TestCase):
         trainer, _ = self._make_trainer()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
-            _write_synthetic_hdf5(path, n_rows=20, n_games=2)
+            _write_synthetic_hdf5(
+                path, n_rows=20, n_games=2
+            )
             ds = ChessRLDataset(
                 path,
                 val_split_fraction=0.1,
@@ -440,9 +512,13 @@ class TestPGNRLTrainerV4(unittest.TestCase):
                     "n_samples",
                     "mean_multiplier",
                     "n_games",
+                    "loss_imitation",
+                    "loss_repulsion",
+                    "frac_repulsion",
                 }
                 self.assertEqual(
-                    set(metrics.keys()), expected_keys
+                    set(metrics.keys()),
+                    expected_keys,
                 )
                 self.assertGreater(
                     metrics["n_samples"], 0
@@ -453,11 +529,13 @@ class TestPGNRLTrainerV4(unittest.TestCase):
     def test_tc13_evaluate_returns_val_metrics(
         self,
     ) -> None:
-        """evaluate returns val_loss and val_accuracy."""
+        """evaluate returns val metrics incl avoidance."""
         trainer, _ = self._make_trainer()
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
-            _write_synthetic_hdf5(path, n_rows=20, n_games=2)
+            _write_synthetic_hdf5(
+                path, n_rows=20, n_games=2
+            )
             ds = ChessRLDataset(
                 path,
                 val_split_fraction=0.5,
@@ -466,13 +544,41 @@ class TestPGNRLTrainerV4(unittest.TestCase):
             try:
                 metrics = trainer.evaluate(ds)
                 self.assertIn("val_loss", metrics)
-                self.assertIn("val_accuracy", metrics)
-                self.assertIn("val_n_samples", metrics)
-                self.assertIn("acc_winners", metrics)
-                self.assertIn("acc_losers", metrics)
-                self.assertIn("acc_draws", metrics)
+                self.assertIn(
+                    "val_accuracy", metrics
+                )
+                self.assertIn(
+                    "val_n_samples", metrics
+                )
+                self.assertIn(
+                    "acc_winners", metrics
+                )
+                self.assertIn(
+                    "acc_losers", metrics
+                )
+                self.assertIn(
+                    "acc_draws", metrics
+                )
+                self.assertIn(
+                    "repulsion_top1_avoidance",
+                    metrics,
+                )
                 self.assertTrue(
-                    np.isfinite(metrics["val_loss"])
+                    np.isfinite(
+                        metrics["val_loss"]
+                    )
+                )
+                self.assertGreaterEqual(
+                    metrics[
+                        "repulsion_top1_avoidance"
+                    ],
+                    0.0,
+                )
+                self.assertLessEqual(
+                    metrics[
+                        "repulsion_top1_avoidance"
+                    ],
+                    1.0,
                 )
                 for key in (
                     "val_accuracy",
@@ -481,36 +587,38 @@ class TestPGNRLTrainerV4(unittest.TestCase):
                     "acc_draws",
                 ):
                     self.assertGreaterEqual(
-                        metrics[key], 0.0,
+                        metrics[key],
+                        0.0,
                         f"{key} must be >= 0",
                     )
                     self.assertLessEqual(
-                        metrics[key], 1.0,
+                        metrics[key],
+                        1.0,
                         f"{key} must be <= 1",
                     )
             finally:
                 ds.close()
 
     def test_tc14_checkpoint_roundtrip(self) -> None:
-        """save + load checkpoint preserves model weights and global_step."""
+        """save + load preserves weights and step."""
         trainer, cfg = self._make_trainer()
         with tempfile.TemporaryDirectory() as td:
             ckpt_path = Path(td) / "ckpt.pt"
 
-            # Set a non-zero global_step before saving
             trainer._global_step = 99
             trainer.save_checkpoint(ckpt_path)
 
-            # Grab original weight
             orig_w = (
                 trainer.model.encoder.embedding
                 .piece_emb.weight.data.clone()
             )
 
-            # Corrupt weight and global_step
             with torch.no_grad():
-                trainer.model.encoder.embedding.piece_emb\
+                (
+                    trainer.model.encoder
+                    .embedding.piece_emb
                     .weight.data.fill_(999.0)
+                )
             trainer._global_step = 0
 
             corrupted_w = (
@@ -521,7 +629,6 @@ class TestPGNRLTrainerV4(unittest.TestCase):
                 torch.equal(orig_w, corrupted_w)
             )
 
-            # Reload
             trainer.load_checkpoint(ckpt_path)
             restored_w = (
                 trainer.model.encoder.embedding
@@ -529,33 +636,262 @@ class TestPGNRLTrainerV4(unittest.TestCase):
             )
             self.assertTrue(
                 torch.equal(orig_w, restored_w),
-                "Weights should be restored after load",
+                "Weights should be restored",
             )
             self.assertEqual(
-                trainer._global_step, 99,
-                "_global_step must be restored from checkpoint",
+                trainer._global_step,
+                99,
+                "_global_step must be restored",
             )
 
     def test_tc15_lazy_hdf5_handle(self) -> None:
-        """ChessRLDataset opens h5py lazily, not at __init__."""
+        """ChessRLDataset opens h5py lazily."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
-            _write_synthetic_hdf5(path, n_rows=20, n_games=2)
+            _write_synthetic_hdf5(
+                path, n_rows=20, n_games=2
+            )
             ds = ChessRLDataset(
                 path,
                 val_split_fraction=0.1,
                 split="train",
             )
-            # Before first access, _h5 should be None
             self.assertIsNone(
                 ds._h5,
-                "_h5 must be None before first __getitem__",
+                "_h5 must be None before first "
+                "__getitem__",
             )
 
-            # After first access, _h5 should be open
             _ = ds[0]
             self.assertIsNotNone(ds._h5)
             ds.close()
+
+
+class TestRSCEDualLoss(unittest.TestCase):
+    """Tests for rsce_dual_loss and dual-direction changes."""
+
+    def test_tc16_all_imitation_batch(self) -> None:
+        """All-imitation: repulsion loss 0, frac 0."""
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            rsce_dual_loss,
+        )
+        B, V = 4, 1971
+        logits = torch.randn(B, V)
+        targets = torch.randint(3, V, (B,))
+        mults = torch.ones(B)
+        modes = torch.ones(B, dtype=torch.int8)
+        loss, metrics = rsce_dual_loss(
+            logits, targets, mults, modes
+        )
+        self.assertTrue(torch.isfinite(loss))
+        self.assertAlmostEqual(
+            metrics["loss_repulsion"], 0.0
+        )
+        self.assertAlmostEqual(
+            metrics["frac_repulsion"], 0.0
+        )
+
+    def test_tc17_all_repulsion_batch(self) -> None:
+        """All-repulsion: imitation loss 0, frac 1."""
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            rsce_dual_loss,
+        )
+        B, V = 4, 1971
+        logits = torch.randn(B, V)
+        targets = torch.randint(3, V, (B,))
+        mults = torch.ones(B)
+        modes = -torch.ones(B, dtype=torch.int8)
+        loss, metrics = rsce_dual_loss(
+            logits, targets, mults, modes
+        )
+        self.assertTrue(torch.isfinite(loss))
+        self.assertAlmostEqual(
+            metrics["loss_imitation"], 0.0
+        )
+        self.assertAlmostEqual(
+            metrics["frac_repulsion"], 1.0
+        )
+
+    def test_tc18_mixed_batch(self) -> None:
+        """Mixed: both branches contribute, frac 0.5."""
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            rsce_dual_loss,
+        )
+        B, V = 4, 1971
+        logits = torch.randn(B, V)
+        targets = torch.randint(3, V, (B,))
+        mults = torch.ones(B)
+        modes = torch.tensor(
+            [1, -1, 1, -1], dtype=torch.int8
+        )
+        loss, metrics = rsce_dual_loss(
+            logits, targets, mults, modes
+        )
+        self.assertTrue(torch.isfinite(loss))
+        self.assertGreater(
+            metrics["loss_imitation"], 0.0
+        )
+        self.assertGreater(
+            metrics["loss_repulsion"], 0.0
+        )
+        self.assertAlmostEqual(
+            metrics["frac_repulsion"], 0.5
+        )
+
+    def test_tc19_numerical_stability_high_conf(
+        self,
+    ) -> None:
+        """Repulsion with p near 1.0 produces finite loss."""
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            rsce_dual_loss,
+        )
+        B, V = 1, 1971
+        logits = torch.zeros(B, V)
+        target_idx = 100
+        logits[0, target_idx] = 50.0
+        targets = torch.tensor([target_idx])
+        mults = torch.ones(B)
+        modes = torch.tensor(
+            [-1], dtype=torch.int8
+        )
+        loss, _ = rsce_dual_loss(
+            logits, targets, mults, modes
+        )
+        self.assertTrue(
+            torch.isfinite(loss),
+            f"Loss must be finite, got {loss}",
+        )
+
+    def test_tc20_repulsion_weight_zero(self) -> None:
+        """repulsion_weight=0 zeroes repulsion."""
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            rsce_dual_loss,
+        )
+        B, V = 4, 1971
+        logits = torch.randn(B, V)
+        targets = torch.randint(3, V, (B,))
+        mults = torch.ones(B)
+        modes = torch.tensor(
+            [1, -1, 1, -1], dtype=torch.int8
+        )
+        loss, metrics = rsce_dual_loss(
+            logits, targets, mults, modes,
+            repulsion_weight=0.0,
+        )
+        self.assertTrue(torch.isfinite(loss))
+        self.assertAlmostEqual(
+            metrics["loss_repulsion"], 0.0,
+            places=6,
+        )
+
+    def test_tc21_preprocessor_loss_mode_values(
+        self,
+    ) -> None:
+        """Preprocessor stores correct loss_mode per outcome."""
+        # Stub: will be filled in by feature-dev
+        # After generate(), winner plies -> loss_mode=+1,
+        # loser plies -> loss_mode=-1,
+        # draw plies -> loss_mode=+1
+        # (draw_reward_norm=0.5 > r_ref=0.0)
+        pass  # TODO: implement after preprocessor changes
+
+    def test_tc22_preprocessor_multiplier_sign(
+        self,
+    ) -> None:
+        """Preprocessor stores corrected multiplier sign."""
+        # Stub: will be filled in by feature-dev
+        pass  # TODO: implement after preprocessor changes
+
+    def test_tc23_warmup_step_zero(self) -> None:
+        """warmup>0 at step 0: effective repul weight 0."""
+        # Stub: check _effective_repulsion_weight(0)
+        pass  # TODO: implement after trainer changes
+
+    def test_tc24_warmup_at_warmup_steps(
+        self,
+    ) -> None:
+        """At step=warmup_steps, full weight applies."""
+        # Stub: check _effective_repulsion_weight
+        pass  # TODO: implement after trainer changes
+
+    def test_tc25_warmup_disabled(self) -> None:
+        """warmup=0 gives full weight at all steps."""
+        # Stub: check _effective_repulsion_weight(0)
+        pass  # TODO: implement after trainer changes
+
+    def test_tc26_config_negative_repulsion_weight(
+        self,
+    ) -> None:
+        """Negative rsce_repulsion_weight raises ValueError."""
+        with self.assertRaises(ValueError):
+            RLConfig(rsce_repulsion_weight=-0.5)
+
+    def test_tc27_config_warmup_ge_one(self) -> None:
+        """rsce_repulsion_warmup >= 1.0 raises ValueError."""
+        with self.assertRaises(ValueError):
+            RLConfig(rsce_repulsion_warmup=1.0)
+
+    def test_tc28_evaluate_repulsion_avoidance(
+        self,
+    ) -> None:
+        """evaluate returns repul_top1_avoidance in [0,1]."""
+        # Stub: run evaluate() on synthetic HDF5
+        pass  # TODO: implement after trainer changes
+
+    def test_tc29_synthetic_hdf5_has_loss_mode(
+        self,
+    ) -> None:
+        """_write_synthetic_hdf5 produces loss_mode."""
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "data.h5"
+            _write_synthetic_hdf5(
+                path, n_rows=20, n_games=2
+            )
+            with h5py.File(path, "r") as hf:
+                self.assertIn(
+                    "loss_mode", hf.keys()
+                )
+                vals = hf["loss_mode"][:]
+                for v in vals:
+                    self.assertIn(int(v), (-1, +1))
+
+    def test_tc30_trainer_unpacks_6_tuple(
+        self,
+    ) -> None:
+        """train_epoch unpacks 6-tuple without error."""
+        from chess_sim.training.pgn_rl_trainer_v4 import (
+            PGNRLTrainerV4,
+        )
+        cfg = _make_cfg()
+        trainer = PGNRLTrainerV4(
+            cfg, device="cpu", total_steps=100
+        )
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "data.h5"
+            _write_synthetic_hdf5(
+                path, n_rows=20, n_games=2
+            )
+            ds = ChessRLDataset(
+                path,
+                val_split_fraction=0.1,
+                split="train",
+            )
+            try:
+                metrics = trainer.train_epoch(ds)
+                self.assertIn(
+                    "total_loss", metrics
+                )
+                self.assertIn(
+                    "loss_imitation", metrics
+                )
+                self.assertIn(
+                    "loss_repulsion", metrics
+                )
+                self.assertIn(
+                    "frac_repulsion", metrics
+                )
+            finally:
+                ds.close()
 
 
 if __name__ == "__main__":

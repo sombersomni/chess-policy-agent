@@ -35,6 +35,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def rsce_dual_loss(
+    logits: Tensor,
+    targets: Tensor,
+    multipliers: Tensor,
+    loss_modes: Tensor,
+    repulsion_weight: float = 1.0,
+    label_smoothing: float = 0.0,
+) -> tuple[Tensor, dict[str, float]]:
+    """Bifurcated RSCE loss: imitation CE + repulsion anti-CE.
+
+    Args:
+        logits: (B, V) raw model output logits.
+        targets: (B,) int64 move indices.
+        multipliers: (B,) float32, pre-normalized weights.
+        loss_modes: (B,) int8, +1=imitation, -1=repulsion.
+        repulsion_weight: Scale factor on repulsion branch.
+        label_smoothing: Label smoothing for CE (imitation).
+
+    Returns:
+        Tuple of (scalar_loss, branch_metrics) where
+        branch_metrics has keys: loss_imitation,
+        loss_repulsion, frac_repulsion.
+
+    Example:
+        >>> loss, m = rsce_dual_loss(logits, tgt, mult, lm)
+        >>> m["frac_repulsion"]
+        0.5
+    """
+    raise NotImplementedError("rsce_dual_loss")
+
+
 class PGNRLTrainerV4:
     """Batched RSCE trainer: minibatch CE weighted by pre-normalized multipliers.
 
@@ -71,6 +102,7 @@ class PGNRLTrainerV4:
         """
         self._cfg = cfg
         self._device = torch.device(device)
+        self._total_steps = total_steps
         self._tracker: MetricTracker = (
             tracker or NoOpTracker()
         )
@@ -189,8 +221,14 @@ class PGNRLTrainerV4:
         total_correct = 0
         total_samples = 0
         total_mult = 0.0
+        total_imit = 0.0
+        total_repul = 0.0
+        total_frac_repul = 0.0
 
-        for board, targets, multipliers, ct, _outcomes in dl:
+        for (
+            board, targets, multipliers,
+            ct, _outcomes, loss_modes,
+        ) in dl:
             board = board.to(self._device)
             targets = targets.to(
                 self._device, dtype=torch.long
@@ -199,9 +237,13 @@ class PGNRLTrainerV4:
                 self._device, dtype=torch.float32
             )
             ct = ct.to(self._device, dtype=torch.long)
+            loss_modes = loss_modes.to(
+                self._device, dtype=torch.int8
+            )
 
             step_result = self._train_step(
-                board, targets, multipliers, ct
+                board, targets, multipliers,
+                ct, loss_modes,
             )
             batch_n = step_result["n_total"]
             total_loss += (
@@ -212,13 +254,26 @@ class PGNRLTrainerV4:
             total_mult += float(
                 multipliers.sum().item()
             )
+            total_imit += (
+                step_result["loss_imitation"] * batch_n
+            )
+            total_repul += (
+                step_result["loss_repulsion"] * batch_n
+            )
+            total_frac_repul += (
+                step_result["frac_repulsion"] * batch_n
+            )
 
             self._tracker.track_scalars(
                 {
                     "train_loss": step_result["loss"],
-                    "train_accuracy": step_result["n_correct"]
-                    / max(batch_n, 1),
-                    "mean_entropy": step_result["mean_entropy"],
+                    "train_accuracy": (
+                        step_result["n_correct"]
+                        / max(batch_n, 1)
+                    ),
+                    "mean_entropy": step_result[
+                        "mean_entropy"
+                    ],
                     "mean_multiplier": step_result[
                         "mean_multiplier"
                     ],
@@ -237,6 +292,9 @@ class PGNRLTrainerV4:
             "n_samples": total_samples,
             "mean_multiplier": mean_mult,
             "n_games": dataset.n_games,
+            "loss_imitation": total_imit / denom,
+            "loss_repulsion": total_repul / denom,
+            "frac_repulsion": total_frac_repul / denom,
         }
 
     @torch.no_grad()
@@ -279,7 +337,10 @@ class PGNRLTrainerV4:
             1: [0, 0], 0: [0, 0], -1: [0, 0]
         }
 
-        for board, targets, _mult, ct, outcomes in dl:
+        for (
+            board, targets, _mult,
+            ct, outcomes, _loss_modes,
+        ) in dl:
             board = board.to(self._device)
             targets = targets.to(
                 self._device, dtype=torch.long
@@ -352,6 +413,9 @@ class PGNRLTrainerV4:
                 strat[-1][0] / strat[-1][1]
                 if strat[-1][1] > 0 else 0.0
             ),
+            # TODO: compute actual repulsion avoidance
+            # from loss_mode=-1 samples.
+            "repulsion_top1_avoidance": 0.0,
         }
 
     def save_checkpoint(self, path: Path) -> None:
@@ -443,6 +507,7 @@ class PGNRLTrainerV4:
         targets: Tensor,
         multipliers: Tensor,
         color_tokens: Tensor,
+        loss_modes: Tensor,
     ) -> dict[str, float]:
         """Single minibatch forward + backward step.
 
@@ -455,13 +520,15 @@ class PGNRLTrainerV4:
             targets: Long tensor [B] of vocab indices.
             multipliers: Float tensor [B] of RSCE weights.
             color_tokens: Long tensor [B, 65] for masking.
+            loss_modes: Int8 tensor [B], +1=imitation, -1=repul.
 
         Returns:
             Dict with keys: loss, n_correct, n_total,
-            mean_entropy, mean_multiplier, grad_norm.
+            mean_entropy, mean_multiplier, grad_norm,
+            loss_imitation, loss_repulsion, frac_repulsion.
 
         Example:
-            >>> out = trainer._train_step(b, t, m, ct)
+            >>> out = trainer._train_step(b, t, m, ct, lm)
             >>> out["loss"]
             2.5
         """
@@ -494,6 +561,9 @@ class PGNRLTrainerV4:
                 ~smask, float("-inf")
             )
 
+        # TODO: call rsce_dual_loss instead of plain CE
+        # to bifurcate into imitation + repulsion branches,
+        # using loss_modes to route each sample.
         per_ce = F.cross_entropy(
             last_logits,
             targets,
@@ -532,4 +602,7 @@ class PGNRLTrainerV4:
             "mean_entropy": entropy.item(),
             "mean_multiplier": multipliers.mean().item(),
             "grad_norm": grad_norm,
+            "loss_imitation": 0.0,
+            "loss_repulsion": 0.0,
+            "frac_repulsion": 0.0,
         }

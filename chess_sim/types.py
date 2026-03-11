@@ -342,6 +342,7 @@ class RLRewardRow(NamedTuple):
         color_tokens: (65,) int8 array — for structural mask.
         target_move: Vocab index of the teacher's move.
         multiplier: Pre-normalized m_hat RSCE weight.
+        loss_mode: +1 for imitation (CE), -1 for repulsion.
         game_id: Source game index.
         ply_idx: 0-indexed ply within game.
         outcome: +1 / 0 / -1 from side-to-move perspective.
@@ -350,7 +351,7 @@ class RLRewardRow(NamedTuple):
         >>> row = RLRewardRow(
         ...     np.zeros((65,3), dtype=np.float32),
         ...     np.zeros(65, dtype=np.int8),
-        ...     42, 1.0, 0, 0, 1,
+        ...     42, 1.0, 1, 0, 0, 1,
         ... )
         >>> row.target_move
         42
@@ -360,6 +361,7 @@ class RLRewardRow(NamedTuple):
     color_tokens: np.ndarray   # (65,) int8
     target_move: int
     multiplier: float          # pre-normalized m_hat
+    loss_mode: int             # +1 imitation, -1 repulsion
     game_id: int
     ply_idx: int
     outcome: int               # +1 / 0 / -1

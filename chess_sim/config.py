@@ -474,6 +474,8 @@ class RLConfig:
     use_structural_mask: bool = False
     max_plies_per_game: int = 150
     rsce_r_ref: float = 0.0
+    rsce_repulsion_weight: float = 1.0
+    rsce_repulsion_warmup: float = 0.0
     hdf5_path: str = ""
     batch_size: int = 512
     num_workers: int = 4
@@ -560,6 +562,17 @@ class RLConfig:
             raise ValueError(
                 "hdf5_chunk_size must be >= 1, "
                 f"got {self.hdf5_chunk_size}"
+            )
+        if self.rsce_repulsion_weight < 0:
+            raise ValueError(
+                "rsce_repulsion_weight must be >= 0, "
+                f"got {self.rsce_repulsion_weight}"
+            )
+        if not (0.0 <= self.rsce_repulsion_warmup < 1.0):
+            raise ValueError(
+                "rsce_repulsion_warmup must be in "
+                "[0, 1), got "
+                f"{self.rsce_repulsion_warmup}"
             )
 
 

@@ -1,0 +1,10 @@
+onnxruntime>=1.17        # replaces torch for CI; test/lint only — no GPU needed
+python-chess>=1.9
+zstandard>=0.21
+parameterized
+matplotlib>=3.7
+pyyaml>=6.0
+h5py>=3.9
+aim>=3.17
+gymnasium>=0.29
+ruff>=0.4

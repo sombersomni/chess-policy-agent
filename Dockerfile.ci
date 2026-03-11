@@ -34,15 +34,10 @@ ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 # ---- Install Python dependencies ---------------------------------------------
 # Layer cached: only invalidated when requirements.txt changes
-COPY --chown=chess:chess requirements.txt /tmp/requirements.txt
+COPY --chown=chess:chess requirements-ci.txt /tmp/requirements-ci.txt
 USER chess
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel && \
-    # Install CPU-only PyTorch first (~200MB vs ~2GB for the CUDA wheel).
-    # Must come before -r requirements.txt so pip doesn't re-resolve torch
-    # to the CUDA build from the default index.
-    python -m pip install --no-cache-dir \
-        torch --index-url https://download.pytorch.org/whl/cpu && \
-    python -m pip install --no-cache-dir -r /tmp/requirements.txt
+    python -m pip install --no-cache-dir -r /tmp/requirements-ci.txt
 
 # ---- Working directory -------------------------------------------------------
 # Jenkins checks out source here via the K8s plugin workspace mount

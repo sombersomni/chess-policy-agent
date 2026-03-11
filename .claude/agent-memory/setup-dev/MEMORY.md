@@ -14,6 +14,21 @@ See [scaffolding-history.md](scaffolding-history.md) for all prior scaffolding d
 
 ---
 
+## Scaffolding Completed: Composite Reward Redesign (2026-03-10)
+
+### Changes
+- `chess_sim/types.py` — `OfflinePlyTuple`: removed default from `is_draw_ply`, added `material_delta: float`
+- `chess_sim/training/pgn_replayer.py` — `_PIECE_VALUES`, `_material_of()` stub, `last_material` tracking in `replay()`
+- `chess_sim/training/pgn_rl_reward_computer.py` — `compute()` now NIE stub with composite formula
+- `chess_sim/config.py` — RLConfig: removed gamma/win_reward/loss_reward/draw_reward; added lambda_outcome/lambda_material/draw_reward_norm
+- `chess_sim/training/pgn_rl_trainer.py` — sample_visuals DRY fix via replayer+reward_fn delegation
+- `chess_sim/data/rl_hdf5_dataset.py` — reads material_delta from HDF5 (defaults 0.0)
+- `tests/test_reward_computer.py` — NEW: 10 NIE stubs (T-CR1 to T-CR10)
+- `tests/test_replayer.py` — NEW: 5 NIE stubs (material delta scenarios)
+- `tests/test_config.py` — 6 new composite reward config tests (all PASS)
+
+---
+
 ## Scaffolding Completed: RSBC Test Skeletons (2026-03-10)
 
 ### Changes

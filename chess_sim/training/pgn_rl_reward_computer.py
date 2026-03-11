@@ -5,6 +5,7 @@ where sign_outcome = +1.0 (winner), -1.0 (loser), draw_reward_norm (draw).
 """
 from __future__ import annotations
 
+import torch
 from torch import Tensor
 
 from chess_sim.config import RLConfig
@@ -49,4 +50,21 @@ class PGNRLRewardComputer:
             >>> r.shape
             torch.Size([10])
         """
-        raise NotImplementedError("To be implemented")
+        T = len(plies)
+        if T == 0:
+            return torch.zeros(0)
+
+        return torch.tensor(
+            [
+                cfg.lambda_outcome * (
+                    cfg.draw_reward_norm
+                    if p.is_draw_ply
+                    else 1.0
+                    if p.is_winner_ply
+                    else -1.0
+                )
+                + cfg.lambda_material * p.material_delta
+                for p in plies
+            ],
+            dtype=torch.float32,
+        )

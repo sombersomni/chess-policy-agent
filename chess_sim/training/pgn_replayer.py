@@ -48,7 +48,11 @@ def _material_of(
         >>> _material_of(chess.Board(), chess.WHITE)
         39.0
     """
-    raise NotImplementedError("To be implemented")
+    return sum(
+        _PIECE_VALUES[piece.piece_type]
+        for piece in board.piece_map().values()
+        if piece.color == color
+    )
 
 
 # Result header -> (white_wins, black_wins) mapping
@@ -94,7 +98,7 @@ class PGNReplayer:
         board = game.board()
         move_history: list[chess.Move] = []
         plies: list[OfflinePlyTuple] = []
-        last_material: dict[chess.Color, float | None] = {
+        last_balance: dict[chess.Color, float | None] = {
             chess.WHITE: None,
             chess.BLACK: None,
         }
@@ -106,15 +110,19 @@ class PGNReplayer:
             )
             side = board.turn
 
-            # Material delta: current minus last (0 if first)
-            cur_mat = _material_of(board, side)
-            prev_mat = last_material[side]
+            # Material balance delta: (own - opp) change since last same-color ply.
+            # Positive = net gain (we captured), negative = net loss (opponent captured).
+            opp = not side
+            cur_balance = (
+                _material_of(board, side) - _material_of(board, opp)
+            )
+            prev_balance = last_balance[side]
             delta = (
-                cur_mat - prev_mat
-                if prev_mat is not None
+                cur_balance - prev_balance
+                if prev_balance is not None
                 else 0.0
             )
-            last_material[side] = cur_mat
+            last_balance[side] = cur_balance
 
             # Tokenize board BEFORE push
             tb = self._board_tok.tokenize(board, board.turn)

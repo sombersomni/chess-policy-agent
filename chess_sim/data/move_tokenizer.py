@@ -10,7 +10,7 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
-from chess_sim.data.move_vocab import EOS_IDX, MoveVocab, PAD_IDX, SOS_IDX
+from chess_sim.data.move_vocab import EOS_IDX, PAD_IDX, SOS_IDX, MoveVocab
 
 
 class MoveTokenizer:
@@ -79,6 +79,25 @@ class MoveTokenizer:
             self._vocab.encode(m) for m in moves
         ] + [EOS_IDX]
         return torch.tensor(indices, dtype=torch.long)
+
+    def decode(self, idx: int) -> str:
+        """Convert an integer vocabulary index back to its UCI move string.
+
+        Args:
+            idx: Integer index in the vocabulary.
+
+        Returns:
+            UCI move string corresponding to the index.
+
+        Raises:
+            KeyError: If the index is not in the vocabulary.
+
+        Example:
+            >>> tok = MoveTokenizer()
+            >>> tok.decode(tok.tokenize_move("e2e4"))
+            'e2e4'
+        """
+        return self._vocab.decode(idx)
 
     def build_legal_mask(self, legal_moves: list[str]) -> Tensor:
         """Build a boolean mask over the move vocabulary for legal moves.

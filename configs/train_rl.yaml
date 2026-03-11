@@ -30,10 +30,10 @@ rl:
   resume:               ""
   lambda_outcome:       1.0
   lambda_material:      0.1
-  draw_reward_norm:     0.0
+  draw_reward_norm:     0.5
   lambda_ce:            0.0
   lambda_awbc:              0.0
-  lambda_rsbc:              1.0
+  lambda_rsbc:              0.0
   lambda_entropy:           0.0
   awbc_eps:             1.0e-8
   label_smoothing:          0.0
@@ -44,6 +44,6 @@ rl:
 
 aim:
   enabled:           true
-  experiment_name:   chess_rl
+  experiment_name:   chess_rl_1k_composite
   repo:              .aim
   log_every_n_steps: 10

@@ -7,9 +7,12 @@ forward pass and an inference-time predict_next_move method.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    from chess_sim.data.move_tokenizer import MoveTokenizer
 import torch.nn as nn
 from torch import Tensor
 
@@ -17,6 +20,8 @@ from chess_sim.config import DecoderConfig, ModelConfig
 from chess_sim.model.decoder import MoveDecoder
 from chess_sim.model.encoder import ChessEncoder
 from chess_sim.model.value_heads import ActionConditionedValueHead
+
+_ILLEGAL_LOGIT_FILL: float = -1e9
 
 
 class ChessModel(nn.Module):
@@ -93,7 +98,7 @@ class ChessModel(nn.Module):
         color_tokens: Tensor,
         trajectory_tokens: Tensor,
         move_tokens: Tensor,
-        move_pad_mask: Optional[Tensor] = None,
+        move_pad_mask: Tensor | None = None,
     ) -> Tensor:
         """Full forward pass: encode board state, then decode move sequence.
 
@@ -135,12 +140,14 @@ class ChessModel(nn.Module):
         move_history: list[str],
         legal_moves: list[str],
         temperature: float = 1.0,
+        tokenizer: MoveTokenizer | None = None,
     ) -> str:
         """Predict the next move given current board and move history.
 
         Inference-time method. Encodes the board, feeds move history
         through the decoder, applies legal-move masking and temperature
         scaling, then samples a move from the resulting distribution.
+        Restores the model's training mode after inference.
 
         Args:
             board_tokens: LongTensor [1, 65]. Single board state.
@@ -149,9 +156,15 @@ class ChessModel(nn.Module):
             move_history: List of prior UCI move strings in game order.
             legal_moves: List of legal UCI moves for the current position.
             temperature: Softmax temperature for sampling. Default 1.0.
+            tokenizer: Optional pre-built MoveTokenizer. Reuse across calls
+                to avoid re-loading the vocabulary on every inference step.
 
         Returns:
             UCI move string sampled from the model's distribution.
+
+        Raises:
+            ValueError: If legal_moves is empty or move_tokens is empty
+                after trimming EOS.
 
         Example:
             >>> move = model.predict_next_move(bt, ct, tt, ["e2e4"], ["e7e5", "d7d5"])
@@ -160,28 +173,40 @@ class ChessModel(nn.Module):
         """
         from chess_sim.data.move_tokenizer import MoveTokenizer
 
-        tok = MoveTokenizer()
-        # Build decoder input: SOS + move_history (drop EOS)
+        if not legal_moves:
+            raise ValueError(
+                "legal_moves is empty — no legal move to sample"
+            )
+
+        tok = tokenizer or MoveTokenizer()
+        # Build decoder input: SOS + move_history, then drop trailing EOS
         move_tokens = tok.tokenize_game(
             move_history
         ).unsqueeze(0).to(board_tokens.device)
-        # Drop trailing EOS for decoder input
         move_tokens = move_tokens[:, :-1]
 
-        self.eval()
-        with torch.no_grad():
-            logits = self.forward(
-                board_tokens, color_tokens,
-                trajectory_tokens, move_tokens,
+        if move_tokens.shape[1] == 0:
+            raise ValueError(
+                "move_tokens is empty after trimming EOS — "
+                "tokenize_game returned no tokens"
             )
-        # Take logits at the last position
+
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.no_grad():
+                logits = self.forward(
+                    board_tokens, color_tokens,
+                    trajectory_tokens, move_tokens,
+                )
+        finally:
+            self.train(was_training)
+
         next_logits = logits[0, -1, :]  # [V]
         legal_mask = tok.build_legal_mask(
             legal_moves
         ).to(next_logits.device)
-        next_logits[~legal_mask] = -1e9
-        probs = torch.softmax(
-            next_logits / temperature, dim=-1
-        )
+        next_logits[~legal_mask] = _ILLEGAL_LOGIT_FILL
+        probs = torch.softmax(next_logits / temperature, dim=-1)
         idx = torch.multinomial(probs, num_samples=1).item()
-        return tok._vocab.decode(idx)  # type: ignore[arg-type]
+        return tok.decode(idx)  # type: ignore[arg-type]

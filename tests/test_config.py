@@ -203,9 +203,9 @@ class TestRLConfigCompositeReward(unittest.TestCase):
         self.assertEqual(RLConfig().lambda_material, 0.1)
 
     def test_draw_reward_norm_default(self) -> None:
-        """draw_reward_norm defaults to 0.0."""
+        """draw_reward_norm defaults to 0.5 (imitate draw moves)."""
         from chess_sim.config import RLConfig
-        self.assertEqual(RLConfig().draw_reward_norm, 0.0)
+        self.assertEqual(RLConfig().draw_reward_norm, 0.5)
 
     def test_lambda_outcome_negative_raises(self) -> None:
         """T-CR11: lambda_outcome < 0 raises ValueError."""

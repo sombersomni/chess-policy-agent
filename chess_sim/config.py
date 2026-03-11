@@ -187,7 +187,7 @@ class Phase2Config:
     ema_alpha: float = 0.995
     gamma: float = 0.99
     lambda_surprise: float = 0.5
-    draw_reward: float = 0.1
+    draw_reward: float = 0.0
     episodes_per_update: int = 1
     max_episode_steps: int = 200
     win_reward: float = 1.0
@@ -197,6 +197,11 @@ class Phase2Config:
     lambda_illegal: float = -0.5
     lambda_check: float = 0.1
     truncation_reward: float = -0.05
+    delta_novelty: float = 0.05
+    delta_decay: float = 0.999
+    top_k_human: int = 5
+    min_win_rate: float = 0.55
+    self_play_games: int = 100
 
     def __post_init__(self) -> None:
         """Validate hyperparameter ranges."""
@@ -453,7 +458,7 @@ class RLConfig:
     resume: str = ""
     lambda_outcome: float = 1.0
     lambda_material: float = 0.1
-    draw_reward_norm: float = 0.0
+    draw_reward_norm: float = 0.5
     lambda_ce: float = 0.0  # deprecated: use lambda_awbc
     lambda_value: float = 1.0
     lambda_awbc: float = 0.0  # deprecated: use lambda_rsbc

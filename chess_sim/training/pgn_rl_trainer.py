@@ -270,13 +270,23 @@ class PGNRLTrainer:
         board: chess.Board,
         move_uci: str,
         game_idx: int,
+        is_winner_ply: bool,
+        reward: float,
+        last_logits: Tensor,
+        move_idx: int | None,
     ) -> None:
         """Emit a board text block to tracker every 100 ply steps.
 
+        Includes side label, reward, and top-1 prediction hit/miss.
+
         Args:
             board: Board state before the move.
-            move_uci: UCI string of the move just played.
+            move_uci: UCI string of the teacher's move.
             game_idx: Index of the current game in the epoch.
+            is_winner_ply: True if this ply belongs to the winner.
+            reward: Composite reward at this ply.
+            last_logits: Raw logits [vocab_size] from the decoder.
+            move_idx: Vocab index of teacher move (None if OOV).
         """
         if self._ply_step % 100 != 0:
             return
@@ -284,17 +294,43 @@ class PGNRLTrainer:
             san = board.san(chess.Move.from_uci(move_uci))
         except (ValueError, chess.InvalidMoveError):
             san = "?"
-        text = (
+        side = "winner" if is_winner_ply else "loser"
+        probs = torch.softmax(last_logits.detach(), dim=-1)
+        top1_idx = int(probs.argmax().item())
+        top1_prob = float(probs[top1_idx].item()) * 100.0
+        try:
+            pred_uci = self._move_tok.decode(top1_idx)
+            try:
+                pred_san = board.san(
+                    chess.Move.from_uci(pred_uci)
+                )
+            except (ValueError, chess.InvalidMoveError, AssertionError):
+                pred_san = pred_uci
+        except (KeyError, IndexError):
+            pred_uci, pred_san = "?", "?"
+        hit = (
+            "[HIT]"
+            if move_idx is not None and top1_idx == move_idx
+            else "[MISS]"
+        )
+        header = (
             f"Step {self._ply_step} | "
             f"Game {game_idx} | "
-            f"Move: {move_uci} ({san})\n"
-            f"{board.unicode()}"
+            f"side={side} | "
+            f"reward={reward:.2f} | "
+            f"Move: {move_uci} ({san}) | "
+            f"pred={pred_uci}({pred_san}){hit} "
+            f"top1={top1_prob:.1f}%"
         )
         logger.info(
-            "Board @ ply_step=%d game=%d move=%s(%s)",
-            self._ply_step, game_idx, move_uci, san,
+            "Board @ ply_step=%d game=%d side=%s reward=%.2f"
+            " move=%s(%s) pred=%s(%s)%s top1=%.1f%%",
+            self._ply_step, game_idx, side, reward,
+            move_uci, san, pred_uci, pred_san, hit, top1_prob,
         )
-        self._tracker.log_text(text, step=self._ply_step)
+        self._tracker.log_text(
+            f"{header}\n{board.unicode()}", step=self._ply_step
+        )
 
     def train_game(
         self,
@@ -340,12 +376,6 @@ class PGNRLTrainer:
 
         for i, ply in enumerate(plies):
             self._ply_step += 1
-            if i < len(board_snaps):
-                self._log_board_snapshot(
-                    board_snaps[i],
-                    ply.move_uci,
-                    game_idx,
-                )
 
             bt = ply.board_tokens.unsqueeze(0).to(
                 self._device
@@ -365,6 +395,16 @@ class PGNRLTrainer:
                     bt, ct, tt, prefix, ply.move_uci
                 )
             )
+            if i < len(board_snaps):
+                self._log_board_snapshot(
+                    board_snaps[i],
+                    ply.move_uci,
+                    game_idx,
+                    is_winner_ply=ply.is_winner_ply,
+                    reward=float(rewards[i]),
+                    last_logits=last_logits,
+                    move_idx=move_idx,
+                )
             if move_idx is None:
                 continue
 

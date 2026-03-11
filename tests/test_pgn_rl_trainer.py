@@ -76,7 +76,7 @@ class TestRLConfig(unittest.TestCase):
         cfg = RLConfig()
         self.assertEqual(cfg.lambda_outcome, 1.0)
         self.assertEqual(cfg.lambda_material, 0.1)
-        self.assertEqual(cfg.draw_reward_norm, 0.0)
+        self.assertEqual(cfg.draw_reward_norm, 0.5)
 
     def test_t2_warmup_gt_decay_raises(self) -> None:
         """T2: warmup >= decay_start raises ValueError."""
@@ -377,13 +377,13 @@ class TestPGNRLTrainerTracking(unittest.TestCase):
     def test_t14_track_scalars_receives_required_keys(
         self,
     ) -> None:
-        """T14: track_scalars dict contains pg_loss, ce_loss,
-        total_loss, mean_reward."""
+        """T14: track_scalars dict contains rsbc_loss,
+        total_loss, mean_reward, value_loss."""
         required_keys = {
-            "pg_loss",
-            "ce_loss",
+            "rsbc_loss",
             "total_loss",
             "mean_reward",
+            "value_loss",
         }
         game = _make_fools_mate()
         pgn_path = self._write_pgn(game)
@@ -442,6 +442,10 @@ class TestBoardSnapshotLogging(unittest.TestCase):
         self.assertIn("Step 100", text)
         self.assertIn("Game 0", text)
         self.assertIn("Move:", text)
+        self.assertIn("side=", text)
+        self.assertIn("reward=", text)
+        self.assertIn("pred=", text)
+        self.assertRegex(text, r"top1=\d+\.\d+%")
 
     def test_log_text_not_called_before_100(self) -> None:
         """log_text is NOT called when _ply_step < 100."""

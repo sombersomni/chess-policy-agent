@@ -295,42 +295,40 @@ class TestPGNRLTrainerAWBC(unittest.TestCase):
 
     # -- train_game integration tests --
 
-    def test_train_game_returns_awbc_key(self) -> None:
-        """train_game() return dict has 'awbc_loss' key."""
+    def test_train_game_returns_rsbc_key(self) -> None:
+        """train_game() return dict has 'rsbc_loss' key."""
         game = _make_scholars_mate()
         metrics = self.trainer.train_game(game)
-        self.assertIn("awbc_loss", metrics)
+        self.assertIn("rsbc_loss", metrics)
 
     def test_train_game_no_pg_loss_key(self) -> None:
-        """train_game() return dict has NO 'pg_loss' key
-        with nonzero value."""
+        """train_game() return dict has no 'pg_loss' key."""
         game = _make_scholars_mate()
         metrics = self.trainer.train_game(game)
-        self.assertEqual(metrics.get("pg_loss", 0.0), 0.0)
+        self.assertNotIn("pg_loss", metrics)
 
     def test_train_game_no_ce_loss_key(self) -> None:
-        """Return dict has NO 'ce_loss' key with nonzero
-        value."""
+        """train_game() return dict has no 'ce_loss' key."""
         game = _make_scholars_mate()
         metrics = self.trainer.train_game(game)
-        self.assertEqual(metrics.get("ce_loss", 0.0), 0.0)
+        self.assertNotIn("ce_loss", metrics)
 
-    def test_train_game_awbc_loss_finite(self) -> None:
-        """train_game() with a real game -> awbc_loss is
+    def test_train_game_rsbc_loss_finite(self) -> None:
+        """train_game() with a real game -> rsbc_loss is
         finite."""
         game = _make_scholars_mate()
         metrics = self.trainer.train_game(game)
-        self.assertTrue(math.isfinite(metrics["awbc_loss"]))
+        self.assertTrue(math.isfinite(metrics["rsbc_loss"]))
 
-    def test_train_epoch_awbc_accumulator(self) -> None:
-        """train_epoch() result dict has 'awbc_loss' key."""
+    def test_train_epoch_rsbc_accumulator(self) -> None:
+        """train_epoch() result dict has 'rsbc_loss' key."""
         game = _make_scholars_mate()
         pgn_path = _write_pgn(game)
         result = self.trainer.train_epoch(
             pgn_path, max_games=1,
         )
-        self.assertIn("awbc_loss", result)
-        self.assertTrue(math.isfinite(result["awbc_loss"]))
+        self.assertIn("rsbc_loss", result)
+        self.assertTrue(math.isfinite(result["rsbc_loss"]))
 
     # -- config default tests --
 
@@ -439,28 +437,24 @@ class TestPGNRLTrainerRSBC(unittest.TestCase):
         )
         self.assertAlmostEqual(loss.item(), 0.0, places=6)
 
-    def test_rsbc_normalization_bounds_rewards_to_one(
+    def test_rsbc_weights_scale_loss(
         self,
     ) -> None:
-        """T-R6: per-game normalization bounds weights to
-        [-1, 1]."""
+        """T-R6: weights in (0, 1] linearly scale the loss."""
         logits = [torch.randn(VOCAB_SIZE) for _ in range(3)]
         targets = [0, 1, 2]
-        # Large raw rewards should be normalized
-        big = torch.tensor([100.0, -50.0, 30.0])
-        loss_big = self.trainer._compute_rsbc_loss(
-            logits, targets, big,
+        ones = torch.ones(3)
+        halves = torch.full((3,), 0.5)
+        loss_ones = self.trainer._compute_rsbc_loss(
+            logits, targets, ones,
         )
-        # Equivalent normalized: [1.0, -0.5, 0.3]
-        small = torch.tensor([1.0, -0.5, 0.3])
-        loss_small = self.trainer._compute_rsbc_loss(
-            logits, targets, small,
+        loss_halves = self.trainer._compute_rsbc_loss(
+            logits, targets, halves,
         )
-        # Both should be finite and comparable
-        self.assertTrue(math.isfinite(loss_big.item()))
-        self.assertTrue(math.isfinite(loss_small.item()))
+        self.assertTrue(math.isfinite(loss_ones.item()))
+        self.assertTrue(math.isfinite(loss_halves.item()))
         self.assertAlmostEqual(
-            loss_big.item(), loss_small.item(), places=3,
+            loss_halves.item(), loss_ones.item() * 0.5, places=4,
         )
 
     def test_rsbc_large_reward_scale_no_explosion(

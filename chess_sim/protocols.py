@@ -519,6 +519,25 @@ class Updatable(Protocol):
 
 
 @runtime_checkable
+class StructuralMaskable(Protocol):
+    """Builds a per-batch structural move mask from color tokens."""
+
+    def build(self, color_tokens: Tensor) -> Tensor:
+        """Return a [B, V] bool mask from color_tokens [B, 65].
+
+        True = token's from-square has a player piece.
+
+        Args:
+            color_tokens: LongTensor [B, 65] with values
+                0=empty, 1=player, 2=opponent.
+
+        Returns:
+            BoolTensor [B, V].
+        """
+        ...
+
+
+@runtime_checkable
 class Replayable(Protocol):
     """Replays a PGN game into per-ply offline RL tuples."""
 

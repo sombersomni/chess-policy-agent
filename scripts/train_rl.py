@@ -97,23 +97,22 @@ def _run_training_loop(
             tracker.track_epoch(all_metrics, epoch, lr_main)
 
             logger.info(
-                "Epoch %02d: total=%.4f pg=%.4f "
-                "ce=%.4f "
+                "Epoch %02d: total=%.4f rsbc=%.4f "
+                "vl=%.4f "
                 "| val_loss=%.4f val_acc=%.4f "
                 "| reward=%.4f "
                 "adv=%.4f\u00b1%.4f "
-                "vl=%.4f games=%d "
+                "games=%d "
                 "lr=%.2e lr_v=%.2e",
                 epoch,
                 metrics["total_loss"],
-                metrics["pg_loss"],
-                metrics["ce_loss"],
+                metrics["rsbc_loss"],
+                metrics["value_loss"],
                 val_metrics["val_loss"],
                 val_metrics["val_accuracy"],
                 metrics["mean_reward"],
                 metrics["mean_advantage"],
                 metrics["std_advantage"],
-                metrics["value_loss"],
                 metrics["n_games"],
                 lr_main,
                 lr_value,

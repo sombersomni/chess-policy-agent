@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import logging
+import random
 from pathlib import Path
 
 import chess
@@ -23,7 +24,9 @@ from torch import Tensor
 from chess_sim.config import PGNRLConfig
 from chess_sim.data.move_tokenizer import MoveTokenizer
 from chess_sim.data.move_vocab import MoveVocab
+from chess_sim.data.structural_mask import StructuralMaskBuilder
 from chess_sim.model.chess_model import ChessModel
+from chess_sim.protocols import StructuralMaskable
 from chess_sim.tracking.noop_tracker import NoOpTracker
 from chess_sim.tracking.protocol import MetricTracker
 from chess_sim.training.pgn_replayer import PGNReplayer
@@ -32,6 +35,39 @@ from chess_sim.training.pgn_rl_reward_computer import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _split_games_by_outcome(
+    games: list[chess.pgn.Game],
+    train_white: bool,
+) -> tuple[
+    list[chess.pgn.Game],
+    list[chess.pgn.Game],
+    list[chess.pgn.Game],
+]:
+    """Partition games into (win, loss, draw) for the trained side.
+
+    Args:
+        games: Parsed PGN games.
+        train_white: True if training white, False for black.
+
+    Returns:
+        Tuple of (win_games, loss_games, draw_games).
+    """
+    win_result = "1-0" if train_white else "0-1"
+    loss_result = "0-1" if train_white else "1-0"
+    win_games: list[chess.pgn.Game] = []
+    loss_games: list[chess.pgn.Game] = []
+    draw_games: list[chess.pgn.Game] = []
+    for g in games:
+        result = g.headers.get("Result", "*")
+        if result == win_result:
+            win_games.append(g)
+        elif result == loss_result:
+            loss_games.append(g)
+        elif result == "1/2-1/2":
+            draw_games.append(g)
+    return win_games, loss_games, draw_games
 
 
 def _stream_pgn(
@@ -179,6 +215,14 @@ class PGNRLTrainer:
         )
         self._global_step: int = 0
         self._ply_step: int = 0
+
+        # Structural mask: suppress logits for tokens whose
+        # from-square has no player piece. Opt-in via config.
+        self._struct_mask: StructuralMaskable | None = (
+            StructuralMaskBuilder(self._device)
+            if cfg.rl.use_structural_mask
+            else None
+        )
 
     def _encode_and_decode(
         self,
@@ -372,6 +416,7 @@ class PGNRLTrainer:
         q_preds: list[Tensor] = []
         all_logits: list[Tensor] = []
         all_targets: list[int] = []
+        all_color_tokens: list[Tensor] = []
         valid_reward_idxs: list[int] = []
 
         for i, ply in enumerate(plies):
@@ -429,6 +474,7 @@ class PGNRLTrainer:
 
             all_logits.append(last_logits)
             all_targets.append(move_idx)
+            all_color_tokens.append(ct.squeeze(0))  # [65]
             valid_reward_idxs.append(i)
 
         if not all_logits:
@@ -458,11 +504,31 @@ class PGNRLTrainer:
         )
         value_loss = F.mse_loss(q_preds_t, valid_rewards)
 
-        # --- RSBC loss (reward-signed behavioral cloning) ---
+        # --- Outcome weights: winner=1.0, draw=draw_reward_norm,
+        # loser=loser_ply_weight. Always positive — no anti-imitation.
+        ply_weights = torch.tensor(
+            [
+                (
+                    self._cfg.rl.draw_reward_norm
+                    if plies[i].is_draw_ply
+                    else 1.0
+                    if plies[i].is_winner_ply
+                    else self._cfg.rl.loser_ply_weight
+                )
+                for i in valid_reward_idxs
+            ],
+            dtype=torch.float32,
+            device=self._device,
+        )
         rsbc_loss = self._compute_rsbc_loss(
             all_logits=all_logits,
             all_targets=all_targets,
-            rewards=valid_rewards,
+            weights=ply_weights,
+            all_color_tokens=(
+                all_color_tokens
+                if self._struct_mask is not None
+                else None
+            ),
         )
 
         total_loss = (
@@ -490,11 +556,6 @@ class PGNRLTrainer:
             "value_loss": value_loss.item(),
             "mean_advantage": mean_adv,
             "std_advantage": std_adv,
-            # deprecated — backward compat for Aim dashboard
-            "pg_loss": 0.0,
-            "ce_loss": 0.0,
-            "awbc_loss": 0.0,
-            "entropy_bonus": 0.0,
         }
 
     def train_epoch(
@@ -512,6 +573,46 @@ class PGNRLTrainer:
             Dict with averaged loss metrics over all games.
         """
         games = _stream_pgn(pgn_path, max_games)
+        if self._cfg.rl.balance_outcomes:
+            train_white = self._cfg.rl.train_color == "white"
+            win_games, loss_games, draw_games = (
+                _split_games_by_outcome(games, train_white)
+            )
+            if win_games and loss_games:
+                n = min(len(win_games), len(loss_games))
+                if len(win_games) > n:
+                    win_games = random.sample(win_games, n)
+                if len(loss_games) > n:
+                    loss_games = random.sample(loss_games, n)
+                draws = (
+                    [] if self._cfg.rl.skip_draws else draw_games
+                )
+                games = [
+                    g
+                    for pair in zip(win_games, loss_games)
+                    for g in pair
+                ] + draws
+                dropped = abs(
+                    len(win_games) - len(loss_games)
+                )
+                logger.info(
+                    "Outcome balance: %d win + %d loss"
+                    " + %d draw = %d games"
+                    " (dropped %d from majority)",
+                    n,
+                    n,
+                    len(draws),
+                    2 * n + len(draws),
+                    dropped,
+                )
+            else:
+                logger.warning(
+                    "balance_outcomes=True but only one outcome"
+                    " class present (%d win, %d loss) — skipping"
+                    " balance",
+                    len(win_games),
+                    len(loss_games),
+                )
         total_loss = 0.0
         rsbc_loss_sum: float = 0.0
         reward_sum = 0.0
@@ -558,11 +659,6 @@ class PGNRLTrainer:
             "value_loss": value_loss_sum / denom,
             "mean_advantage": mean_adv_sum / denom,
             "std_advantage": std_adv_sum / denom,
-            # deprecated — backward compat
-            "pg_loss": 0.0,
-            "ce_loss": 0.0,
-            "awbc_loss": 0.0,
-            "entropy_bonus": 0.0,
         }
 
     def evaluate(
@@ -643,7 +739,7 @@ class PGNRLTrainer:
         return {
             "val_loss": total_ce / denom,
             "val_accuracy": correct / denom,
-            "n_games": n_games,
+            "val_n_games": n_games,
         }
 
     def sample_visuals(
@@ -872,49 +968,68 @@ class PGNRLTrainer:
         self,
         all_logits: list[Tensor],
         all_targets: list[int],
-        rewards: Tensor,
+        weights: Tensor,
+        all_color_tokens: list[Tensor] | None = None,
     ) -> Tensor:
-        """Compute reward-signed behavioral cloning loss.
+        """Outcome-weighted behavioral cloning loss.
 
-        Weights per-ply CE by per-game-normalized reward
-        r_hat_t in [-1, 1]. Positive reward -> imitate
-        (lower log-prob of teacher move). Negative reward
-        -> avoid (raise log-prob of teacher move).
-        No label smoothing: smoothing opposes anti-imitation
-        on negative plies.
+        Minimizes CE for all plies (winner, draw, loser),
+        scaled by a non-negative outcome weight in (0, 1].
+        No sign flip — losers are still imitated but at
+        reduced strength (loser_ply_weight, default 0.1).
+
+        When structural masking is enabled, logits for tokens
+        whose from-square has no player piece are set to -1e9
+        before CE computation, concentrating gradient on
+        structurally valid moves.
+
+        Weight mapping (from RLConfig):
+          winner ply  → 1.0
+          draw ply    → draw_reward_norm  (default 0.5)
+          loser ply   → loser_ply_weight  (default 0.1)
 
         Args:
             all_logits: Per-ply decoder logits, each [vocab].
             all_targets: Per-ply teacher move indices (int).
-            rewards: Raw per-ply discounted rewards [N].
+            weights: Non-negative per-ply CE weights [N].
+            all_color_tokens: Per-ply color tokens [65] each,
+                or None when structural masking is disabled.
 
         Returns:
-            Scalar RSBC loss tensor (may be negative when
-            losing plies dominate).
+            Scalar weighted CE loss tensor (always >= 0).
 
         Example:
             >>> loss = trainer._compute_rsbc_loss(
-            ...     logits, targets, rewards)
+            ...     logits, targets, weights)
         """
         targets_t = torch.tensor(
             all_targets,
             dtype=torch.long,
             device=self._device,
         )
-        # No label_smoothing: smoothing opposes anti-imitation
-        # on negative-reward plies.
+        logits_t = torch.stack(all_logits)  # [N, V]
+
+        # Apply structural mask: suppress logits for tokens
+        # whose from-square has no player piece.
+        if (
+            self._struct_mask is not None
+            and all_color_tokens is not None
+        ):
+            ct_stacked = torch.stack(
+                all_color_tokens
+            )  # [N, 65]
+            smask = self._struct_mask.build(
+                ct_stacked
+            )  # [N, V]
+            logits_t = logits_t.masked_fill(~smask, -1e9)
+
         per_ply_ce: Tensor = F.cross_entropy(
-            torch.stack(all_logits),
+            logits_t,
             targets_t,
-            label_smoothing=0.0,
+            label_smoothing=self._cfg.rl.label_smoothing,
             reduction="none",
         )  # [N]
-        if self._cfg.rl.rsbc_normalize_per_game:
-            max_abs = rewards.abs().max()
-            r_hat: Tensor = rewards / (max_abs + 1e-8)
-        else:
-            r_hat = rewards
-        return (r_hat * per_ply_ce).mean()
+        return (weights * per_ply_ce).mean()
 
     def save_checkpoint(self, path: Path) -> None:
         """Save model, optimizer, and scheduler state.

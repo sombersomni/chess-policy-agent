@@ -469,6 +469,9 @@ class RLConfig:
     label_smoothing: float = 0.0
     train_color: str = "white"
     value_lr_multiplier: float = 5.0
+    balance_outcomes: bool = True
+    loser_ply_weight: float = 0.1
+    use_structural_mask: bool = False
 
     def __post_init__(self) -> None:
         """Validate RL hyperparameter ranges."""

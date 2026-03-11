@@ -265,8 +265,7 @@ class TestIntegrationAllLossKeys(unittest.TestCase):
         metrics = trainer.train_game(game)
         required = {
             "total_loss",
-            "pg_loss",
-            "ce_loss",
+            "rsbc_loss",
             "value_loss",
             "mean_advantage",
         }

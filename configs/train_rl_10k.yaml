@@ -42,6 +42,7 @@ rl:
   train_color:          white
   lambda_value:         0.1
   value_lr_multiplier:  1.0
+  balance_outcomes:     true
 
 aim:
   enabled:           true

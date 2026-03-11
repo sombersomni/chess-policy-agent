@@ -29,7 +29,7 @@ spec:
     - name: ghcr-secret
   containers:
     - name: chess-sim
-      image: ghcr.io/sombersomni/chess-sim:ci-latest
+      image: ghcr.io/sombersomni/chess-sim:ci-v1.1.0
       command: ["sleep"]
       args: ["infinity"]
       env:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+import numpy as np
 from torch import Tensor
 
 
@@ -323,3 +324,42 @@ class RLPlyRecord(NamedTuple):
     is_draw_ply: bool
     game_id: int
     ply_index: int
+
+
+# ---------------------------------------------------------------------------
+# V4 batched RSCE preprocessing types
+# ---------------------------------------------------------------------------
+
+
+class RLRewardRow(NamedTuple):
+    """Immutable intermediate: one ply for HDF5 write, no torch tensors.
+
+    Passed between PGNRewardPreprocessor replay and HDF5 write.
+    All fields are plain Python / NumPy types.
+
+    Attributes:
+        board: (65, 3) float32 array — board/color/traj channels.
+        color_tokens: (65,) int8 array — for structural mask.
+        target_move: Vocab index of the teacher's move.
+        multiplier: Pre-normalized m_hat RSCE weight.
+        game_id: Source game index.
+        ply_idx: 0-indexed ply within game.
+        outcome: +1 / 0 / -1 from side-to-move perspective.
+
+    Example:
+        >>> row = RLRewardRow(
+        ...     np.zeros((65,3), dtype=np.float32),
+        ...     np.zeros(65, dtype=np.int8),
+        ...     42, 1.0, 0, 0, 1,
+        ... )
+        >>> row.target_move
+        42
+    """
+
+    board: np.ndarray          # (65, 3) float32
+    color_tokens: np.ndarray   # (65,) int8
+    target_move: int
+    multiplier: float          # pre-normalized m_hat
+    game_id: int
+    ply_idx: int
+    outcome: int               # +1 / 0 / -1

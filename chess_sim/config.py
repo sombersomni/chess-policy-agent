@@ -474,6 +474,11 @@ class RLConfig:
     use_structural_mask: bool = False
     max_plies_per_game: int = 150
     rsce_r_ref: float = 0.0
+    hdf5_path: str = ""
+    batch_size: int = 512
+    num_workers: int = 4
+    val_split_fraction: float = 0.1
+    hdf5_chunk_size: int = 1024
 
     def __post_init__(self) -> None:
         """Validate RL hyperparameter ranges."""
@@ -536,6 +541,25 @@ class RLConfig:
                 "warmup_fraction must be < decay_start_fraction"
                 f", got {self.warmup_fraction} >= "
                 f"{self.decay_start_fraction}"
+            )
+        if self.batch_size < 1:
+            raise ValueError(
+                f"batch_size must be >= 1, got {self.batch_size}"
+            )
+        if self.num_workers < 0:
+            raise ValueError(
+                "num_workers must be >= 0, "
+                f"got {self.num_workers}"
+            )
+        if not (0.0 < self.val_split_fraction < 1.0):
+            raise ValueError(
+                "val_split_fraction must be in (0, 1), "
+                f"got {self.val_split_fraction}"
+            )
+        if self.hdf5_chunk_size < 1:
+            raise ValueError(
+                "hdf5_chunk_size must be >= 1, "
+                f"got {self.hdf5_chunk_size}"
             )
 
 

@@ -14,6 +14,22 @@ See [scaffolding-history.md](scaffolding-history.md) for all prior scaffolding d
 
 ---
 
+## Scaffolding Completed: RSCE Trainer v3 (2026-03-11)
+
+### Changes
+- `chess_sim/training/pgn_rl_trainer_v3.py` — NEW: `PGNRLTrainerV3(PGNRLTrainerV2)` with 3 NIE stubs: `train_game`, `_build_multipliers`, `_compute_rsce_loss`
+- `chess_sim/config.py` — `RLConfig` gains `rsce_r_ref: float = 0.0` (no validation needed)
+- `configs/train_rl_v3.yaml` — copy of v2, checkpoint/experiment renamed, adds `rsce_r_ref: 0.0`
+- `tests/test_pgn_rl_trainer_v3.py` — NEW: 15 skipTest stubs (T1-T15)
+  - T1-T7: `TestBuildMultipliers` (monotone, positivity, r_ref shift, normalization, edge cases)
+  - T8-T12: `TestComputeRSCELoss` (finite, mask, reward scaling, zero-reward baseline)
+  - T13-T15: `TestTrainGameV3` (rsce_loss key, lambda scaling, empty game)
+
+### Test Results: 15 skipped, 5 v2 tests pass unchanged
+- Design doc at `docs/rsce_loss_design.md`
+
+---
+
 ## Scaffolding Completed: Composite Reward Redesign (2026-03-10)
 
 ### Changes

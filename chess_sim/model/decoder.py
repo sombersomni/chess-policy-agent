@@ -2,7 +2,8 @@
 
 Wraps nn.TransformerDecoder with causal mask generation and a final
 linear projection to move vocabulary logits. Cross-attends to the
-encoder's board representation (memory).
+encoder's board representation (memory). Accepts move_colors [B, T]
+to annotate each position as 0=SOS/special, 1=player, 2=opponent.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ class MoveDecoder(nn.Module):
     Implements the Decodable protocol.
 
     Internal structure:
-      move_embedding: MoveEmbedding (token + positional)
+      move_embedding: MoveEmbedding (token + positional + color)
       transformer:    nn.TransformerDecoder (n_layers layers, n_heads heads)
       output_proj:    nn.Linear(d_model, move_vocab_size)
 
@@ -32,7 +33,8 @@ class MoveDecoder(nn.Module):
         >>> dec = MoveDecoder()
         >>> memory = torch.randn(4, 65, 256)
         >>> tokens = torch.randint(0, 1971, (4, 20))
-        >>> out = dec(tokens, memory)
+        >>> colors = torch.zeros(4, 20, dtype=torch.long)
+        >>> out = dec(tokens, memory, move_colors=colors)
         >>> out.logits.shape
         torch.Size([4, 20, 1971])
     """
@@ -96,28 +98,36 @@ class MoveDecoder(nn.Module):
         move_tokens: Tensor,
         memory: Tensor,
         tgt_key_padding_mask: Optional[Tensor] = None,
+        move_colors: Optional[Tensor] = None,
     ) -> DecoderOutput:
         """Decode move tokens autoregressively using encoder memory.
 
-        Embeds move_tokens, applies causal masking, runs through the
-        transformer decoder with cross-attention to memory, then
-        projects to vocabulary logits.
+        Embeds move_tokens with turn color, applies causal masking, runs
+        through the transformer decoder with cross-attention to memory,
+        then projects to vocabulary logits.
 
         Args:
             move_tokens: LongTensor [B, T] of move token indices.
             memory: FloatTensor [B, 65, d_model] from the encoder.
             tgt_key_padding_mask: Optional BoolTensor [B, T]. True = PAD.
+            move_colors: Optional LongTensor [B, T]. Values: 0=SOS/special,
+                1=player (side-to-move), 2=opponent. Defaults to all zeros.
 
         Returns:
             DecoderOutput with logits [B, T, MOVE_VOCAB_SIZE].
 
         Example:
-            >>> out = dec.decode(tokens, memory)
+            >>> colors = torch.zeros(4, 20, dtype=torch.long)
+            >>> out = dec.decode(tokens, memory, move_colors=colors)
             >>> out.logits.shape
             torch.Size([4, 20, 1971])
         """
-        T = move_tokens.size(1)
-        tgt = self.move_embedding(move_tokens)
+        B, T = move_tokens.shape
+        if move_colors is None:
+            move_colors = torch.zeros(
+                B, T, dtype=torch.long, device=memory.device
+            )
+        tgt = self.move_embedding(move_tokens, move_colors)
         causal = self._causal_mask(T).to(memory.device)
         out = self.transformer(
             tgt, memory,
@@ -132,6 +142,7 @@ class MoveDecoder(nn.Module):
         move_tokens: Tensor,
         memory: Tensor,
         tgt_key_padding_mask: Optional[Tensor] = None,
+        move_colors: Optional[Tensor] = None,
     ) -> DecoderOutput:
         """nn.Module forward -- delegates to decode().
 
@@ -139,8 +150,12 @@ class MoveDecoder(nn.Module):
             move_tokens: LongTensor [B, T].
             memory: FloatTensor [B, 65, d_model].
             tgt_key_padding_mask: Optional BoolTensor [B, T].
+            move_colors: Optional LongTensor [B, T].
 
         Returns:
             DecoderOutput namedtuple.
         """
-        return self.decode(move_tokens, memory, tgt_key_padding_mask)
+        return self.decode(
+            move_tokens, memory,
+            tgt_key_padding_mask, move_colors,
+        )

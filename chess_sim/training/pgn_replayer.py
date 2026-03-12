@@ -140,6 +140,9 @@ class PGNReplayer:
             prefix = self._move_tok.tokenize_game(prior_ucis)
             prefix = prefix[:-1]  # drop EOS
 
+            # Capture legal moves BEFORE push
+            legal_ucis = [m.uci() for m in board.legal_moves]
+
             board.push(move)
 
             plies.append(OfflinePlyTuple(
@@ -152,6 +155,7 @@ class PGNReplayer:
                 is_white_ply=is_white_ply,
                 is_draw_ply=is_draw,
                 material_delta=delta,
+                legal_move_ucis=legal_ucis,
             ))
             move_history.append(move)
 

@@ -209,8 +209,9 @@ class TestMoveEmbedding(unittest.TestCase):
         except NotImplementedError:
             self.fail("TV09: MoveEmbedding.__init__ not implemented")
         tokens = torch.randint(0, MOVE_VOCAB_SIZE, (B, T), dtype=torch.long)
+        colors = torch.zeros(B, T, dtype=torch.long)
         try:
-            out = emb(tokens)
+            out = emb(tokens, colors)
         except NotImplementedError:
             self.fail("TV09: embed_moves not implemented")
         self.assertEqual(out.shape, torch.Size([B, T, D_MODEL]))

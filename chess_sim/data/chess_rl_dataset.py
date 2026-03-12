@@ -113,12 +113,13 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
 
     def __getitem__(
         self, idx: int,
-    ) -> tuple[Tensor, int, float, Tensor, int, int]:
-        """Return one sample as a 6-tuple.
+    ) -> tuple[Tensor, int, float, Tensor, int, int, Tensor]:
+        """Return one sample as a 7-tuple.
 
         Returns (board, target_move, multiplier, color_tokens,
-        outcome, loss_mode). Opens the HDF5 file lazily on
-        first call. Maps split-local index to global HDF5 row.
+        outcome, loss_mode, legal_mask). Opens the HDF5 file
+        lazily on first call. Maps split-local index to global
+        HDF5 row.
 
         Args:
             idx: Index into this split (0-based).
@@ -131,14 +132,15 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
                 color_tokens: long tensor [65]
                 outcome: int (+1 winner, 0 draw, -1 loser)
                 loss_mode: int (+1 imitation, -1 repulsion)
+                legal_mask: bool tensor [1971] — true legal moves
 
         Raises:
             IndexError: If idx is out of range.
 
         Example:
-            >>> board, tgt, mult, ct, out, lm = ds[0]
-            >>> isinstance(mult, float)
-            True
+            >>> board, tgt, mult, ct, out, lm, mask = ds[0]
+            >>> mask.shape
+            torch.Size([1971])
         """
         if idx < 0 or idx >= len(self._indices):
             raise IndexError(
@@ -169,10 +171,14 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
         loss_mode = int(
             self._h5["loss_mode"][global_idx]
         )
+        legal_mask = torch.tensor(
+            self._h5["legal_mask"][global_idx],
+            dtype=torch.bool,
+        )
 
         return (
             board, target_move, multiplier,
-            color_tokens, outcome, loss_mode,
+            color_tokens, outcome, loss_mode, legal_mask,
         )
 
     @property

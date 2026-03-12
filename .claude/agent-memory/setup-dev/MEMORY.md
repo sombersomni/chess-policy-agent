@@ -14,6 +14,23 @@ See [scaffolding-history.md](scaffolding-history.md) for all prior scaffolding d
 
 ---
 
+## Scaffolding Completed: Dual-Direction RSCE Loss (2026-03-11)
+
+### Changes
+- `chess_sim/config.py` — `RLConfig` gains `rsce_repulsion_weight=1.0`, `rsce_repulsion_warmup=0.0` + validation
+- `chess_sim/types.py` — `RLRewardRow` gains `loss_mode: int` field (8 fields now, inserted after multiplier)
+- `chess_sim/data/pgn_reward_preprocessor.py` — `_DATASETS` gains `loss_mode: int8`; `_write_batch` writes it; `_is_cache_valid` checks `rsce_repulsion_weight`; attrs stored
+- `chess_sim/data/chess_rl_dataset.py` — 5-tuple -> 6-tuple: `(board, target_move, multiplier, color_tokens, outcome, loss_mode)`
+- `chess_sim/training/pgn_rl_trainer_v4.py` — NEW: `rsce_dual_loss()` stub (NIE); `_train_step` gains `loss_modes` param + 3 stub keys; `train_epoch` unpacks 6-tuple + aggregates branch metrics; `evaluate` unpacks 6-tuple + `repulsion_top1_avoidance: 0.0`
+- `scripts/train_rl_v4.py` — log format extended with imit/repul/frac_repul/repul_avoid
+- `configs/train_rl_v4.yaml` — `rsce_repulsion_weight: 1.0`, `rsce_repulsion_warmup: 0.2`
+- `tests/test_rsce_v4.py` — TC01-TC15 updated for 6-tuple; TC16-TC30 added (15 new tests)
+
+### Test Results: 25 pass, 5 fail (TC16-TC20 fail with NIE from rsce_dual_loss stub — expected)
+- Design doc at `docs/design/dual_rsce_loss.md`
+
+---
+
 ## Scaffolding Completed: RSCE V4 Batched Pipeline (2026-03-11)
 
 ### Changes

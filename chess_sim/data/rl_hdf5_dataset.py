@@ -163,6 +163,7 @@ class RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]):
             is_white_ply=is_white_ply,
             is_draw_ply=is_draw_ply,
             material_delta=material_delta,
+            legal_move_ucis=[],  # not stored in this HDF5 schema
         )
 
 

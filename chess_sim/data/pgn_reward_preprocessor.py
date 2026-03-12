@@ -47,7 +47,10 @@ _DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
     "ply_idx": ("int16", ()),
     "outcome": ("int8", ()),
     "loss_mode": ("int8", ()),
+    "legal_mask": ("bool", (1971,)),
 }
+
+_SCHEMA_VERSION: int = 2  # bump when HDF5 schema changes
 
 
 def _encode_board(
@@ -252,6 +255,12 @@ class PGNRewardPreprocessor:
                         loss_mode_vals[ply_i]
                     )
 
+                    legal_mask_t = (
+                        self._move_tok.build_legal_mask(
+                            ply.legal_move_ucis
+                        )
+                    )
+
                     rows.append(RLRewardRow(
                         board=board_enc.numpy(),
                         color_tokens=ct_np,
@@ -261,6 +270,7 @@ class PGNRewardPreprocessor:
                         game_id=game_idx,
                         ply_idx=ply_i,
                         outcome=outcome,
+                        legal_mask=legal_mask_t.numpy(),
                     ))
 
                     if len(rows) >= chunk_size:
@@ -281,6 +291,7 @@ class PGNRewardPreprocessor:
                 pgn_path, max_games
             )
             hf.attrs["checksum"] = checksum
+            hf.attrs["schema_version"] = _SCHEMA_VERSION
             hf.attrs["max_games"] = max_games
             hf.attrs["lambda_outcome"] = rl.lambda_outcome
             hf.attrs["lambda_material"] = (
@@ -352,6 +363,9 @@ class PGNRewardPreprocessor:
         hf["loss_mode"][cursor:new_size] = np.array(
             [r.loss_mode for r in rows], dtype=np.int8
         )
+        hf["legal_mask"][cursor:new_size] = np.stack(
+            [r.legal_mask for r in rows]
+        )
 
         return new_size
 
@@ -390,6 +404,12 @@ class PGNRewardPreprocessor:
                     pgn_path, max_games
                 )
                 if stored_checksum != expected:
+                    return False
+
+                if (
+                    hf.attrs.get("schema_version")
+                    != _SCHEMA_VERSION
+                ):
                     return False
 
                 rl = self._cfg.rl

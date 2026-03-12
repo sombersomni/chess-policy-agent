@@ -35,6 +35,7 @@ def _make_ply(
         is_white_ply=True,
         is_draw_ply=is_draw,
         material_delta=material_delta,
+        legal_move_ucis=["e2e4"],
     )
 
 

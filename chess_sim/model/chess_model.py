@@ -24,6 +24,37 @@ from chess_sim.model.value_heads import ActionConditionedValueHead
 _ILLEGAL_LOGIT_FILL: float = -1e9
 
 
+def _build_move_colors(
+    seq_len: int,
+    is_white_turn: bool,
+    device: torch.device,
+) -> Tensor:
+    """Build a [1, seq_len] move-color tensor for the decoder.
+
+    Position 0 (SOS) always gets 0 (special). Subsequent positions
+    alternate player(1) / opponent(2) based on whose move each was.
+    Even game-indices belong to white; odd to black.
+
+    Args:
+        seq_len: Total decoder input length (1 + len(move_history)).
+        is_white_turn: True if white is the side-to-move.
+        device: Target device for the tensor.
+
+    Returns:
+        LongTensor [1, seq_len] with values 0, 1, or 2.
+
+    Example:
+        >>> _build_move_colors(4, True, torch.device("cpu"))
+        tensor([[0, 1, 2, 1]])
+    """
+    colors = torch.zeros(1, seq_len, dtype=torch.long, device=device)
+    for i in range(1, seq_len):
+        game_idx = i - 1  # 0-indexed position in game history
+        is_player_move = (game_idx % 2 == 0) == is_white_turn
+        colors[0, i] = 1 if is_player_move else 2
+    return colors
+
+
 class ChessModel(nn.Module):
     """
     Top-level encoder-decoder model for chess move prediction.
@@ -99,6 +130,7 @@ class ChessModel(nn.Module):
         trajectory_tokens: Tensor,
         move_tokens: Tensor,
         move_pad_mask: Tensor | None = None,
+        move_colors: Tensor | None = None,
     ) -> Tensor:
         """Full forward pass: encode board state, then decode move sequence.
 
@@ -108,6 +140,9 @@ class ChessModel(nn.Module):
             trajectory_tokens: LongTensor [B, 65]. Trajectory roles 0-4.
             move_tokens: LongTensor [B, T]. Decoder input move indices.
             move_pad_mask: Optional BoolTensor [B, T]. True = PAD position.
+            move_colors: Optional LongTensor [B, T]. Turn ownership per
+                decoder position: 0=SOS/special, 1=player, 2=opponent.
+                Defaults to all zeros (all special) when None.
 
         Returns:
             FloatTensor [B, T, MOVE_VOCAB_SIZE] of raw move logits.
@@ -129,7 +164,7 @@ class ChessModel(nn.Module):
             dim=1,
         )
         return self.decoder.decode(
-            move_tokens, memory, move_pad_mask,
+            move_tokens, memory, move_pad_mask, move_colors,
         ).logits
 
     def predict_next_move(
@@ -139,14 +174,15 @@ class ChessModel(nn.Module):
         trajectory_tokens: Tensor,
         move_history: list[str],
         legal_moves: list[str],
+        is_white_turn: bool = True,
         temperature: float = 1.0,
         tokenizer: MoveTokenizer | None = None,
     ) -> str:
         """Predict the next move given current board and move history.
 
         Inference-time method. Encodes the board, feeds move history
-        through the decoder, applies legal-move masking and temperature
-        scaling, then samples a move from the resulting distribution.
+        through the decoder with turn color annotations, applies
+        legal-move masking and temperature scaling, then samples a move.
         Restores the model's training mode after inference.
 
         Args:
@@ -155,6 +191,8 @@ class ChessModel(nn.Module):
             trajectory_tokens: LongTensor [1, 65]. Trajectory roles.
             move_history: List of prior UCI move strings in game order.
             legal_moves: List of legal UCI moves for the current position.
+            is_white_turn: True if white is the side-to-move. Used to
+                assign player(1)/opponent(2) colors to move history.
             temperature: Softmax temperature for sampling. Default 1.0.
             tokenizer: Optional pre-built MoveTokenizer. Reuse across calls
                 to avoid re-loading the vocabulary on every inference step.
@@ -167,7 +205,7 @@ class ChessModel(nn.Module):
                 after trimming EOS.
 
         Example:
-            >>> move = model.predict_next_move(bt, ct, tt, ["e2e4"], ["e7e5", "d7d5"])
+            >>> move = model.predict_next_move(bt, ct, tt, ["e2e4"], ["e7e5"], True)
             >>> isinstance(move, str)
             True
         """
@@ -191,6 +229,12 @@ class ChessModel(nn.Module):
                 "tokenize_game returned no tokens"
             )
 
+        move_colors = _build_move_colors(
+            move_tokens.shape[1],
+            is_white_turn,
+            board_tokens.device,
+        )
+
         was_training = self.training
         self.eval()
         try:
@@ -198,6 +242,7 @@ class ChessModel(nn.Module):
                 logits = self.forward(
                     board_tokens, color_tokens,
                     trajectory_tokens, move_tokens,
+                    move_colors=move_colors,
                 )
         finally:
             self.train(was_training)

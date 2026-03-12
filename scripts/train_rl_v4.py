@@ -91,23 +91,15 @@ def _run_training_loop(
             )
 
             logger.info(
-                "Epoch %02d: loss=%.4f "
-                "(imit=%.4f repul=%.4f "
-                "frac_repul=%.2f) "
+                "Epoch %02d: loss=%.4f train_acc=%.4f "
                 "| val_loss=%.4f val_acc=%.4f "
-                "repul_avoid=%.4f "
                 "| n_samples=%d n_games=%d "
                 "lr=%.2e",
                 epoch,
                 metrics["total_loss"],
-                metrics["loss_imitation"],
-                metrics["loss_repulsion"],
-                metrics["frac_repulsion"],
+                metrics["train_accuracy"],
                 val_metrics["val_loss"],
                 val_metrics["val_accuracy"],
-                val_metrics.get(
-                    "repulsion_top1_avoidance", 0.0
-                ),
                 metrics["n_samples"],
                 metrics["n_games"],
                 lr_main,

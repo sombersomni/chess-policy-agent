@@ -235,6 +235,7 @@ class OfflinePlyTuple(NamedTuple):
     is_white_ply: bool         # True when white is side-to-move
     is_draw_ply: bool          # True for all plies in a drawn game
     material_delta: float      # net material gain since last ply
+    legal_move_ucis: list[str]  # all legal UCI moves before push
 
 
 class PlyTuple(NamedTuple):
@@ -365,3 +366,4 @@ class RLRewardRow(NamedTuple):
     game_id: int
     ply_idx: int
     outcome: int               # +1 / 0 / -1
+    legal_mask: np.ndarray     # (1971,) bool — true legal moves

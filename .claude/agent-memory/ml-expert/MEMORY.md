@@ -95,17 +95,20 @@
 - Config merge: YAML -> dataclass, CLI overrides with None-default args
 - load_v2_config ignores unknown YAML keys (uses .get()); safe to add eval section
 
-## Offline RL PGN Trainer (chess_rl.pt)
-- **Key files**: `pgn_rl_trainer.py`, `pgn_rl_reward_computer.py`, `model/value_heads.py`
-- **Value head**: ReturnValueHead (d_model->d_model//2->ReLU->1), 8,321 params, detached CLS input
-- **Loss**: `pg + lambda_ce*ce + lambda_value*value_mse`, advantage = reward - V(s).detach()
-- **Params**: 2,839,220 total (2,830,899 base + 8,321 value head)
-- **Speed**: ~10 min/epoch on GPU (1k games, ply-by-ply, no batching)
-- **1-epoch from-scratch run (2026-03-09)**:
-  - total=-308.53, pg=-392.10, ce=7.67, value=79.74
-  - val_loss=7.68, val_acc=1.07%, mean_reward=0.79, mean_adv=-1.41
-  - value_loss~80 (near random ~83) -- critic NOT useful after 1 epoch
-  - Critic V(s)~2.20 avg vs true mean return 0.79 -- biased baseline
-- **Log format gap**: epoch log omits ce_loss, value_loss, mean_advantage
-- **Insight**: detached CLS limits critic learning; needs separate higher LR or multi-epoch
-- **Diagnostic needed**: compare std(advantage) vs std(reward) over epochs
+## Offline RL v4 Batched RSCE (chess_rl_v4.pt, 2026-03-11)
+- **Script**: `scripts/train_rl_v4.py` + `configs/train_rl_v4.yaml`
+- **Key files**: `chess_sim/training/pgn_rl_trainer_v4.py`, `chess_sim/data/chess_rl_dataset.py`, `chess_sim/data/pgn_reward_preprocessor.py`
+- **Data**: 10k lichess games -> 328,267 HDF5 rows (295,335 train / 32,932 val), bs=512
+- **Params**: 2,847,412 (~2.85M)
+- **Speed**: ~2 min/epoch on CUDA, ~40 min total for 20 epochs
+- **LR**: warmup 5% + constant to 50% + cosine decay, base 1e-4, min 1e-5
+- **20-epoch results**:
+  - Epoch 1: total=2.89, imit=5.28, repul=0.001, val_loss=4.64, val_acc=7.0%
+  - Epoch 10: total=2.15, imit=3.88, repul=0.066, val_loss=3.81, val_acc=16.9%
+  - Epoch 20: total=1.99, imit=3.56, repul=0.084, val_loss=3.56, val_acc=19.5%
+- **frac_repulsion**: constant 0.45 (45% loser plies)
+- **repulsion_top1_avoidance**: DECLINED from 93% to 81% -- winner/loser move overlap on common moves
+- **Key insight**: repulsion loss (~0.08) is negligible vs imitation (~3.56), ~44x gap
+- **Recommendations**: increase rsce_repulsion_weight to 5-10x, add lambda_ce>0, train 40+ epochs
+- **Checkpoint**: `checkpoints/chess_rl_v4.pt`
+- **HDF5 cache**: `data/chess_rl_v4.h5` -- must delete if schema changes (not auto-detected)

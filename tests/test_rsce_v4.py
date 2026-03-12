@@ -52,8 +52,9 @@ def _write_synthetic_hdf5(
         )
         hf.create_dataset("color_tokens", data=ct)
 
+        # Keep targets within legal range [3, 19] to match legal_mask
         tm = np.random.randint(
-            3, 1970, (n_rows,), dtype=np.int32
+            3, 20, (n_rows,), dtype=np.int32
         )
         hf.create_dataset("target_move", data=tm)
 
@@ -99,6 +100,13 @@ def _write_synthetic_hdf5(
             outcome >= 0, 1, -1
         ).astype(np.int8)
         hf.create_dataset("loss_mode", data=loss_mode)
+
+        legal_mask = np.zeros(
+            (n_rows, 1971), dtype=bool
+        )
+        # Mark a few tokens legal so targets are reachable
+        legal_mask[:, 3:20] = True
+        hf.create_dataset("legal_mask", data=legal_mask)
 
 
 def _make_minimal_pgn(path: Path) -> None:
@@ -183,7 +191,7 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
     def test_tc03_generate_creates_correct_datasets(
         self,
     ) -> None:
-        """generate() creates HDF5 with all 8 required datasets."""
+        """generate() creates HDF5 with all 9 required datasets."""
         with tempfile.TemporaryDirectory() as td:
             pgn_path = Path(td) / "games.pgn"
             _make_minimal_pgn(pgn_path)
@@ -205,6 +213,7 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
                 "ply_idx",
                 "outcome",
                 "loss_mode",
+                "legal_mask",
             }
             with h5py.File(hdf5_path, "r") as hf:
                 self.assertEqual(
@@ -319,7 +328,7 @@ class TestChessRLDataset(unittest.TestCase):
     def test_tc08_getitem_shapes_and_types(
         self,
     ) -> None:
-        """__getitem__ returns correct 6-tuple shapes."""
+        """__getitem__ returns correct 7-tuple shapes."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
@@ -333,7 +342,7 @@ class TestChessRLDataset(unittest.TestCase):
             try:
                 (
                     board, tgt, mult,
-                    ct, outcome, loss_mode,
+                    ct, outcome, loss_mode, legal_mask,
                 ) = ds[0]
                 self.assertEqual(board.shape, (65, 3))
                 self.assertEqual(
@@ -349,6 +358,12 @@ class TestChessRLDataset(unittest.TestCase):
                 self.assertIn(outcome, (-1, 0, 1))
                 self.assertIsInstance(loss_mode, int)
                 self.assertIn(loss_mode, (-1, +1))
+                self.assertEqual(
+                    legal_mask.shape, (1971,)
+                )
+                self.assertEqual(
+                    legal_mask.dtype, torch.bool
+                )
             finally:
                 ds.close()
 
@@ -457,7 +472,8 @@ class TestPGNRLTrainerV4(unittest.TestCase):
         board = torch.stack(
             [ch0, ch1, ch2], dim=-1
         )
-        targets = torch.randint(3, 1970, (B,))
+        # Keep targets within legal range [3, 19] so CE is finite
+        targets = torch.randint(3, 20, (B,))
         mults = torch.ones(B)
         ct = torch.randint(
             0, 3, (B, 65), dtype=torch.long
@@ -466,8 +482,11 @@ class TestPGNRLTrainerV4(unittest.TestCase):
             B, dtype=torch.int8
         )
 
+        legal_mask = torch.zeros(B, 1971, dtype=torch.bool)
+        legal_mask[:, 3:20] = True  # ensure targets reachable
+
         result = trainer._train_step(
-            board, targets, mults, ct, loss_modes
+            board, targets, ct, legal_mask
         )
         self.assertIn("loss", result)
         self.assertTrue(
@@ -486,9 +505,6 @@ class TestPGNRLTrainerV4(unittest.TestCase):
         self.assertGreaterEqual(
             result["grad_norm"], 0.0
         )
-        self.assertIn("loss_imitation", result)
-        self.assertIn("loss_repulsion", result)
-        self.assertIn("frac_repulsion", result)
 
     def test_tc12_train_epoch_returns_all_keys(
         self,
@@ -509,12 +525,9 @@ class TestPGNRLTrainerV4(unittest.TestCase):
                 metrics = trainer.train_epoch(ds)
                 expected_keys = {
                     "total_loss",
+                    "train_accuracy",
                     "n_samples",
-                    "mean_multiplier",
                     "n_games",
-                    "loss_imitation",
-                    "loss_repulsion",
-                    "frac_repulsion",
                 }
                 self.assertEqual(
                     set(metrics.keys()),
@@ -559,25 +572,17 @@ class TestPGNRLTrainerV4(unittest.TestCase):
                 self.assertIn(
                     "acc_draws", metrics
                 )
-                self.assertIn(
-                    "repulsion_top1_avoidance",
-                    metrics,
-                )
                 self.assertTrue(
                     np.isfinite(
                         metrics["val_loss"]
                     )
                 )
                 self.assertGreaterEqual(
-                    metrics[
-                        "repulsion_top1_avoidance"
-                    ],
+                    metrics["val_accuracy"],
                     0.0,
                 )
                 self.assertLessEqual(
-                    metrics[
-                        "repulsion_top1_avoidance"
-                    ],
+                    metrics["val_accuracy"],
                     1.0,
                 )
                 for key in (
@@ -937,7 +942,7 @@ class TestRSCEDualLoss(unittest.TestCase):
     def test_tc28_evaluate_repulsion_avoidance(
         self,
     ) -> None:
-        """evaluate returns repul_top1_avoidance in [0,1]."""
+        """evaluate returns val_accuracy in [0,1]."""
         from chess_sim.training.pgn_rl_trainer_v4 import (
             PGNRLTrainerV4,
         )
@@ -957,11 +962,9 @@ class TestRSCEDualLoss(unittest.TestCase):
             )
             try:
                 metrics = trainer.evaluate(ds)
-                avoidance = metrics[
-                    "repulsion_top1_avoidance"
-                ]
-                self.assertGreaterEqual(avoidance, 0.0)
-                self.assertLessEqual(avoidance, 1.0)
+                acc = metrics["val_accuracy"]
+                self.assertGreaterEqual(acc, 0.0)
+                self.assertLessEqual(acc, 1.0)
             finally:
                 ds.close()
 
@@ -982,10 +985,10 @@ class TestRSCEDualLoss(unittest.TestCase):
                 for v in vals:
                     self.assertIn(int(v), (-1, +1))
 
-    def test_tc30_trainer_unpacks_6_tuple(
+    def test_tc30_trainer_unpacks_7_tuple(
         self,
     ) -> None:
-        """train_epoch unpacks 6-tuple without error."""
+        """train_epoch unpacks 7-tuple without error."""
         from chess_sim.training.pgn_rl_trainer_v4 import (
             PGNRLTrainerV4,
         )
@@ -1009,13 +1012,10 @@ class TestRSCEDualLoss(unittest.TestCase):
                     "total_loss", metrics
                 )
                 self.assertIn(
-                    "loss_imitation", metrics
+                    "train_accuracy", metrics
                 )
                 self.assertIn(
-                    "loss_repulsion", metrics
-                )
-                self.assertIn(
-                    "frac_repulsion", metrics
+                    "n_samples", metrics
                 )
             finally:
                 ds.close()

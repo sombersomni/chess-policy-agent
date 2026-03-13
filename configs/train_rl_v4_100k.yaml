@@ -25,7 +25,7 @@ rl:
   decay_start_fraction: 0.65
   min_lr:               0.00001
   gradient_clip:        1.0
-  epochs:               30
+  epochs:               40
   checkpoint:           checkpoints/chess_rl_v4_100k.pt
   resume:               ""
   lambda_outcome:       1.0
@@ -52,6 +52,6 @@ rl:
 
 aim:
   enabled:           true
-  experiment_name:   chess_rl_v4_100k_30ep
+  experiment_name:   chess_rl_v4_100k_40ep
   repo:              .aim
   log_every_n_steps: 10

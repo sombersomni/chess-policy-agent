@@ -1,6 +1,0 @@
-checkpoint: checkpoints/chess_v2_1k.pt
-pgn: data/games.pgn
-n_games: 5
-device: cpu
-temperature: 1.0
-batch_size: 32

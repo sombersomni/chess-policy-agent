@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import chess
 
-from chess_sim.protocols import Tokenizable
 from chess_sim.types import TokenizedBoard
 
 # Piece-type index constants.

@@ -97,77 +97,17 @@ class TestLoadTrainConfig(unittest.TestCase):
 class TestTrainerConfig(unittest.TestCase):
     """Tests that Trainer and model accept config objects correctly."""
 
-    def test_tc08_trainer_backward_compat(self) -> None:
-        """TC08: Trainer() with no config args works as before."""
-        from chess_sim.training.trainer import Trainer
-        trainer = Trainer(device="cpu", total_steps=10)
-        # Should instantiate without error; gradient_clip should be module default
-        from chess_sim.training.trainer import GRADIENT_CLIP
-        self.assertEqual(trainer._gradient_clip, GRADIENT_CLIP)
-
-    def test_tc09_trainer_uses_lr_from_config(self) -> None:
-        """TC09: Trainer uses learning_rate from TrainerConfig."""
-        from chess_sim.training.trainer import Trainer
-        cfg = TrainerConfig(learning_rate=1e-3)
-        trainer = Trainer(device="cpu", total_steps=10, trainer_cfg=cfg)
-        actual_lr = trainer.optimizer.param_groups[0]['lr']
-        self.assertAlmostEqual(actual_lr, 1e-3, places=6)
-
     def test_tc10_encoder_n_layers_from_config(self) -> None:
         """TC10: ChessEncoder respects n_layers from ModelConfig."""
         from chess_sim.model.encoder import ChessEncoder
         enc = ChessEncoder(ModelConfig(n_layers=2))
         self.assertEqual(len(enc.transformer.layers), 2)
 
-    def test_tc11_warmup_fraction_computed_correctly(self) -> None:
-        """TC11: Phase1Trainer first milestone equals warmup_steps."""
-        from chess_sim.config import ChessModelV2Config
-        from chess_sim.training.phase1_trainer import Phase1Trainer
-        cfg = ChessModelV2Config()
-        cfg.trainer.warmup_fraction = 0.05
-        cfg.trainer.decay_start_fraction = 0.5
-        trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
-        warmup_milestone = trainer.scheduler._milestones[0]
-        self.assertEqual(warmup_milestone, 50)  # int(0.05 * 1000)
-
-    def test_tc12_min_lr_wired_to_cosine(self) -> None:
-        """TC12: Phase1Trainer passes min_lr as eta_min to CosineAnnealingLR."""
-        from chess_sim.config import ChessModelV2Config
-        from chess_sim.training.phase1_trainer import Phase1Trainer
-        cfg = ChessModelV2Config()
-        cfg.trainer.min_lr = 1e-6
-        trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
-        # 3-phase schedule: [warmup, constant, cosine] — cosine is index 2
-        eta_min = trainer.scheduler._schedulers[2].eta_min
-        self.assertAlmostEqual(eta_min, 1e-6, places=10)
-
-    def test_tc12b_decay_start_milestone_correct(self) -> None:
-        """TC12b: Phase1Trainer second milestone equals decay_start step."""
-        from chess_sim.config import ChessModelV2Config
-        from chess_sim.training.phase1_trainer import Phase1Trainer
-        cfg = ChessModelV2Config()
-        cfg.trainer.warmup_fraction = 0.05
-        cfg.trainer.decay_start_fraction = 0.5
-        trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
-        decay_milestone = trainer.scheduler._milestones[1]
-        self.assertEqual(decay_milestone, 500)  # int(0.5 * 1000)
-
     def test_tc12c_invalid_fractions_raise(self) -> None:
         """TC12c: TrainerConfig raises when warmup_fraction >= decay_start_fraction."""
         from chess_sim.config import TrainerConfig
         with self.assertRaises(ValueError):
             TrainerConfig(warmup_fraction=0.5, decay_start_fraction=0.3)
-
-    def test_tc13_label_smoothing_wired_to_criterion(self) -> None:
-        """TC13: Phase1Trainer passes label_smoothing to CrossEntropyLoss."""
-        from chess_sim.config import ChessModelV2Config
-        from chess_sim.training.phase1_trainer import Phase1Trainer
-        cfg = ChessModelV2Config()
-        cfg.trainer.label_smoothing = 0.1
-        trainer = Phase1Trainer(device="cpu", total_steps=1000, v2_cfg=cfg)
-        self.assertAlmostEqual(
-            trainer.criterion.label_smoothing, 0.1, places=6
-        )
 
     def test_tc14_warmup_steps_yaml_raises(self) -> None:
         """TC14: YAML with deprecated warmup_steps raises TypeError."""

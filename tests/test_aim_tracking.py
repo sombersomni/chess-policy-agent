@@ -10,7 +10,6 @@ All tests run on CPU only (per project convention).
 from __future__ import annotations
 
 import logging
-import math
 import tempfile
 import textwrap
 import unittest
@@ -19,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import torch
 
-from chess_sim.config import AimConfig, ChessModelV2Config, load_v2_config
+from chess_sim.config import AimConfig, load_v2_config
 from chess_sim.tracking.aim_tracker import AimTracker
 from chess_sim.tracking.noop_tracker import NoOpTracker
 
@@ -161,90 +160,6 @@ class TestNoOpTracker(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# TC09-TC10: Phase1Trainer tracker integration
-# ---------------------------------------------------------------------------
-
-class TestPhase1TrainerTrackerIntegration(unittest.TestCase):
-    """Tests for tracker wiring inside Phase1Trainer."""
-
-    def test_tc09_none_tracker_uses_noop(self) -> None:
-        """TC09: Phase1Trainer(tracker=None) sets _tracker to NoOpTracker."""
-        from chess_sim.training.phase1_trainer import Phase1Trainer
-
-        trainer = Phase1Trainer(device="cpu", tracker=None)
-        self.assertIsInstance(trainer._tracker, NoOpTracker)
-
-    @patch("chess_sim.training.phase1_trainer.Phase1Trainer.train_step")
-    def test_tc10_global_step_increments_per_batch(
-        self, mock_train_step: MagicMock
-    ) -> None:
-        """TC10: _global_step increments per batch; track_step called with 1,2,3.
-
-        Uses a mock train_step that simulates step increment and tracker call,
-        since the real train_step requires a valid model forward pass.
-        """
-        from chess_sim.training.phase1_trainer import Phase1Trainer
-
-        mock_tracker = MagicMock()
-        trainer = Phase1Trainer(device="cpu", tracker=mock_tracker)
-
-        # Simulate what train_step does: increment _global_step and call tracker
-        def side_effect(batch: object) -> float:
-            trainer._global_step += 1
-            trainer._tracker.track_step(0.5, trainer._global_step)
-            return 0.5
-
-        mock_train_step.side_effect = side_effect
-
-        # Create a 3-batch mock loader
-        mock_loader = [MagicMock(), MagicMock(), MagicMock()]
-        trainer.train_epoch(mock_loader)
-
-        self.assertEqual(trainer._global_step, 3)
-        self.assertEqual(mock_tracker.track_step.call_count, 3)
-        expected_steps = [
-            call_args[0][1]
-            for call_args in mock_tracker.track_step.call_args_list
-        ]
-        self.assertEqual(expected_steps, [1, 2, 3])
-
-
-# ---------------------------------------------------------------------------
-# TC11: evaluate returns mean_entropy
-# ---------------------------------------------------------------------------
-
-class TestEvaluateEntropy(unittest.TestCase):
-    """Tests for mean_entropy in evaluate() output."""
-
-    @patch(
-        "chess_sim.training.phase1_trainer.Phase1Trainer.evaluate"
-    )
-    def test_tc11_evaluate_returns_mean_entropy(
-        self, mock_evaluate: MagicMock
-    ) -> None:
-        """TC11: evaluate() returns dict containing 'mean_entropy' as float.
-
-        Uses a mock since the stub returns NaN; once implemented,
-        this test should verify a finite float.
-        """
-        mock_evaluate.return_value = {
-            "val_loss": 2.0,
-            "val_accuracy": 0.3,
-            "mean_entropy": 1.5,
-        }
-        from chess_sim.training.phase1_trainer import Phase1Trainer
-
-        trainer = Phase1Trainer(device="cpu")
-        metrics = trainer.evaluate(MagicMock())
-        self.assertIn("mean_entropy", metrics)
-        self.assertIsInstance(metrics["mean_entropy"], float)
-        self.assertTrue(
-            math.isfinite(metrics["mean_entropy"]),
-            "mean_entropy should be a finite float",
-        )
-
-
-# ---------------------------------------------------------------------------
 # TC12-TC13: AimConfig YAML loading
 # ---------------------------------------------------------------------------
 
@@ -280,91 +195,6 @@ class TestAimConfigYAML(unittest.TestCase):
         self.assertEqual(
             cfg.aim.log_every_n_steps, default.log_every_n_steps
         )
-
-
-# ---------------------------------------------------------------------------
-# TC14: _mean_entropy peaked logits
-# ---------------------------------------------------------------------------
-
-class TestMeanEntropy(unittest.TestCase):
-    """Tests for the _mean_entropy helper function."""
-
-    def test_tc14_peaked_logits_near_zero_entropy(self) -> None:
-        """TC14: _mean_entropy returns near-zero (< 0.001) for peaked logits.
-
-        A distribution where one class has logit=1e6 and all others are 0
-        should produce entropy very close to zero.
-        """
-        from chess_sim.training.phase1_trainer import _mean_entropy
-
-        B, T, V = 2, 5, 100
-        logits = torch.zeros(B, T, V)
-        logits[:, :, 0] = 1e6  # peaked at class 0
-        mask = torch.ones(B, T, dtype=torch.bool)
-        h = _mean_entropy(logits, mask)
-        self.assertIsInstance(h, float)
-        self.assertLess(h, 0.001)
-
-
-# ---------------------------------------------------------------------------
-# TC15: tracker.close() called in finally block
-# ---------------------------------------------------------------------------
-
-class TestTrackerCloseInFinally(unittest.TestCase):
-    """Tests for tracker cleanup on training failure."""
-
-    def test_tc15_close_called_even_on_train_exception(self) -> None:
-        """TC15: tracker.close() is called via finally even when training raises.
-
-        Patches Phase1Trainer.train_epoch to raise RuntimeError on epoch 2.
-        Verifies that the training script's try/finally calls tracker.close().
-        """
-        # This test verifies the structural contract in scripts/train_v2.py.
-        # We import main and patch the critical paths.
-        from scripts.train_v2 import main
-
-        mock_tracker = MagicMock()
-
-        with (
-            patch(
-                "scripts.train_v2.make_tracker",
-                return_value=mock_tracker,
-            ),
-            patch("scripts.train_v2.load_v2_config") as mock_cfg,
-            patch(
-                "scripts.train_v2.Phase1Trainer"
-            ) as MockTrainer,
-        ):
-            # Set up a config that triggers the training loop
-            cfg = ChessModelV2Config()
-            cfg.trainer.epochs = 2
-            cfg.data.num_games = 2
-            cfg.data.hdf5_path = ""
-            cfg.data.pgn = ""
-            mock_cfg.return_value = cfg
-
-            # Make trainer.train_epoch raise on second call
-            trainer_inst = MockTrainer.return_value
-            trainer_inst.train_epoch.side_effect = [
-                {"train_loss": 0.5, "train_accuracy": 0.8},
-                RuntimeError("boom"),
-            ]
-            trainer_inst.evaluate.return_value = {
-                "val_loss": 1.0,
-                "val_accuracy": 0.5,
-                "mean_entropy": 1.0,
-            }
-            trainer_inst.optimizer.param_groups = [{"lr": 3e-4}]
-
-            # Provide a --config arg so load_v2_config is called
-            with patch(
-                "sys.argv",
-                ["train_v2", "--config", "dummy.yaml"],
-            ):
-                with self.assertRaises(RuntimeError):
-                    main()
-
-        mock_tracker.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

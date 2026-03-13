@@ -10,77 +10,6 @@ import io
 
 import chess
 import chess.pgn
-import torch
-
-from chess_sim.types import ChessBatch, LabelTensors, PredictionOutput, TrainingExample
-
-# Sequence length constant: CLS + 64 squares.
-SEQ_LEN: int = 65
-D_MODEL: int = 256
-N_SQUARES: int = 64
-
-
-def make_synthetic_batch(batch_size: int = 4, device: str = "cpu") -> ChessBatch:
-    """Return a random ChessBatch of long tensors for use in unit tests.
-
-    Args:
-        batch_size: Number of examples in the batch. Default 4.
-        device: Torch device string. Default 'cpu'.
-
-    Returns:
-        ChessBatch namedtuple with all tensors on the specified device.
-
-    Example:
-        >>> batch = make_synthetic_batch(4)
-        >>> batch.board_tokens.shape
-        torch.Size([4, 65])
-    """
-    return ChessBatch(
-        board_tokens=torch.randint(0, 8, (batch_size, SEQ_LEN), dtype=torch.long, device=device),
-        color_tokens=torch.randint(0, 3, (batch_size, SEQ_LEN), dtype=torch.long, device=device),
-        trajectory_tokens=torch.randint(0, 5, (batch_size, SEQ_LEN), dtype=torch.long, device=device),
-        src_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
-        tgt_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
-    )
-
-
-def make_label_tensors(batch_size: int = 4, device: str = "cpu") -> LabelTensors:
-    """Return random LabelTensors with all valid square indices.
-
-    Args:
-        batch_size: Number of examples. Default 4.
-        device: Torch device string. Default 'cpu'.
-
-    Returns:
-        LabelTensors namedtuple with [B] long tensors in range [0, 63].
-    """
-    return LabelTensors(
-        src_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
-        tgt_sq=torch.randint(0, N_SQUARES, (batch_size,), dtype=torch.long, device=device),
-    )
-
-
-def make_prediction_output(batch_size: int = 4, device: str = "cpu") -> PredictionOutput:
-    """Return random PredictionOutput logit tensors for loss testing.
-
-    Args:
-        batch_size: Number of examples. Default 4.
-        device: Torch device string. Default 'cpu'.
-
-    Returns:
-        PredictionOutput with two [B, 64] float tensors.
-    """
-    return PredictionOutput(
-        src_sq_logits=torch.randn(
-            batch_size, N_SQUARES, device=device,
-            requires_grad=True,
-        ),
-        tgt_sq_logits=torch.randn(
-            batch_size, N_SQUARES, device=device,
-            requires_grad=True,
-        ),
-    )
-
 
 # ---------------------------------------------------------------------------
 # PGN fixture
@@ -155,35 +84,6 @@ def parse_pgn_games(pgn_text: str) -> list[chess.pgn.Game]:
             break
         games.append(game)
     return games
-
-
-def make_training_examples(n: int = 10) -> list[TrainingExample]:
-    """Return n synthetic TrainingExample namedtuples for dataset testing.
-
-    Args:
-        n: Number of examples to generate. Default 10.
-
-    Returns:
-        List of TrainingExample namedtuples with random but valid values.
-
-    Example:
-        >>> examples = make_training_examples(10)
-        >>> len(examples)
-        10
-    """
-    examples: list[TrainingExample] = []
-    for _ in range(n):
-        board_tokens = [0] + [int(torch.randint(1, 8, (1,)).item()) for _ in range(64)]
-        color_tokens = [0] + [int(torch.randint(0, 3, (1,)).item()) for _ in range(64)]
-        trajectory_tokens = [0] * 65
-        examples.append(TrainingExample(
-            board_tokens=board_tokens,
-            color_tokens=color_tokens,
-            trajectory_tokens=trajectory_tokens,
-            src_sq=int(torch.randint(0, 64, (1,)).item()),
-            tgt_sq=int(torch.randint(0, 64, (1,)).item()),
-        ))
-    return examples
 
 
 def make_initial_board_tokens() -> tuple[list[int], list[int]]:

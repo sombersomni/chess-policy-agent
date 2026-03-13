@@ -10,13 +10,6 @@ import unittest
 
 import torch
 
-from chess_sim.config import (
-    DataConfig,
-    DecoderConfig,
-    ModelConfig,
-    PGNRLConfig,
-    RLConfig,
-)
 from chess_sim.data.move_vocab import MoveVocab
 from chess_sim.data.structural_mask import (
     StructuralMaskBuilder,
@@ -166,116 +159,11 @@ class TestStructuralMaskBuilder(unittest.TestCase):
         self.assertEqual(_uci_from_square_slot("h8h7"), 64)
 
 
-class TestTrainerIntegration(unittest.TestCase):
-    """T8-T12: PGNRLTrainer integration tests for structural mask."""
-
-    def _make_cfg(
-        self, use_mask: bool = False
-    ) -> PGNRLConfig:
-        """Build a minimal PGNRLConfig with optional masking."""
-        return PGNRLConfig(
-            data=DataConfig(),
-            model=ModelConfig(
-                d_model=64, n_heads=2, n_layers=1,
-                dim_feedforward=128, dropout=0.0,
-            ),
-            decoder=DecoderConfig(
-                d_model=64, n_heads=2, n_layers=1,
-                dim_feedforward=128, dropout=0.0,
-            ),
-            rl=RLConfig(
-                use_structural_mask=use_mask,
-                lambda_rsbc=1.0,
-                lambda_value=0.0,
-            ),
-        )
-
-    def test_t8_rsbc_loss_with_mask_active(self) -> None:
-        """T8: _compute_rsbc_loss with mask produces finite loss."""
-        from chess_sim.training.pgn_rl_trainer import (
-            PGNRLTrainer,
-        )
-
-        cfg = self._make_cfg(use_mask=True)
-        trainer = PGNRLTrainer(cfg, device="cpu")
-
-        vocab = MoveVocab()
-        v = len(vocab)  # 1971
-        # 3 plies with random logits, targets from e2 tokens.
-        all_logits = [
-            torch.randn(v, requires_grad=True) for _ in range(3)
-        ]
-        target_idx = vocab.encode("e2e4")
-        all_targets = [target_idx] * 3
-        weights = torch.ones(3)
-
-        # Color tokens: e2 (slot 13) is player.
-        ct = torch.zeros(65, dtype=torch.long)
-        ct[13] = 1
-        all_color_tokens = [ct.clone() for _ in range(3)]
-
-        loss = trainer._compute_rsbc_loss(
-            all_logits, all_targets, weights,
-            all_color_tokens=all_color_tokens,
-        )
-        self.assertTrue(
-            torch.isfinite(loss).item(),
-            f"Loss should be finite, got {loss.item()}",
-        )
-        # Verify masked logits: softmax should concentrate
-        # on e2 tokens only.
-        self.assertGreater(loss.item(), 0.0)
-
-    def test_t9_rsbc_loss_without_mask(self) -> None:
-        """T9: _compute_rsbc_loss with mask disabled is unchanged."""
-        from chess_sim.training.pgn_rl_trainer import (
-            PGNRLTrainer,
-        )
-
-        cfg = self._make_cfg(use_mask=False)
-        trainer = PGNRLTrainer(cfg, device="cpu")
-
-        vocab = MoveVocab()
-        v = len(vocab)
-        logits_data = torch.randn(v)
-        all_logits = [logits_data.clone() for _ in range(2)]
-        target_idx = vocab.encode("e2e4")
-        all_targets = [target_idx] * 2
-        weights = torch.ones(2)
-
-        # Even if we pass color tokens, mask is None.
-        loss = trainer._compute_rsbc_loss(
-            all_logits, all_targets, weights,
-            all_color_tokens=None,
-        )
-        self.assertTrue(torch.isfinite(loss).item())
-
-    def test_t10_mask_disabled_skips_builder(self) -> None:
-        """T10: use_structural_mask=False -> _struct_mask is None."""
-        from chess_sim.training.pgn_rl_trainer import (
-            PGNRLTrainer,
-        )
-
-        cfg = self._make_cfg(use_mask=False)
-        trainer = PGNRLTrainer(cfg, device="cpu")
-        self.assertIsNone(trainer._struct_mask)
-
-    def test_t10b_mask_enabled_creates_builder(self) -> None:
-        """Complement: use_structural_mask=True creates builder."""
-        from chess_sim.training.pgn_rl_trainer import (
-            PGNRLTrainer,
-        )
-
-        cfg = self._make_cfg(use_mask=True)
-        trainer = PGNRLTrainer(cfg, device="cpu")
-        self.assertIsNotNone(trainer._struct_mask)
-        self.assertIsInstance(
-            trainer._struct_mask, StructuralMaskable
-        )
+class TestMaskDeviceConsistency(unittest.TestCase):
+    """T11: StructuralMaskBuilder device consistency."""
 
     def test_t11_device_consistency(self) -> None:
         """T11: LUT and output mask are on the same device as input."""
-        # CPU-only test (CUDA tested only if available).
         builder = StructuralMaskBuilder(torch.device("cpu"))
         self.assertEqual(
             builder._slot_mask.device.type, "cpu"
@@ -284,72 +172,6 @@ class TestTrainerIntegration(unittest.TestCase):
         ct[0, 13] = 1
         mask = builder.build(ct)
         self.assertEqual(mask.device.type, "cpu")
-
-    def test_t12_oov_move_skipped_before_masking(self) -> None:
-        """T12: OOV teacher move skipped -> no index mismatch."""
-        from chess_sim.training.pgn_rl_trainer import (
-            PGNRLTrainer,
-        )
-
-        cfg = self._make_cfg(use_mask=True)
-        trainer = PGNRLTrainer(cfg, device="cpu")
-
-        vocab = MoveVocab()
-        v = len(vocab)
-        # Simulate: 2 valid plies + 1 OOV (skipped).
-        # After OOV skip, all_logits has 2 entries and
-        # all_color_tokens has 2 entries — lengths must match.
-        all_logits = [
-            torch.randn(v, requires_grad=True) for _ in range(2)
-        ]
-        target_idx = vocab.encode("e2e4")
-        all_targets = [target_idx, target_idx]
-        weights = torch.ones(2)
-
-        ct = torch.zeros(65, dtype=torch.long)
-        ct[13] = 1  # e2 player
-        all_color_tokens = [ct.clone(), ct.clone()]
-
-        # Should not raise — lengths are consistent.
-        loss = trainer._compute_rsbc_loss(
-            all_logits, all_targets, weights,
-            all_color_tokens=all_color_tokens,
-        )
-        self.assertTrue(torch.isfinite(loss).item())
-
-    def test_masked_loss_lower_than_unmasked(self) -> None:
-        """Masked CE should be <= unmasked CE for valid targets."""
-        from chess_sim.training.pgn_rl_trainer import (
-            PGNRLTrainer,
-        )
-
-        cfg_masked = self._make_cfg(use_mask=True)
-        cfg_unmasked = self._make_cfg(use_mask=False)
-        trainer_m = PGNRLTrainer(cfg_masked, device="cpu")
-        trainer_u = PGNRLTrainer(cfg_unmasked, device="cpu")
-
-        vocab = MoveVocab()
-        v = len(vocab)
-        # Fixed logits: uniform distribution.
-        logits = torch.zeros(v)
-        all_logits_m = [logits.clone()]
-        all_logits_u = [logits.clone()]
-        target_idx = vocab.encode("e2e4")
-        weights = torch.ones(1)
-
-        ct = torch.zeros(65, dtype=torch.long)
-        ct[13] = 1  # e2
-
-        loss_m = trainer_m._compute_rsbc_loss(
-            all_logits_m, [target_idx], weights,
-            all_color_tokens=[ct],
-        )
-        loss_u = trainer_u._compute_rsbc_loss(
-            all_logits_u, [target_idx], weights,
-        )
-        # With uniform logits, masking reduces the denominator,
-        # so CE with mask should be lower.
-        self.assertLess(loss_m.item(), loss_u.item())
 
 
 if __name__ == "__main__":

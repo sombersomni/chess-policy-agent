@@ -18,10 +18,13 @@ HDF5 schema (datasets, all N-length along axis 0):
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import math
 from pathlib import Path
 
+import chess
+import chess.pgn
 import h5py
 import numpy as np
 import torch
@@ -51,6 +54,50 @@ _DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
 }
 
 _SCHEMA_VERSION: int = 2  # bump when HDF5 schema changes
+
+
+def _stream_pgn(
+    pgn_path: Path,
+    max_games: int = 0,
+) -> list[chess.pgn.Game]:
+    """Read games from a PGN file (plain or .zst).
+
+    Args:
+        pgn_path: Path to .pgn or .pgn.zst file.
+        max_games: Maximum games to read (0 = all).
+
+    Returns:
+        List of parsed chess.pgn.Game objects.
+    """
+    games: list[chess.pgn.Game] = []
+    if str(pgn_path).endswith(".zst"):
+        import zstandard
+
+        dctx = zstandard.ZstdDecompressor()
+        with open(pgn_path, "rb") as fh:
+            with dctx.stream_reader(fh) as reader:
+                text_io = io.TextIOWrapper(
+                    reader,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                while True:
+                    game = chess.pgn.read_game(text_io)
+                    if game is None:
+                        break
+                    games.append(game)
+                    if 0 < max_games <= len(games):
+                        break
+    else:
+        with open(pgn_path, "r") as fh:
+            while True:
+                game = chess.pgn.read_game(fh)
+                if game is None:
+                    break
+                games.append(game)
+                if 0 < max_games <= len(games):
+                    break
+    return games
 
 
 def _encode_board(
@@ -150,11 +197,6 @@ class PGNRewardPreprocessor:
                 hdf5_path,
             )
             return hdf5_path
-
-        # Import _stream_pgn from v2 trainer module
-        from chess_sim.training.pgn_rl_trainer_v2 import (
-            _stream_pgn,
-        )
 
         games = _stream_pgn(pgn_path, max_games)
         rl = self._cfg.rl

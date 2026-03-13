@@ -1,14 +1,14 @@
 """ChessRLDataset: PyTorch Dataset wrapping a preprocessed RSCE HDF5 file.
 
-Returns 6-tuple per sample:
+Returns 7-tuple per sample:
     (board [65,3], target_move, multiplier, color_tokens [65],
-     outcome, loss_mode)
+     outcome, loss_mode, legal_mask [1971])
 Supports train/val splitting by game_id: the last
 val_split_fraction of unique game_ids form the val set.
 
-The HDF5 file handle is opened lazily on first __getitem__ call
-to support multi-worker DataLoader (h5py is not fork-safe if
-opened before fork).
+All HDF5 data is loaded into memory at init time for zero-I/O
+__getitem__ access. The HDF5 file is closed immediately after
+loading.
 """
 from __future__ import annotations
 
@@ -27,12 +27,11 @@ logger = logging.getLogger(__name__)
 class ChessRLDataset(Dataset):  # type: ignore[type-arg]
     """Dataset over a preprocessed RSCE HDF5 file.
 
-    Lazily opens the HDF5 handle on first access to support
-    num_workers > 0 in DataLoader.
+    Loads all data into memory at init for fast __getitem__.
 
     Example:
         >>> ds = ChessRLDataset(Path("data.h5"), split="train")
-        >>> board, tgt, mult, ct, outcome, lm = ds[0]
+        >>> board, tgt, mult, ct, outcome, lm, mask = ds[0]
         >>> board.shape
         torch.Size([65, 3])
     """
@@ -43,11 +42,7 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
         val_split_fraction: float = 0.1,
         split: str = "train",
     ) -> None:
-        """Initialize dataset with HDF5 path and split config.
-
-        The val split consists of the last val_split_fraction
-        of unique game_ids (ordered, not shuffled). The h5py
-        file is NOT opened here -- deferred to first __getitem__.
+        """Load all split data into memory from HDF5.
 
         Args:
             hdf5_path: Path to preprocessed HDF5 file.
@@ -74,30 +69,62 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
 
         self._hdf5_path = hdf5_path
         self._split = split
-        self._h5: h5py.File | None = None
 
-        # Open briefly to compute indices, then close
         with h5py.File(hdf5_path, "r") as hf:
             game_ids = hf["game_id"][:]
 
-        unique_ids = np.unique(game_ids)
-        n_val = int(len(unique_ids) * val_split_fraction)
+            unique_ids = np.unique(game_ids)
+            n_val = int(
+                len(unique_ids) * val_split_fraction
+            )
 
-        if n_val == 0 and len(unique_ids) > 1:
-            # Ensure at least some val games when possible
-            n_val = 0
+            if n_val == 0 and len(unique_ids) > 1:
+                n_val = 0
 
-        val_game_ids = set(unique_ids[-n_val:]) if n_val > 0 else set()
-        train_game_ids = set(unique_ids) - val_game_ids
+            val_game_ids = (
+                set(unique_ids[-n_val:])
+                if n_val > 0 else set()
+            )
+            train_game_ids = (
+                set(unique_ids) - val_game_ids
+            )
 
-        if split == "train":
-            mask = np.isin(game_ids, list(train_game_ids))
-            self._game_ids_set = train_game_ids
-        else:
-            mask = np.isin(game_ids, list(val_game_ids))
-            self._game_ids_set = val_game_ids
+            if split == "train":
+                mask = np.isin(
+                    game_ids, list(train_game_ids)
+                )
+                self._game_ids_set = train_game_ids
+            else:
+                mask = np.isin(
+                    game_ids, list(val_game_ids)
+                )
+                self._game_ids_set = val_game_ids
 
-        self._indices = np.where(mask)[0].astype(np.int64)
+            self._indices = np.where(mask)[0].astype(
+                np.int64
+            )
+
+            # Load all fields into memory (fancy index)
+            idx = self._indices
+            n = len(idx)
+            logger.info(
+                "Loading %d rows (%s split) into memory",
+                n, split,
+            )
+            self._board = hf["board"][idx]
+            self._target_move = hf["target_move"][idx]
+            self._multiplier = hf["multiplier"][idx]
+            self._color_tokens = hf["color_tokens"][idx]
+            self._outcome = hf["outcome"][idx]
+            self._loss_mode = hf["loss_mode"][idx]
+            self._legal_mask = hf["legal_mask"][idx]
+            logger.info(
+                "Loaded %s split: %d rows, "
+                "board=%.1f MB, legal_mask=%.1f MB",
+                split, n,
+                self._board.nbytes / 1e6,
+                self._legal_mask.nbytes / 1e6,
+            )
 
     def __len__(self) -> int:
         """Return number of samples in this split.
@@ -114,12 +141,7 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
     def __getitem__(
         self, idx: int,
     ) -> tuple[Tensor, int, float, Tensor, int, int, Tensor]:
-        """Return one sample as a 7-tuple.
-
-        Returns (board, target_move, multiplier, color_tokens,
-        outcome, loss_mode, legal_mask). Opens the HDF5 file
-        lazily on first call. Maps split-local index to global
-        HDF5 row.
+        """Return one sample as a 7-tuple from in-memory arrays.
 
         Args:
             idx: Index into this split (0-based).
@@ -132,7 +154,7 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
                 color_tokens: long tensor [65]
                 outcome: int (+1 winner, 0 draw, -1 loser)
                 loss_mode: int (+1 imitation, -1 repulsion)
-                legal_mask: bool tensor [1971] — true legal moves
+                legal_mask: bool tensor [1971]
 
         Raises:
             IndexError: If idx is out of range.
@@ -148,32 +170,18 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
                 f"dataset of size {len(self._indices)}"
             )
 
-        if self._h5 is None:
-            self._h5 = h5py.File(self._hdf5_path, "r")
-
-        global_idx = int(self._indices[idx])
-
         board = torch.tensor(
-            self._h5["board"][global_idx],
-            dtype=torch.float32,
+            self._board[idx], dtype=torch.float32,
         )
-        target_move = int(
-            self._h5["target_move"][global_idx]
-        )
-        multiplier = float(
-            self._h5["multiplier"][global_idx]
-        )
+        target_move = int(self._target_move[idx])
+        multiplier = float(self._multiplier[idx])
         color_tokens = torch.tensor(
-            self._h5["color_tokens"][global_idx],
-            dtype=torch.long,
+            self._color_tokens[idx], dtype=torch.long,
         )
-        outcome = int(self._h5["outcome"][global_idx])
-        loss_mode = int(
-            self._h5["loss_mode"][global_idx]
-        )
+        outcome = int(self._outcome[idx])
+        loss_mode = int(self._loss_mode[idx])
         legal_mask = torch.tensor(
-            self._h5["legal_mask"][global_idx],
-            dtype=torch.bool,
+            self._legal_mask[idx], dtype=torch.bool,
         )
 
         return (
@@ -195,13 +203,10 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
         return len(self._game_ids_set)
 
     def close(self) -> None:
-        """Close the HDF5 file handle if open.
+        """No-op. HDF5 is closed at init after in-memory load.
 
-        Safe to call multiple times.
+        Kept for API compatibility.
 
         Example:
             >>> ds.close()
         """
-        if self._h5 is not None:
-            self._h5.close()
-            self._h5 = None

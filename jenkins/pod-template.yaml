@@ -3,20 +3,17 @@
 #
 # Referenced by Jenkinsfile via: yamlFile 'jenkins/pod-template.yaml'
 #
-# Replace YOUR_GITHUB_USERNAME, e.g.:
-#   image: ghcr.io/sombersomni/chess-sim:ci
+# Containers:
+#   chess-sim — runs lint and test stages (ci-latest image)
+#   kaniko    — builds + pushes CI images without a Docker daemon
+#   jnlp      — Jenkins agent sidecar (memory override)
 #
-# imagePullSecrets references the K8s secret created via gh CLI
-# (avoids storing a long-lived PAT — uses your active gh auth session):
+# imagePullSecrets references the K8s secret created via gh CLI:
 #   kubectl create secret docker-registry ghcr-secret \
 #     --namespace jenkins \
 #     --docker-server=ghcr.io \
 #     --docker-username=$(gh api user --jq .login) \
 #     --docker-password=$(gh auth token)
-#
-# The 'chess-sim' container runs the lint and test stages.
-# The 'jnlp' sidecar is overridden here to give the JDK 21 JVM enough
-# memory — the default 256Mi is too tight and causes SIGTERM mid-build.
 # ============================================================
 
 apiVersion: v1
@@ -29,11 +26,11 @@ spec:
     - name: ghcr-secret
   containers:
     - name: chess-sim
-      image: ghcr.io/sombersomni/chess-sim:ci-v1.1.0
+      image: ghcr.io/sombersomni/chess-sim:ci-latest
+      imagePullPolicy: Always
       command: ["sleep"]
       args: ["infinity"]
       env:
-        # Force CPU-only mode — tests must not require a GPU
         - name: CUDA_VISIBLE_DEVICES
           value: ""
         - name: TORCH_DEVICE
@@ -45,8 +42,22 @@ spec:
         limits:
           cpu: "2"
           memory: "4Gi"
+    - name: kaniko
+      image: gcr.io/kaniko-project/executor:v1.23.2-debug
+      imagePullPolicy: IfNotPresent
+      command: ["sleep"]
+      args: ["infinity"]
+      volumeMounts:
+        - name: kaniko-secret
+          mountPath: /kaniko/.docker
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "1Gi"
+        limits:
+          cpu: "2"
+          memory: "4Gi"
     - name: jnlp
-      # Override the default 256Mi — JDK 21 JVM needs more headroom.
       resources:
         requests:
           cpu: "200m"
@@ -54,3 +65,10 @@ spec:
         limits:
           cpu: "500m"
           memory: "1Gi"
+  volumes:
+    - name: kaniko-secret
+      secret:
+        secretName: ghcr-secret
+        items:
+          - key: .dockerconfigjson
+            path: config.json

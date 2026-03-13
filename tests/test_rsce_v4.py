@@ -528,6 +528,9 @@ class TestPGNRLTrainerV4(unittest.TestCase):
                     "train_accuracy",
                     "n_samples",
                     "n_games",
+                    "loss_imitation",
+                    "loss_repulsion",
+                    "frac_repulsion",
                 }
                 self.assertEqual(
                     set(metrics.keys()),
@@ -649,8 +652,8 @@ class TestPGNRLTrainerV4(unittest.TestCase):
                 "_global_step must be restored",
             )
 
-    def test_tc15_lazy_hdf5_handle(self) -> None:
-        """ChessRLDataset opens h5py lazily."""
+    def test_tc15_in_memory_loading(self) -> None:
+        """ChessRLDataset loads data into memory at init."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
@@ -661,14 +664,13 @@ class TestPGNRLTrainerV4(unittest.TestCase):
                 val_split_fraction=0.1,
                 split="train",
             )
-            self.assertIsNone(
-                ds._h5,
-                "_h5 must be None before first "
-                "__getitem__",
+            # Data arrays should exist after init
+            self.assertIsNotNone(ds._board)
+            self.assertEqual(
+                ds._board.shape[0], len(ds)
             )
 
             _ = ds[0]
-            self.assertIsNotNone(ds._h5)
             ds.close()
 
 

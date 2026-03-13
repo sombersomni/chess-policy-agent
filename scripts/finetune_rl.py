@@ -16,6 +16,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from chess_sim.config import load_finetune_rl_config
+from chess_sim.tracking import AimLogHandler, make_tracker
+from chess_sim.training.rl_finetune_trainer import (
+    RLFinetuneTrainer,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,7 +83,70 @@ def main(config_path: Path | None = None) -> None:
     Example:
         >>> main(Path("configs/finetune_rl.yaml"))
     """
-    raise NotImplementedError("To be implemented")
+    logging.basicConfig(
+        level=logging.INFO,
+        format=(
+            "%(asctime)s %(name)s %(levelname)s "
+            "%(message)s"
+        ),
+    )
+
+    if config_path is None:
+        args = _build_parser().parse_args()
+        config_path = Path(args.config)
+
+    cfg = load_finetune_rl_config(config_path)
+    logger.info("Loaded config from %s", config_path)
+
+    _setup_reproducibility(cfg.finetune.seed)
+
+    device = (
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+    logger.info("Device: %s", device)
+
+    tracker = make_tracker(cfg.aim)
+    aim_handler = AimLogHandler(tracker)
+    logging.getLogger().addHandler(aim_handler)
+
+    try:
+        trainer = RLFinetuneTrainer(
+            cfg, device=device, tracker=tracker,
+        )
+
+        n_params = sum(
+            p.numel()
+            for p in trainer.policy.parameters()
+        )
+        logger.info(
+            "Model parameters: %s", f"{n_params:,}"
+        )
+
+        try:
+            trainer.train(cfg.finetune.n_updates)
+        except KeyboardInterrupt:
+            logger.warning(
+                "Training interrupted — saving "
+                "emergency checkpoint"
+            )
+            out = Path(cfg.finetune.checkpoint_out)
+            emergency = out.with_stem(
+                out.stem + "_interrupted"
+            )
+            trainer.save_checkpoint(emergency)
+            logger.info(
+                "Emergency checkpoint saved: %s",
+                emergency,
+            )
+        finally:
+            out_path = Path(cfg.finetune.checkpoint_out)
+            trainer.save_checkpoint(out_path)
+            logger.info(
+                "Final checkpoint saved: %s", out_path
+            )
+    finally:
+        logging.getLogger().removeHandler(aim_handler)
+        tracker.close()
 
 
 if __name__ == "__main__":

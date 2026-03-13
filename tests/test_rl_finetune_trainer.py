@@ -8,7 +8,6 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import torch
 from parameterized import parameterized
@@ -226,7 +225,7 @@ class TestRunningMeanBaseline(unittest.TestCase):
 
 
 # ---------------------------------------------------------------
-# TC10-TC12: compute_returns (stub — expect NotImplementedError)
+# TC10-TC12: compute_returns
 # ---------------------------------------------------------------
 
 
@@ -236,24 +235,32 @@ class TestComputeReturns(unittest.TestCase):
     def test_tc10_win_discount(self) -> None:
         """TC10: Win outcome discounts correctly (gamma^(T-1-t))."""
         game = _make_game(n_plies=3, outcome=1)
-        with self.assertRaises(NotImplementedError):
-            compute_returns([game], gamma=0.99)
+        rets = compute_returns([game], gamma=0.99)
+        self.assertEqual(len(rets), 3)
+        # G_0 = 0.99^2, G_1 = 0.99^1, G_2 = 0.99^0
+        self.assertAlmostEqual(rets[0].item(), 0.99**2, places=5)
+        self.assertAlmostEqual(rets[1].item(), 0.99, places=5)
+        self.assertAlmostEqual(rets[2].item(), 1.0, places=5)
 
     def test_tc11_draw_all_zero(self) -> None:
         """TC11: Draw outcome produces all-zero returns."""
         game = _make_game(n_plies=4, outcome=0)
-        with self.assertRaises(NotImplementedError):
-            compute_returns([game], gamma=0.99)
+        rets = compute_returns([game], gamma=0.99)
+        self.assertEqual(len(rets), 4)
+        for r in rets:
+            self.assertAlmostEqual(r.item(), 0.0)
 
     def test_tc12_loss_negative(self) -> None:
         """TC12: Loss outcome produces all-negative returns."""
         game = _make_game(n_plies=2, outcome=-1)
-        with self.assertRaises(NotImplementedError):
-            compute_returns([game], gamma=0.99)
+        rets = compute_returns([game], gamma=0.99)
+        self.assertEqual(len(rets), 2)
+        for r in rets:
+            self.assertLess(r.item(), 0.0)
 
 
 # ---------------------------------------------------------------
-# TC13: _log_prob_of_move (stub)
+# TC13: _log_prob_of_move
 # ---------------------------------------------------------------
 
 
@@ -261,37 +268,56 @@ class TestLogProbOfMove(unittest.TestCase):
     """Tests for _log_prob_of_move function."""
 
     def test_tc13_returns_scalar_with_grad(self) -> None:
-        """TC13: _log_prob_of_move raises NotImplementedError."""
+        """TC13: Returns a scalar tensor with requires_grad=True."""
+        from chess_sim.data.move_tokenizer import MoveTokenizer
+        from chess_sim.model.chess_model import ChessModel
+
+        policy = ChessModel(_TINY_MODEL, _TINY_DECODER)
+        policy.train()
+        mt = MoveTokenizer()
         bt = torch.zeros(1, 65, dtype=torch.long)
         ct = torch.zeros(1, 65, dtype=torch.long)
         tt = torch.zeros(1, 65, dtype=torch.long)
-        move_tok = MagicMock()
-        with self.assertRaises(NotImplementedError):
-            _log_prob_of_move(
-                policy=MagicMock(),
-                board_tokens=bt,
-                color_tokens=ct,
-                traj_tokens=tt,
-                move_token=42,
-                legal_moves=["e2e4"],
-                move_tok=move_tok,
-                device=torch.device("cpu"),
-            )
+        move_token = mt.tokenize_move("e2e4")
+        lp = _log_prob_of_move(
+            policy=policy,
+            board_tokens=bt,
+            color_tokens=ct,
+            traj_tokens=tt,
+            move_token=move_token,
+            legal_moves=["e2e4", "d2d4"],
+            move_tok=mt,
+            device=torch.device("cpu"),
+        )
+        self.assertEqual(lp.dim(), 0)
+        self.assertTrue(lp.requires_grad)
+        self.assertLess(lp.item(), 0.0)
 
 
 # ---------------------------------------------------------------
-# TC14-TC15: _update_shadow (stub)
+# TC14-TC15: _update_shadow
 # ---------------------------------------------------------------
 
 
 class TestUpdateShadow(unittest.TestCase):
     """Tests for _update_shadow EMA update."""
 
-    def test_tc14_ema_zero_copies_policy(self) -> None:
-        """TC14: _update_shadow raises NotImplementedError."""
-        cfg = _make_cfg()
-        with self.assertRaises(NotImplementedError):
-            RLFinetuneTrainer(cfg, device="cpu")
+    def test_tc14_ema_blends_weights(self) -> None:
+        """TC14: _update_shadow blends shadow toward policy."""
+        cfg = _make_cfg(ema_alpha=0.5)
+        trainer = RLFinetuneTrainer(cfg, device="cpu")
+        # Perturb policy weights so shadow differs
+        with torch.no_grad():
+            for p in trainer._policy.parameters():
+                p.add_(1.0)
+        # Snapshot shadow before
+        before = [
+            p.clone() for p in trainer._shadow.parameters()
+        ]
+        trainer._update_shadow()
+        # Shadow should have moved toward policy
+        for b, s in zip(before, trainer._shadow.parameters()):
+            self.assertFalse(torch.equal(b, s))
 
     def test_tc15_ema_one_rejected_by_config(self) -> None:
         """TC15: ema_alpha=1.0 is rejected by FinetuneConfig."""
@@ -300,7 +326,7 @@ class TestUpdateShadow(unittest.TestCase):
 
 
 # ---------------------------------------------------------------
-# TC16-TC17: play_game (stub)
+# TC16-TC17: play_game
 # ---------------------------------------------------------------
 
 
@@ -308,30 +334,46 @@ class TestPlayGame(unittest.TestCase):
     """Tests for play_game function."""
 
     def test_tc16_maxply_termination(self) -> None:
-        """TC16: play_game raises NotImplementedError."""
-        cfg = FinetuneConfig(max_ply=10)
-        with self.assertRaises(NotImplementedError):
-            play_game(
-                policy=MagicMock(),
-                shadow=MagicMock(),
-                board_tok=MagicMock(),
-                move_tok=MagicMock(),
-                cfg=cfg,
-                device=torch.device("cpu"),
-            )
+        """TC16: play_game terminates at max_ply with valid record."""
+        from chess_sim.data.move_tokenizer import MoveTokenizer
+        from chess_sim.data.tokenizer import BoardTokenizer
+        from chess_sim.model.chess_model import ChessModel
 
-    def test_tc17_checkmate_termination(self) -> None:
-        """TC17: play_game with checkmate raises NIE."""
-        cfg = FinetuneConfig()
-        with self.assertRaises(NotImplementedError):
-            play_game(
-                policy=MagicMock(),
-                shadow=MagicMock(),
-                board_tok=MagicMock(),
-                move_tok=MagicMock(),
-                cfg=cfg,
-                device=torch.device("cpu"),
-            )
+        cfg = FinetuneConfig(max_ply=4)
+        policy = ChessModel(_TINY_MODEL, _TINY_DECODER)
+        shadow = ChessModel(_TINY_MODEL, _TINY_DECODER)
+        shadow.eval()
+        bt = BoardTokenizer()
+        mt = MoveTokenizer()
+        record = play_game(
+            policy, shadow, bt, mt, cfg,
+            torch.device("cpu"),
+        )
+        self.assertIsInstance(record, GameRecord)
+        self.assertIn(
+            record.termination,
+            ("checkmate", "stalemate", "50move",
+             "threefold", "maxply"),
+        )
+        self.assertLessEqual(record.n_ply, 4)
+
+    def test_tc17_record_has_policy_plies(self) -> None:
+        """TC17: play_game returns plies only for policy (White)."""
+        from chess_sim.data.move_tokenizer import MoveTokenizer
+        from chess_sim.data.tokenizer import BoardTokenizer
+        from chess_sim.model.chess_model import ChessModel
+
+        cfg = FinetuneConfig(max_ply=6)
+        policy = ChessModel(_TINY_MODEL, _TINY_DECODER)
+        shadow = ChessModel(_TINY_MODEL, _TINY_DECODER)
+        shadow.eval()
+        record = play_game(
+            policy, shadow, BoardTokenizer(),
+            MoveTokenizer(), cfg, torch.device("cpu"),
+        )
+        # All recorded plies should be white (policy)
+        for ply in record.plies:
+            self.assertTrue(ply.is_white_ply)
 
 
 # ---------------------------------------------------------------
@@ -342,11 +384,21 @@ class TestPlayGame(unittest.TestCase):
 class TestRLFinetuneTrainerInit(unittest.TestCase):
     """Tests for RLFinetuneTrainer initialization."""
 
-    def test_tc18_init_raises_nie(self) -> None:
-        """TC18: __init__ raises NotImplementedError (stub)."""
+    def test_tc18_init_creates_three_models(self) -> None:
+        """TC18: __init__ creates policy, ref, and shadow copies."""
         cfg = _make_cfg()
-        with self.assertRaises(NotImplementedError):
-            RLFinetuneTrainer(cfg, device="cpu")
+        trainer = RLFinetuneTrainer(cfg, device="cpu")
+        # Policy should be trainable
+        self.assertIsNotNone(trainer.policy)
+        # Ref and shadow are frozen
+        self.assertFalse(
+            any(p.requires_grad for p in trainer._ref.parameters())
+        )
+        self.assertFalse(
+            any(p.requires_grad for p in trainer._shadow.parameters())
+        )
+        self.assertFalse(trainer._ref.training)
+        self.assertFalse(trainer._shadow.training)
 
 
 # ---------------------------------------------------------------
@@ -357,11 +409,15 @@ class TestRLFinetuneTrainerInit(unittest.TestCase):
 class TestGradientStep(unittest.TestCase):
     """Tests for RLFinetuneTrainer._gradient_step."""
 
-    def test_tc19_gradient_step_raises_nie(self) -> None:
-        """TC19: _gradient_step raises NIE because __init__ does."""
+    def test_tc19_gradient_step_empty_returns_zeros(self) -> None:
+        """TC19: _gradient_step with empty records returns zeros."""
         cfg = _make_cfg()
-        with self.assertRaises(NotImplementedError):
-            RLFinetuneTrainer(cfg, device="cpu")
+        trainer = RLFinetuneTrainer(cfg, device="cpu")
+        metrics = trainer._gradient_step([])
+        self.assertAlmostEqual(metrics["pg_loss"], 0.0)
+        self.assertAlmostEqual(metrics["kl_loss"], 0.0)
+        self.assertAlmostEqual(metrics["total_loss"], 0.0)
+        self.assertAlmostEqual(metrics["grad_norm"], 0.0)
 
 
 # ---------------------------------------------------------------
@@ -372,11 +428,28 @@ class TestGradientStep(unittest.TestCase):
 class TestCheckpointRoundTrip(unittest.TestCase):
     """Tests for save_checkpoint / load_checkpoint."""
 
-    def test_tc20_checkpoint_roundtrip_raises_nie(self) -> None:
-        """TC20: Checkpoint round-trip blocked by __init__ NIE."""
+    def test_tc20_checkpoint_roundtrip(self) -> None:
+        """TC20: Checkpoint save/load preserves state."""
         cfg = _make_cfg()
-        with self.assertRaises(NotImplementedError):
-            RLFinetuneTrainer(cfg, device="cpu")
+        trainer = RLFinetuneTrainer(cfg, device="cpu")
+        trainer._global_step = 7
+        trainer._game_count = 42
+        trainer._baseline._mean = 0.5
+        trainer._baseline._count = 10
+
+        with tempfile.TemporaryDirectory() as td:
+            ckpt_path = Path(td) / "test.pt"
+            trainer.save_checkpoint(ckpt_path)
+            self.assertTrue(ckpt_path.exists())
+
+            trainer2 = RLFinetuneTrainer(cfg, device="cpu")
+            trainer2.load_checkpoint(ckpt_path)
+            self.assertEqual(trainer2._global_step, 7)
+            self.assertEqual(trainer2._game_count, 42)
+            self.assertAlmostEqual(
+                trainer2._baseline._mean, 0.5
+            )
+            self.assertEqual(trainer2._baseline._count, 10)
 
 
 if __name__ == "__main__":

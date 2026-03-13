@@ -111,3 +111,55 @@ class RLRewardRow(NamedTuple):
     ply_idx: int
     outcome: int               # +1 / 0 / -1
     legal_mask: np.ndarray     # (1971,) bool — true legal moves
+
+
+class PlyRecord(NamedTuple):
+    """One live-policy half-move for self-play gradient computation.
+
+    Captures the board state and sampled action with its log-prob
+    so REINFORCE can compute policy gradients after the game ends.
+
+    Attributes:
+        board_tokens: [1, 65] long tensor — piece-type tokens.
+        color_tokens: [1, 65] long tensor — player/opponent.
+        traj_tokens:  [1, 65] long tensor — trajectory roles.
+        move_token:   Vocab index of the sampled move.
+        log_prob:     Scalar tensor with requires_grad=True.
+        is_white_ply: True when white is the side to move.
+
+    Example:
+        >>> ply = PlyRecord(bt, ct, tt, 42, lp, True)
+        >>> ply.move_token
+        42
+    """
+
+    board_tokens: Tensor    # [1, 65] long
+    color_tokens: Tensor    # [1, 65] long
+    traj_tokens: Tensor     # [1, 65] long
+    move_token: int         # vocab index of sampled move
+    log_prob: Tensor        # scalar; requires_grad=True
+    is_white_ply: bool
+
+
+class GameRecord(NamedTuple):
+    """Completed self-play game result for the gradient step.
+
+    Holds the trajectory of live-policy plies and the terminal
+    outcome from the policy's perspective.
+
+    Attributes:
+        plies: List of PlyRecord for live-policy moves only.
+        outcome: +1 win, 0 draw, -1 loss (policy perspective).
+        n_ply: Total plies played (both sides).
+        termination: Reason the game ended.
+
+    Example:
+        >>> game = GameRecord([], 1, 10, "checkmate")
+        >>> game.outcome
+        1
+    """
+
+    plies: list[PlyRecord]
+    outcome: int            # +1 win, 0 draw, -1 loss
+    n_ply: int
+    termination: str        # checkmate|stalemate|50move|threefold|maxply

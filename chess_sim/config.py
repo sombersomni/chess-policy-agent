@@ -467,7 +467,7 @@ class RLConfig:
     lambda_entropy: float = 0.0
     awbc_eps: float = 1e-8
     label_smoothing: float = 0.0
-    train_color: str = "white"
+    train_color: str = "both"
     value_lr_multiplier: float = 5.0
     balance_outcomes: bool = True
     loser_ply_weight: float = 0.1
@@ -489,9 +489,9 @@ class RLConfig:
                 "max_plies_per_game must be >= 1, "
                 f"got {self.max_plies_per_game}"
             )
-        if self.train_color not in ("white", "black"):
+        if self.train_color not in ("white", "black", "both"):
             raise ValueError(
-                "train_color must be 'white' or 'black'"
+                "train_color must be 'white', 'black', or 'both'"
                 f", got '{self.train_color}'"
             )
         if self.lambda_outcome < 0:
@@ -699,13 +699,13 @@ class RLFilterConfig:
 
     min_moves: int = 5
     max_moves: int = 512
-    train_color: str = "white"
+    train_color: str = "both"
 
     def __post_init__(self) -> None:
-        """Validate train_color is 'white' or 'black'."""
-        if self.train_color not in ("white", "black"):
+        """Validate train_color is 'white', 'black', or 'both'."""
+        if self.train_color not in ("white", "black", "both"):
             raise ValueError(
-                "train_color must be 'white' or 'black'"
+                "train_color must be 'white', 'black', or 'both'"
                 f", got '{self.train_color}'"
             )
 
@@ -773,4 +773,140 @@ def load_rl_preprocess_config(
         processing=ProcessingConfig(
             **raw.get("processing", {})
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# RL self-play fine-tune configs
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FinetuneConfig:
+    """Hyperparameters for online RL self-play fine-tuning.
+
+    Controls EMA shadow opponent, REINFORCE + KL anchor,
+    temperature sampling, and checkpoint I/O.
+
+    Example:
+        >>> FinetuneConfig(ema_alpha=0.99, gamma=0.95).max_ply
+        200
+    """
+
+    ema_alpha: float = 0.995
+    shadow_update_every_n_games: int = 50
+    t_policy: float = 0.3
+    t_opponent: float = 1.0
+    gamma: float = 0.99
+    lambda_kl: float = 0.1
+    n_games_per_update: int = 10
+    max_ply: int = 200
+    learning_rate: float = 1e-5
+    gradient_clip: float = 1.0
+    n_updates: int = 500
+    seed: int = 42
+    use_structural_mask: bool = False
+    checkpoint_in: str = ""
+    checkpoint_out: str = "checkpoints/chess_rl_finetune.pt"
+
+    def __post_init__(self) -> None:
+        """Validate hyperparameter ranges."""
+        if not (0 < self.ema_alpha < 1):
+            raise ValueError(
+                "ema_alpha must be in (0, 1), "
+                f"got {self.ema_alpha}"
+            )
+        if not (0 < self.gamma <= 1):
+            raise ValueError(
+                "gamma must be in (0, 1], "
+                f"got {self.gamma}"
+            )
+        if self.lambda_kl < 0:
+            raise ValueError(
+                "lambda_kl must be >= 0, "
+                f"got {self.lambda_kl}"
+            )
+        if self.t_policy <= 0:
+            raise ValueError(
+                "t_policy must be > 0, "
+                f"got {self.t_policy}"
+            )
+        if self.t_opponent <= 0:
+            raise ValueError(
+                "t_opponent must be > 0, "
+                f"got {self.t_opponent}"
+            )
+        if self.max_ply < 1:
+            raise ValueError(
+                "max_ply must be >= 1, "
+                f"got {self.max_ply}"
+            )
+        if self.n_games_per_update < 1:
+            raise ValueError(
+                "n_games_per_update must be >= 1, "
+                f"got {self.n_games_per_update}"
+            )
+
+
+@dataclass
+class FinetuneRLConfig:
+    """Root config for self-play RL fine-tuning.
+
+    Composes model, decoder, finetune, and aim sections.
+
+    Example:
+        >>> cfg = FinetuneRLConfig()
+        >>> cfg.finetune.ema_alpha
+        0.995
+    """
+
+    model: ModelConfig = field(
+        default_factory=ModelConfig
+    )
+    decoder: DecoderConfig = field(
+        default_factory=DecoderConfig
+    )
+    finetune: FinetuneConfig = field(
+        default_factory=FinetuneConfig
+    )
+    aim: AimConfig = field(default_factory=AimConfig)
+
+
+def load_finetune_rl_config(
+    path: Path,
+) -> FinetuneRLConfig:
+    """Load FinetuneRLConfig from a YAML file.
+
+    Parses model, decoder, finetune, and aim sections.
+    Unknown keys raise TypeError immediately.
+
+    Args:
+        path: Path to the YAML config file.
+
+    Returns:
+        Fully populated FinetuneRLConfig.
+
+    Raises:
+        FileNotFoundError: If path does not exist.
+        TypeError: If YAML contains unknown keys.
+
+    Example:
+        >>> cfg = load_finetune_rl_config(
+        ...     Path("configs/finetune_rl.yaml")
+        ... )
+        >>> cfg.finetune.ema_alpha
+        0.995
+    """
+    raw: dict[str, Any] = (
+        yaml.safe_load(path.read_text()) or {}
+    )
+    return FinetuneRLConfig(
+        model=ModelConfig(**raw.get("model", {})),
+        decoder=DecoderConfig(
+            **raw.get("decoder", {})
+        ),
+        finetune=FinetuneConfig(
+            **raw.get("finetune", {})
+        ),
+        aim=AimConfig(**raw.get("aim", {})),
     )

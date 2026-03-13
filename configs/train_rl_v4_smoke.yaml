@@ -44,8 +44,6 @@ rl:
   use_structural_mask:  true
   max_plies_per_game:   150
   rsce_r_ref:           0.0
-  rsce_repulsion_weight: 1.0
-  rsce_repulsion_warmup: 0.2
   hdf5_path:            data/chess_rl_v4_smoke.h5
   batch_size:           32
   num_workers:          0

@@ -1,4 +1,4 @@
-"""PGNRLTrainerV4: batched minibatch RSCE trainer using DataLoader.
+"""PGNRLTrainerV4: batched minibatch CE trainer using DataLoader.
 
 Replaces the sequential per-game loop of V3 with a standard
 DataLoader minibatch loop over a preprocessed HDF5 dataset.
@@ -35,104 +35,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def rsce_dual_loss(
-    logits: Tensor,
-    targets: Tensor,
-    multipliers: Tensor,
-    loss_modes: Tensor,
-    repulsion_weight: float = 1.0,
-    label_smoothing: float = 0.0,
-) -> tuple[Tensor, dict[str, float]]:
-    """Bifurcated RSCE loss: imitation CE + repulsion anti-CE.
-
-    Args:
-        logits: (B, V) raw model output logits.
-        targets: (B,) int64 move indices.
-        multipliers: (B,) float32, pre-normalized weights.
-        loss_modes: (B,) int8, +1=imitation, -1=repulsion.
-        repulsion_weight: Scale factor on repulsion branch.
-        label_smoothing: Label smoothing for CE (imitation).
-
-    Returns:
-        Tuple of (scalar_loss, branch_metrics) where
-        branch_metrics has keys: loss_imitation,
-        loss_repulsion, frac_repulsion.
-
-    Example:
-        >>> loss, m = rsce_dual_loss(logits, tgt, mult, lm)
-        >>> m["frac_repulsion"]
-        0.5
-    """
-    b = logits.size(0)
-    if b == 0:
-        return (
-            torch.tensor(0.0, requires_grad=True),
-            {
-                "loss_imitation": 0.0,
-                "loss_repulsion": 0.0,
-                "frac_repulsion": 0.0,
-            },
-        )
-
-    # Imitation branch: standard cross-entropy
-    ce_loss = F.cross_entropy(
-        logits, targets,
-        reduction="none",
-        label_smoothing=label_smoothing,
-    )
-
-    # Repulsion branch: -log(1 - p_played)
-    probs = torch.softmax(logits, dim=-1)
-    p_played = probs.gather(
-        1, targets.unsqueeze(1)
-    ).squeeze(1)
-    p_played = p_played.clamp(max=1.0 - 1e-6)
-    repulsion_loss = -torch.log(1.0 - p_played)
-
-    # Branch masks
-    imit_mask = (loss_modes == 1).float()
-    repul_mask = (loss_modes == -1).float()
-
-    # Combine per-sample loss
-    per_sample = (
-        imit_mask * ce_loss
-        + repul_mask * repulsion_weight * repulsion_loss
-    )
-
-    # Weighted mean
-    loss = (multipliers * per_sample).mean()
-
-    # Branch metrics
-    with torch.no_grad():
-        imit_bool = loss_modes == 1
-        repul_bool = loss_modes == -1
-        weighted_ce = multipliers * ce_loss
-        weighted_rep = (
-            multipliers * repulsion_weight * repulsion_loss
-        )
-
-        loss_imit = (
-            float(weighted_ce[imit_bool].mean().item())
-            if imit_bool.any() else 0.0
-        )
-        loss_repul = (
-            float(weighted_rep[repul_bool].mean().item())
-            if repul_bool.any() else 0.0
-        )
-        frac_repul = float(repul_mask.mean().item())
-
-    return (
-        loss,
-        {
-            "loss_imitation": loss_imit,
-            "loss_repulsion": loss_repul,
-            "frac_repulsion": frac_repul,
-        },
-    )
-
-
 class PGNRLTrainerV4:
-    """Batched RSCE trainer: minibatch CE weighted by pre-normalized multipliers.
+    """Batched CE trainer over preprocessed HDF5 dataset.
 
     Owns model, optimizer, scheduler, and structural mask.
     Accepts ChessRLDataset and wraps it in a DataLoader internally.
@@ -141,7 +45,7 @@ class PGNRLTrainerV4:
         >>> trainer = PGNRLTrainerV4(cfg, device="cpu",
         ...                          total_steps=10_000)
         >>> metrics = trainer.train_epoch(train_dataset)
-        >>> assert "rsce_loss" in metrics
+        >>> assert "total_loss" in metrics
     """
 
     def __init__(
@@ -286,44 +190,24 @@ class PGNRLTrainerV4:
         total_correct = 0
         total_samples = 0
 
-        total_imit_loss = 0.0
-        total_repul_loss = 0.0
-        total_repul_count = 0
-
         for (
-            board, targets, multipliers,
-            ct, _outcomes, loss_modes, legal_mask,
+            board, targets, _multipliers,
+            ct, _outcomes, _loss_modes, legal_mask,
         ) in dl:
             board = board.to(self._device)
             targets = targets.to(
                 self._device, dtype=torch.long
             )
-            multipliers = multipliers.to(
-                self._device, dtype=torch.float32
-            )
             ct = ct.to(self._device, dtype=torch.long)
-            loss_modes = loss_modes.to(
-                self._device, dtype=torch.int8
-            )
             legal_mask = legal_mask.to(self._device)
 
             step_result = self._train_step(
                 board, targets, ct, legal_mask,
-                multipliers, loss_modes,
             )
             batch_n = step_result["n_total"]
             total_loss += step_result["loss"] * batch_n
             total_correct += step_result["n_correct"]
             total_samples += batch_n
-            total_imit_loss += (
-                step_result["loss_imitation"] * batch_n
-            )
-            total_repul_loss += (
-                step_result["loss_repulsion"] * batch_n
-            )
-            total_repul_count += (
-                step_result["frac_repulsion"] * batch_n
-            )
 
             self._tracker.track_scalars(
                 {
@@ -337,15 +221,6 @@ class PGNRLTrainerV4:
                     ],
                     "grad_norm": step_result["grad_norm"],
                     "lr": self.current_lr,
-                    "loss_imitation": step_result[
-                        "loss_imitation"
-                    ],
-                    "loss_repulsion": step_result[
-                        "loss_repulsion"
-                    ],
-                    "frac_repulsion": step_result[
-                        "frac_repulsion"
-                    ],
                 },
                 step=self._global_step,
             )
@@ -356,9 +231,6 @@ class PGNRLTrainerV4:
             "train_accuracy": total_correct / denom,
             "n_samples": total_samples,
             "n_games": dataset.n_games,
-            "loss_imitation": total_imit_loss / denom,
-            "loss_repulsion": total_repul_loss / denom,
-            "frac_repulsion": total_repul_count / denom,
         }
 
     @torch.no_grad()
@@ -571,63 +443,27 @@ class PGNRLTrainerV4:
             **extra,
         )
 
-    def _effective_repulsion_weight(self) -> float:
-        """Compute effective repulsion weight with warmup ramp.
-
-        Linearly ramps from 0 to rsce_repulsion_weight over
-        the first rsce_repulsion_warmup fraction of total steps.
-
-        Returns:
-            Effective repulsion weight at current global step.
-
-        Example:
-            >>> trainer._effective_repulsion_weight()
-            0.5
-        """
-        base_w = self._cfg.rl.rsce_repulsion_weight
-        warmup_frac = self._cfg.rl.rsce_repulsion_warmup
-        if warmup_frac <= 0.0:
-            return base_w
-        warmup_steps = int(
-            warmup_frac * self._total_steps
-        )
-        if warmup_steps <= 0:
-            return base_w
-        if self._global_step >= warmup_steps:
-            return base_w
-        return base_w * (
-            self._global_step / warmup_steps
-        )
-
     def _train_step(
         self,
         board: Tensor,
         targets: Tensor,
         color_tokens: Tensor,
         legal_mask: Tensor,
-        multipliers: Tensor | None = None,
-        loss_modes: Tensor | None = None,
     ) -> dict[str, float]:
-        """Single minibatch forward + backward with RSCE loss.
-
-        Uses rsce_dual_loss when multipliers and loss_modes are
-        provided; falls back to plain CE otherwise.
+        """Single minibatch forward + backward with plain CE.
 
         Args:
             board: Float tensor [B, 65, 3].
             targets: Long tensor [B] of vocab indices.
             color_tokens: Long tensor [B, 65] for masking.
             legal_mask: Bool tensor [B, 1971].
-            multipliers: Float tensor [B] or None.
-            loss_modes: Int8 tensor [B] (+1/-1) or None.
 
         Returns:
             Dict with keys: loss, n_correct, n_total,
-            mean_entropy, grad_norm, loss_imitation,
-            loss_repulsion, frac_repulsion.
+            mean_entropy, grad_norm.
 
         Example:
-            >>> out = trainer._train_step(b, t, ct, lm, m, lm2)
+            >>> out = trainer._train_step(b, t, ct, lm)
             >>> out["loss"]
             2.5
         """
@@ -659,33 +495,13 @@ class PGNRLTrainerV4:
             ~legal_mask, float("-inf")
         )
 
-        # Use RSCE dual loss when multipliers/modes provided
-        if multipliers is not None and loss_modes is not None:
-            loss, branch_metrics = rsce_dual_loss(
-                last_logits,
-                targets,
-                multipliers,
-                loss_modes,
-                repulsion_weight=(
-                    self._effective_repulsion_weight()
-                ),
-                label_smoothing=(
-                    self._cfg.rl.label_smoothing
-                ),
-            )
-        else:
-            loss = F.cross_entropy(
-                last_logits,
-                targets,
-                label_smoothing=(
-                    self._cfg.rl.label_smoothing
-                ),
-            )
-            branch_metrics = {
-                "loss_imitation": loss.item(),
-                "loss_repulsion": 0.0,
-                "frac_repulsion": 0.0,
-            }
+        loss = F.cross_entropy(
+            last_logits,
+            targets,
+            label_smoothing=(
+                self._cfg.rl.label_smoothing
+            ),
+        )
 
         self._opt.zero_grad()
         loss.backward()
@@ -716,5 +532,4 @@ class PGNRLTrainerV4:
             "n_total": b_size,
             "mean_entropy": entropy.item(),
             "grad_norm": grad_norm,
-            **branch_metrics,
         }

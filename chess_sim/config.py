@@ -576,6 +576,7 @@ class RLConfig:
             )
 
 
+
 @dataclass
 class PGNRLConfig:
     """Root config for offline RL PGN training."""

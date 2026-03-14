@@ -28,19 +28,8 @@ rl:
   epochs:               100
   checkpoint:           checkpoints/chess_rl_v4.pt
   resume:               ""
-  lambda_outcome:       1.0
-  lambda_material:      0.1
-  draw_reward_norm:     0.5
-  lambda_ce:            0.0
-  lambda_awbc:              0.0
-  lambda_rsbc:              1.0
-  lambda_entropy:           0.0
-  awbc_eps:             1.0e-8
-  label_smoothing:          0.0
-  rsbc_normalize_per_game:  true
+  label_smoothing:      0.0
   train_color:          white
-  balance_outcomes:     true
-  loser_ply_weight:     0.1
   use_structural_mask:  true
   max_plies_per_game:   150
   hdf5_path:            data/chess_rl_v4.h5
@@ -48,9 +37,13 @@ rl:
   num_workers:          4
   val_split_fraction:   0.1
   hdf5_chunk_size:      1024
+  use_aux_heads:        true
+  lambda_capture:       0.5
+  lambda_category:      0.2
+  lambda_phase:         0.05
 
 aim:
   enabled:           true
-  experiment_name:   chess_rl_v4_rsce_ce_10k
+  experiment_name:   chess_rl_v4_aux_10k_100ep
   repo:              .aim
   log_every_n_steps: 10

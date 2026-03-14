@@ -58,7 +58,28 @@ class PieceTypeMoveLUT:
             >>> lut._lut.shape
             torch.Size([7, 1971])
         """
-        raise NotImplementedError("To be implemented")
+        import chess
+
+        from chess_sim.data.move_vocab import MoveVocab
+        from chess_sim.data.structural_mask import (
+            _uci_from_square_slot,
+        )
+
+        vocab = MoveVocab()
+        v = len(vocab)  # 1971
+        lut = torch.zeros(7, v, dtype=torch.bool)
+        start_board = chess.Board()
+
+        for idx in range(3, v):
+            uci = vocab.decode(idx)
+            # _uci_from_square_slot returns 1-based slot
+            slot = _uci_from_square_slot(uci)
+            sq = slot - 1  # convert to 0-based
+            piece = start_board.piece_at(sq)
+            if piece is not None:
+                lut[piece.piece_type, idx] = True
+
+        self._lut: Tensor = lut.to(device)
 
     def filter_legal_mask(
         self,
@@ -91,4 +112,7 @@ class PieceTypeMoveLUT:
             >>> filtered.shape
             torch.Size([2, 1971])
         """
-        raise NotImplementedError("To be implemented")
+        dev = legal_mask.device
+        lut = self._lut.to(dev)
+        per_type = lut[piece_types.to(dev)]  # [B, V]
+        return legal_mask & per_type

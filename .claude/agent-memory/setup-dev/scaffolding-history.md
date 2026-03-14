@@ -29,3 +29,14 @@
 - Module: config.py (Phase2Config), types.py (+PlyTuple, EpisodeRecord, ValueHeadOutput), protocols.py (+Recordable, Computable, Updatable), env/self_play_source.py, model/value_heads.py, training/{episode_recorder,reward_computer,ema_updater,self_play_loop}.py
 - Tests: tests/test_phase2_self_play.py — 15 tests
 - Key: ValueHeads.__init__ calls super().__init__() then creates heads (NOT raising NIE)
+
+## Candidate Piece Conditioning (2026-03-14)
+- New: chess_sim/data/candidate_reachability_mapper.py (CandidateReachabilityMapper, compute_valid_empty_mask, build_candidate_board_tokens stubs)
+- New: chess_sim/data/piece_type_move_lut.py (PieceTypeMoveLUT stub, mirrors SrcMoveLUT pattern)
+- Modified: embedding.py (PIECE_VOCAB_SIZE 8->9, INVALID_EMPTY_IDX=8, piece_type_cond_emb zero-init, piece_type_tokens param)
+- Modified: encoder.py (piece_type_tokens pass-through)
+- Modified: chess_model.py (piece_type in forward() and predict_next_move(), PieceTypeMoveLUT filtering)
+- Modified: config.py (ModelConfig.use_candidate_conditioning=False)
+- New type: ConditionedBoard NamedTuple in types.py
+- Tests: tests/test_candidate_conditioning.py — 37 pass, 14 skip
+- Design doc: docs/design_candidate_piece_conditioning.md

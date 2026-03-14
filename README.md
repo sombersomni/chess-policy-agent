@@ -31,8 +31,11 @@ Two training paths are supported:
 ```mermaid
 graph LR
     PGN[".pgn / .pgn.zst"] --> TOK["Tokenizer<br/>board + color + trajectory"]
-    TOK --> ENC["ChessEncoder<br/>6L, 8H, Pre-LN"]
+    PT["piece_type<br/>(optional)"] --> CAND["CandidateReachability<br/>EMPTY -> VALID/INVALID"]
+    CAND --> TOK
+    TOK --> ENC["ChessEncoder<br/>6L, 8H, Pre-LN<br/>+ src/pt cond emb"]
     ENC -->|"memory [B,65,d]"| DEC["MoveDecoder<br/>4L, 8H, causal"]
+    ENC -->|"sq_emb, cls_emb"| AUX["AuxiliaryHeads<br/>(train only)"]
     HIST["Move history<br/>SOS + prior moves"] --> DEC
     DEC -->|"logits [B,T,1971]"| PRED["argmax / sample"]
 ```
@@ -43,7 +46,7 @@ Each board position is encoded as 65 tokens in three parallel streams:
 
 | Stream | Vocab | Description |
 |--------|-------|-------------|
-| `board_tokens` | 8 | Piece type: 0=CLS, 1=empty, 2=pawn, 3=knight, 4=bishop, 5=rook, 6=queen, 7=king |
+| `board_tokens` | 9 | Piece type: 0=CLS, 1=empty, 2=pawn, 3=knight, 4=bishop, 5=rook, 6=queen, 7=king, 8=invalid\_empty |
 | `color_tokens` | 3 | Ownership: 0=empty/CLS, 1=player (side-to-move), 2=opponent |
 | `trajectory_tokens` | 5 | Last-move roles: 0=none, 1=player prev src, 2=player prev tgt, 3=opp prev src, 4=opp prev tgt |
 
@@ -51,11 +54,11 @@ Each board position is encoded as 65 tokens in three parallel streams:
 
 ### Embedding Layer
 
-Four learned embeddings are summed element-wise and normalized:
+Six learned embeddings are summed element-wise and normalized:
 
-$$\mathbf{h}_i = \text{LayerNorm}\!\Big(\mathbf{E}_{\text{piece}}[b_i] + \mathbf{E}_{\text{color}}[c_i] + \mathbf{E}_{\text{square}}[i] + \mathbf{E}_{\text{traj}}[t_i]\Big)$$
+$$\mathbf{h}_i = \text{LayerNorm}\!\Big(\mathbf{E}_{\text{piece}}[b_i] + \mathbf{E}_{\text{color}}[c_i] + \mathbf{E}_{\text{square}}[i] + \mathbf{E}_{\text{traj}}[t_i] + \mathbf{E}_{\text{src}}[\sigma] + \mathbf{E}_{\text{pt\_cond}}[\tau]\Big)$$
 
-where $b_i$, $c_i$, $t_i$ are the piece, color, and trajectory token at position $i \in \{0, \ldots, 64\}$.
+where $b_i$, $c_i$, $t_i$ are the piece, color, and trajectory token at position $i \in \{0, \ldots, 64\}$, $\sigma$ is the selected source-square index (broadcast across all 65 positions, 0 = no conditioning), and $\tau$ is the piece-type conditioning token (broadcast, 0 = no conditioning, 1--7 = piece type). Both $\mathbf{E}_{\text{src}}$ and $\mathbf{E}_{\text{pt\_cond}}$ are zero-initialized so they act as no-ops until trained.
 
 ### Model Hyperparameters
 
@@ -67,6 +70,34 @@ where $b_i$, $c_i$, $t_i$ are the piece, color, and trajectory token at position
 > **Note:** The default `ModelConfig` specifies $d_\text{model}=256$, but the current best checkpoint uses $d_\text{model}=128$ (3.6x fewer parameters with only 0.7% accuracy loss vs. 256).
 
 **Move vocabulary:** 1971 tokens covering all legal UCI move strings (including promotions).
+
+### Candidate Piece Conditioning
+
+The model supports an optional two-stage generation mode: (1) the caller selects a `piece_type` (1--6, matching `chess.PieceType`), and (2) the model predicts the destination with a restricted action space.
+
+When `piece_type` is provided:
+
+1. **Board token rewriting.** `CandidateReachabilityMapper` computes which empty squares are reachable by any friendly piece of that type via `board.pseudo_legal_moves`. `build_candidate_board_tokens` then splits `EMPTY` (idx 1) into `VALID_EMPTY` (idx 1, reachable) and `INVALID_EMPTY` (idx 8, unreachable), giving the encoder a richer input signal.
+2. **Embedding broadcast.** `piece_type_cond_emb` (vocab size 8, zero-init) injects a per-type conditioning vector into all 65 token embeddings.
+3. **Legal mask narrowing.** `PieceTypeMoveLUT` holds a static `[7, 1971]` bool tensor mapping each piece type to the subset of move-vocab entries whose from-square contains that piece type on the starting board. At inference, the legal mask is AND-ed with the LUT row for the selected type.
+
+Controlled by `ModelConfig.use_candidate_conditioning: bool = False` (board token rewriting) and `ModelConfig.use_src_conditioning: bool = False` (embedding + mask narrowing).
+
+### Auxiliary Heads
+
+Three lightweight linear heads provide denser gradient signal to the encoder during training. They are instantiated only when `rl.use_aux_heads = True` and are never used at inference.
+
+| Head | Input | Output | Loss |
+|------|-------|--------|------|
+| `capture_target_head` | `square_embeddings` $[B, 64, D]$ | $[B, 64]$ | Binary cross-entropy (per-square capture target) |
+| `move_category_head` | `cls_embedding` $[B, D]$ (detached) | $[B, 7]$ | 7-class cross-entropy (quiet, castle, promotion, capture subtypes) |
+| `phase_head` | `cls_embedding` $[B, D]$ (detached) | $[B, 3]$ | 3-class cross-entropy (opening / endgame / midgame) |
+
+The capture head receives un-detached square embeddings so its gradients flow into the encoder backbone. The CLS-based heads (category, phase) use detached embeddings by default to avoid destabilizing the encoder with noisy auxiliary gradients.
+
+Total loss with auxiliary heads:
+
+$$\mathcal{L} = \mathcal{L}_{\text{CE}} + \lambda_{\text{cap}}\,\mathcal{L}_{\text{capture}} + \lambda_{\text{cat}}\,\mathcal{L}_{\text{category}} + \lambda_{\text{phase}}\,\mathcal{L}_{\text{phase}}$$
 
 ---
 
@@ -103,13 +134,19 @@ python -m scripts.train_real --pgn data/games.pgn --epochs 10 --checkpoint check
 
 ## Training: Offline RL
 
-The offline RL path trains on master PGN games preprocessed into HDF5. The pipeline uses **plain cross-entropy** -- the same loss as the SL path -- applied to all plies (winner, loser, and draw alike). Game outcome labels are stored in the HDF5 file and used for stratified evaluation metrics, but do **not** influence the training loss.
+The offline RL path trains on master PGN games preprocessed into HDF5. The pipeline uses **plain cross-entropy** -- the same loss as the SL path -- applied to all plies (winner, loser, and draw alike). Game outcome labels are stored in the HDF5 file and used for stratified evaluation metrics, but do **not** influence the training loss. When `use_aux_heads` is enabled, three auxiliary losses (capture target, move category, game phase) are added to the main CE loss to provide denser encoder supervision (see [Auxiliary Heads](#auxiliary-heads)).
 
 ### Loss Function
 
 $$\mathcal{L}_{\text{CE}} = -\frac{1}{N}\sum_{i=1}^{N} \log p_\theta\!\big(m_i \mid \mathbf{s}_i\big)$$
 
 where $m_i$ is the ground-truth move and $\mathbf{s}_i$ is the encoder memory for board state $i$. Optional label smoothing ($\epsilon$) can be applied via `label_smoothing` in the config.
+
+When auxiliary heads are enabled (`use_aux_heads: true`), the total training loss becomes:
+
+$$\mathcal{L} = \mathcal{L}_{\text{CE}} + \lambda_{\text{cap}}\,\mathcal{L}_{\text{capture}} + \lambda_{\text{cat}}\,\mathcal{L}_{\text{category}} + \lambda_{\text{phase}}\,\mathcal{L}_{\text{phase}}$$
+
+where $\lambda_{\text{cap}} = 0.5$, $\lambda_{\text{cat}} = 0.2$, $\lambda_{\text{phase}} = 0.05$ by default.
 
 ### HDF5 Dataset
 
@@ -129,48 +166,61 @@ The `PGNRewardPreprocessor` replays PGN games, encodes each ply, and writes an H
 
 ```bash
 source .venv/bin/activate
-python -m scripts.train_rl_v4 --config configs/train_rl_v4_100k.yaml
+python -m scripts.train_rl_v4 --config configs/train_rl_v4.yaml
 ```
 
-### RL Configuration (`configs/train_rl_v4_100k.yaml`)
+### RL Configuration (`configs/train_rl_v4.yaml`)
 
 ```yaml
 data:
   pgn:       data/lichess_db_standard_rated_2013-01.pgn.zst
-  max_games: 100000
+  max_games: 10000
 
 model:
-  d_model: 128
-  n_heads: 8
-  n_layers: 6
+  d_model:         128
+  n_heads:         8
+  n_layers:        6
   dim_feedforward: 512
+  dropout:         0.1
 
 decoder:
-  d_model: 128
-  n_heads: 8
-  n_layers: 4
+  d_model:         128
+  n_heads:         8
+  n_layers:        4
   dim_feedforward: 512
+  dropout:         0.1
+  max_seq_len:     512
   move_vocab_size: 1971
 
 rl:
   learning_rate:        0.0001
   weight_decay:         0.01
   warmup_fraction:      0.05
-  decay_start_fraction: 0.65
+  decay_start_fraction: 0.5
   min_lr:               0.00001
   gradient_clip:        1.0
-  epochs:               40
-  checkpoint:           checkpoints/chess_rl_v4_100k_both.pt
+  epochs:               100
+  checkpoint:           checkpoints/chess_rl_v4.pt
   resume:               ""
   label_smoothing:      0.0
-  train_color:          both
+  train_color:          white
   use_structural_mask:  true
   max_plies_per_game:   150
-  hdf5_path:            data/chess_rl_v4_100k_both.h5
+  hdf5_path:            data/chess_rl_v4.h5
   batch_size:           512
   num_workers:          4
   val_split_fraction:   0.1
   hdf5_chunk_size:      1024
+  use_aux_heads:        true
+  lambda_capture:       0.5
+  lambda_category:      0.2
+  lambda_phase:         0.05
+
+aim:
+  enabled:           true
+  experiment_name:   chess_rl_v4_aux_10k_100ep
+  repo:              .aim
+  log_every_n_steps: 10
 ```
 
 ### LR Schedule
@@ -440,6 +490,11 @@ python -m unittest discover -s tests -p "test_*.py"
 | `tests/test_chess_encoder.py` | T26--T40: trajectory tokens, embedding init, gradient flow |
 | `tests/test_evaluate.py` | TEV01--TEV14: entropy, accuracy, per-head CE, GameEvaluator |
 | `tests/env/test_chess_sim_env.py` | T1--T12: PGNSource, RandomSource, ChessSimEnv, gymnasium env_checker |
+| `tests/test_candidate_conditioning.py` | CandidateReachabilityMapper, board token rewriting, PieceTypeMoveLUT, embedding conditioning, model forward/predict with piece\_type |
+| `tests/test_aux_heads.py` | T1--T13: AuxiliaryHeads shapes/losses/detach, compute\_phase\_labels, trainer integration, dataset src\_square, preprocessor |
+| `tests/test_batch_aux_compute.py` | Per-batch capture\_map and move\_category computation |
+| `tests/test_src_move_lut.py` | SrcMoveLUT filtering and legal mask narrowing |
+| `tests/test_rsce_v4.py` | PGNRLTrainerV4 train\_step, epoch metrics, checkpoint roundtrip |
 
 ---
 
@@ -571,13 +626,18 @@ chess-sim/
 │   │   ├── pgn_sequence_dataset.py  # V2 on-the-fly PGN dataset
 │   │   ├── hdf5_dataset.py    # ChessHDF5Dataset (pre-baked HDF5)
 │   │   ├── move_tokenizer.py  # UCI string <-> vocab index
-│   │   └── move_vocab.py      # 1971-token move vocabulary
+│   │   ├── move_vocab.py      # 1971-token move vocabulary
+│   │   ├── candidate_reachability_mapper.py  # EMPTY -> VALID/INVALID split
+│   │   ├── piece_type_move_lut.py  # [7,1971] piece-type move filter
+│   │   ├── capture_map_builder.py  # Per-square capture target labels
+│   │   └── move_category_builder.py  # 7-class move category labels
 │   ├── model/
-│   │   ├── embedding.py       # EmbeddingLayer (piece+color+square+traj)
+│   │   ├── embedding.py       # EmbeddingLayer (piece+color+square+traj+src+pt_cond)
 │   │   ├── encoder.py         # ChessEncoder (6-layer transformer)
 │   │   ├── decoder.py         # MoveDecoder (4-layer, causal)
 │   │   ├── chess_model.py     # ChessModel (top-level encoder-decoder)
 │   │   ├── heads.py           # PredictionHeads (src/tgt square)
+│   │   ├── auxiliary_heads.py # AuxiliaryHeads (capture, category, phase)
 │   │   └── value_heads.py     # ActionConditionedValueHead (RL)
 │   ├── env/
 │   │   ├── sources.py         # PGNSource, RandomSource

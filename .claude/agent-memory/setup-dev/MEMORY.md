@@ -14,183 +14,29 @@ See [scaffolding-history.md](scaffolding-history.md) for all prior scaffolding d
 
 ---
 
-## Scaffolding Completed: RL Self-Play Fine-Tuner (2026-03-13)
+## Scaffolding Completed: Candidate Piece Conditioning (2026-03-14)
 
 ### Changes
-- `chess_sim/config.py` — `FinetuneConfig` (15 fields, full validation) + `FinetuneRLConfig` root + `load_finetune_rl_config()` loader
-- `chess_sim/types.py` — `PlyRecord` (6 fields: board/color/traj tokens, move_token, log_prob, is_white_ply) + `GameRecord` (4 fields: plies, outcome, n_ply, termination)
-- `chess_sim/training/rl_finetune_trainer.py` — NEW: `RunningMeanBaseline` (working Welford impl), `play_game()`, `_log_prob_of_move()`, `compute_returns()` stubs (NIE), `RLFinetuneTrainer` class with `__init__`, `policy`, `train`, `save/load_checkpoint`, `_play_games`, `_gradient_step`, `_update_shadow` stubs (all NIE)
-- `configs/finetune_rl.yaml` — full config matching design doc
-- `scripts/finetune_rl.py` — CLI entry point with `_build_parser`, `_setup_reproducibility`, `main` (NIE)
-- `tests/test_rl_finetune_trainer.py` — 27 tests: TC01-TC09 pass (config validation + baseline), TC10-TC20 pass (assert NIE from stubs)
+- `chess_sim/data/candidate_reachability_mapper.py` — NEW: `CandidateReachabilityMapper`, `compute_valid_empty_mask()`, `build_candidate_board_tokens()` stubs (all NIE)
+- `chess_sim/data/piece_type_move_lut.py` — NEW: `PieceTypeMoveLUT` stub (mirrors SrcMoveLUT pattern, all NIE)
+- `chess_sim/model/embedding.py` — `PIECE_VOCAB_SIZE` 8->9, `INVALID_EMPTY_IDX=8`, `piece_type_cond_emb` (zero-init nn.Embedding(8, d_model)), `piece_type_tokens` param added to `embed()`/`forward()`
+- `chess_sim/model/encoder.py` — `piece_type_tokens` pass-through to embedding
+- `chess_sim/model/chess_model.py` — `piece_type` param in `forward()` and `predict_next_move()`, PieceTypeMoveLUT filtering
+- `chess_sim/config.py` — `ModelConfig.use_candidate_conditioning: bool = False`
+- `chess_sim/types.py` — `ConditionedBoard` NamedTuple (board_tokens, color_tokens, piece_type_idx)
 
-### Test Results: 27 pass, 0 fail
-- Design doc at `docs/design_rl_finetune.md`
+### Test Results: 37 pass, 14 skip
+- Design doc at `docs/design_candidate_piece_conditioning.md`
 
 ---
 
-## Scaffolding Completed: Dual-Direction RSCE Loss (2026-03-11)
-
-### Changes
-- `chess_sim/config.py` — `RLConfig` gains `rsce_repulsion_weight=1.0`, `rsce_repulsion_warmup=0.0` + validation
-- `chess_sim/types.py` — `RLRewardRow` gains `loss_mode: int` field (8 fields now, inserted after multiplier)
-- `chess_sim/data/pgn_reward_preprocessor.py` — `_DATASETS` gains `loss_mode: int8`; `_write_batch` writes it; `_is_cache_valid` checks `rsce_repulsion_weight`; attrs stored
-- `chess_sim/data/chess_rl_dataset.py` — 5-tuple -> 6-tuple: `(board, target_move, multiplier, color_tokens, outcome, loss_mode)`
-- `chess_sim/training/pgn_rl_trainer_v4.py` — NEW: `rsce_dual_loss()` stub (NIE); `_train_step` gains `loss_modes` param + 3 stub keys; `train_epoch` unpacks 6-tuple + aggregates branch metrics; `evaluate` unpacks 6-tuple + `repulsion_top1_avoidance: 0.0`
-- `scripts/train_rl_v4.py` — log format extended with imit/repul/frac_repul/repul_avoid
-- `configs/train_rl_v4.yaml` — `rsce_repulsion_weight: 1.0`, `rsce_repulsion_warmup: 0.2`
-- `tests/test_rsce_v4.py` — TC01-TC15 updated for 6-tuple; TC16-TC30 added (15 new tests)
-
-### Test Results: 25 pass, 5 fail (TC16-TC20 fail with NIE from rsce_dual_loss stub — expected)
-- Design doc at `docs/design/dual_rsce_loss.md`
-
----
-
-## Scaffolding Completed: RSCE V4 Batched Pipeline (2026-03-11)
-
-### Changes
-- `chess_sim/data/pgn_reward_preprocessor.py` — NEW: `PGNRewardPreprocessor` with NIE stubs: `generate`, `_is_cache_valid`, `_compute_checksum`; module-level `_encode_board` helper
-- `chess_sim/data/chess_rl_dataset.py` — NEW: `ChessRLDataset(Dataset)` with lazy h5py handle, train/val split by game_id, NIE stubs: `__init__`, `__len__`, `__getitem__`, `n_games`, `close`
-- `chess_sim/training/pgn_rl_trainer_v4.py` — NEW: `PGNRLTrainerV4` (standalone, no V2/V3 inheritance) with NIE stubs: `__init__`, `train_epoch`, `evaluate`, `save_checkpoint`, `load_checkpoint`, `_build_dataloader`, `_train_step`
-- `chess_sim/types.py` — `RLRewardRow` NamedTuple (7 fields: board ndarray, color_tokens ndarray, target_move, multiplier, game_id, ply_idx, outcome)
-- `chess_sim/config.py` — `RLConfig` gains `hdf5_path=""`, `batch_size=512`, `num_workers=4`, `val_split_fraction=0.1`, `hdf5_chunk_size=1024` + validation
-- `configs/train_rl_v4.yaml` — new V4 config with batch/worker/hdf5 fields
-- `scripts/train_rl_v4.py` — entry point stub
-- `tests/test_rsce_v4.py` — 15 test stubs (TC01-TC15), all pass (bodies are `pass`)
-
-### Test Results: 15 pass (all `pass` bodies)
-- Design doc at `docs/rsce_v4_batched_design.md`
-
----
-
-## Scaffolding Completed: RSCE Trainer v3 (2026-03-11)
-
-### Changes
-- `chess_sim/training/pgn_rl_trainer_v3.py` — NEW: `PGNRLTrainerV3(PGNRLTrainerV2)` with 3 NIE stubs: `train_game`, `_build_multipliers`, `_compute_rsce_loss`
-- `chess_sim/config.py` — `RLConfig` gains `rsce_r_ref: float = 0.0` (no validation needed)
-- `configs/train_rl_v3.yaml` — copy of v2, checkpoint/experiment renamed, adds `rsce_r_ref: 0.0`
-- `tests/test_pgn_rl_trainer_v3.py` — NEW: 15 skipTest stubs (T1-T15)
-  - T1-T7: `TestBuildMultipliers` (monotone, positivity, r_ref shift, normalization, edge cases)
-  - T8-T12: `TestComputeRSCELoss` (finite, mask, reward scaling, zero-reward baseline)
-  - T13-T15: `TestTrainGameV3` (rsce_loss key, lambda scaling, empty game)
-
-### Test Results: 15 skipped, 5 v2 tests pass unchanged
-- Design doc at `docs/rsce_loss_design.md`
-
----
-
-## Scaffolding Completed: Composite Reward Redesign (2026-03-10)
-
-### Changes
-- `chess_sim/types.py` — `OfflinePlyTuple`: removed default from `is_draw_ply`, added `material_delta: float`
-- `chess_sim/training/pgn_replayer.py` — `_PIECE_VALUES`, `_material_of()` stub, `last_material` tracking in `replay()`
-- `chess_sim/training/pgn_rl_reward_computer.py` — `compute()` now NIE stub with composite formula
-- `chess_sim/config.py` — RLConfig: removed gamma/win_reward/loss_reward/draw_reward; added lambda_outcome/lambda_material/draw_reward_norm
-- `chess_sim/training/pgn_rl_trainer.py` — sample_visuals DRY fix via replayer+reward_fn delegation
-- `chess_sim/data/rl_hdf5_dataset.py` — reads material_delta from HDF5 (defaults 0.0)
-- `tests/test_reward_computer.py` — NEW: 10 NIE stubs (T-CR1 to T-CR10)
-- `tests/test_replayer.py` — NEW: 5 NIE stubs (material delta scenarios)
-- `tests/test_config.py` — 6 new composite reward config tests (all PASS)
-
----
-
-## Scaffolding Completed: RSBC Test Skeletons (2026-03-10)
-
-### Changes
-- `tests/test_trainer.py` — `TestPGNRLTrainerRSBC` (15 skipTest stubs) added after `TestPGNRLTrainerAWBC`
-- `tests/test_config.py` — `TestRLConfigRSBC` (3 skipTest stubs) added before `if __name__`
-- No production code changes — config/trainer stubs already existed
-
-### Test Results: 18 skipped (all `skipTest("TODO: implement")`)
-- Pre-existing failure in `TestPGNRLTrainerAWBC::test_awbc_loss_no_advantage_collapse` — unrelated
-
----
-
-## Scaffolding Completed: AWBC Loss Redesign (2026-03-10)
-
-### Changes
-- `chess_sim/config.py` — `RLConfig` gains `lambda_awbc=1.0`, `lambda_entropy=0.0`, `awbc_eps=1e-8`; `lambda_ce` default `0.0` (deprecated); validation in `__post_init__`
-- `chess_sim/training/pgn_rl_trainer.py` — `train_game()`: `pg_loss+ce_loss` -> `awbc_loss+entropy_bonus`; removed `log_probs`; added `_compute_awbc_loss()` + `_compute_entropy_bonus()` stubs (NIE); `train_epoch()` accumulators updated; return dicts: `awbc_loss`/`entropy_bonus` + deprecated `pg_loss: 0.0`/`ce_loss: 0.0`
-- `configs/train_rl.yaml` + `configs/train_rl_10k.yaml` — new AWBC fields; `lambda_ce: 0.0`
-- `tests/test_trainer.py` — `TestPGNRLTrainerAWBC` (16 test stubs, all NIE)
-- `tests/test_pgn_rl_trainer.py` — T12 assertion updated `lambda_ce==0.5` -> `0.0`
-- Design doc at `docs/awbc_loss_redesign.md`
-
----
-
-## Scaffolding Completed: RL HDF5 Pipeline (2026-03-09)
-
-### Module Layout
-```
-chess_sim/
-├── config.py                          # +RLOutputConfig, RLFilterConfig, RLPreprocessConfig, load_rl_preprocess_config
-├── types.py                           # +RLPlyRecord NamedTuple (10 fields, no torch dep)
-├── preprocess/rl_reader.py            # RLPGNReader — stream() yields chess.pgn.Game
-├── preprocess/rl_parser.py            # RLPlyParser — parse_game() -> list[RLPlyRecord]
-├── preprocess/rl_writer.py            # RLHdf5Writer — open/write_batch/flush/close
-├── preprocess/rl_validator.py         # RLHdf5Validator — validate() raises ValueError
-├── preprocess/rl_preprocessor.py      # RLHdf5Preprocessor — orchestrates full pipeline
-├── preprocess/__init__.py             # +5 RL exports
-├── data/rl_hdf5_dataset.py            # RLPlyHDF5Dataset(Dataset[OfflinePlyTuple]) + rl_hdf5_worker_init
-configs/preprocess_rl.yaml             # Default RL preprocess YAML
-scripts/preprocess_rl.py               # Entry-point stub
-```
-
-### Test Suite (39 tests, all PASS — stubs assert NotImplementedError, configs test real validation)
-```
-tests/test_rl_hdf5_pipeline.py
-  - T1:  TestSchemaCorrectness — validator raises NIE
-  - T2:  TestTokenRoundTrip — writer/dataset init raises NIE
-  - T3:  TestPrefixPadding — record prefix len + writer NIE
-  - T4:  TestPrefixTruncation — long prefix constructable + writer NIE
-  - T5:  TestTrainColorFiltering — parser NIE + filter config validation (white/black/invalid)
-  - T6:  TestMoveUciRoundTrip — 4 parameterized UCI string checks
-  - T7:  TestRewardRecomputation — flag types + dataset NIE
-  - T8:  TestEmptyGameHandling — parser init NIE
-  - T9:  TestDatasetLength — dataset init NIE
-  - T10: TestOutOfRange — dataset init NIE
-  - T11: TestMultiWorkerDataLoader — worker_init NIE
-  - T12: TestTrainColorMismatch — validator NIE with black filter
-  + TestRLPreprocessConfig (4): defaults, loader NIE
-  + TestRLPlyRecordFields (11): field count + 10 parameterized name checks
-  + TestRLPGNReader (1): stream NIE
-  + TestRLHdf5Preprocessor (2): parser NIE, preprocessor init NIE
-```
-
-### Key Decisions
-- `git add -f` needed for chess_sim/data/rl_hdf5_dataset.py (gitignore `data/` pattern)
-- RLFilterConfig.__post_init__ validates train_color in ("white", "black")
-- RLPreprocessConfig reuses InputConfig, SplitConfig, ProcessingConfig from existing pipeline
-- load_rl_preprocess_config raises NotImplementedError (stub)
-- RLPlyRecord has 10 fields, no torch dependency — pure Python/lists
-- HDF5 schema: board/color/traj [N,65] uint8, move_prefix [N,max_prefix_len] uint16, move_uci S5 ASCII
-- Design doc at docs/rl_hdf5_pipeline.md
-
----
-
-## Scaffolding Completed: ReturnValueHead Critic (2026-03-09)
-
-### Changes
-- `chess_sim/model/value_heads.py` — full replacement: `ValueHeads` -> `ReturnValueHead` (two-layer MLP stub, forward raises NIE)
-- `chess_sim/model/chess_model.py` — added `self.value_head: ReturnValueHead` in `__init__`
-- `chess_sim/config.py` — added `lambda_value: float = 1.0` to `RLConfig` with `__post_init__` validation
-- `configs/train_rl.yaml` — added `lambda_value: 1.0` under `rl:` block
-- `chess_sim/training/pgn_rl_trainer.py` — added `_encode_and_decode` stub (NIE), `v_preds` list, `value_loss`/`mean_advantage` placeholders (0.0) in return dicts
-- `tests/test_pgn_rl_trainer.py` — T15-T23 (9 new tests), new `TestReturnValueHead` class
-
-### Test Results: 24 pass, 1 fail (T20 — NIE from forward stub, expected)
-- Design doc at docs/return_value_head.md
-
----
-
-## Scaffolding Completed: ActionConditionedValueHead Q-function (2026-03-09)
-
-### Changes
-- `chess_sim/model/value_heads.py` — `ReturnValueHead` -> `ActionConditionedValueHead` (concat fusion MLP, 2*d_model input)
-- `chess_sim/model/chess_model.py` — import updated, `@property move_token_emb` stub added (NIE)
-- `chess_sim/training/pgn_rl_trainer.py` — `_encode_and_decode` gains `move_uci` param, returns `tuple[Tensor, Tensor, int | None]` (NIE); `v_preds` -> `q_preds`; ply loop updated with action_emb + Q-head
-- `tests/test_pgn_rl_trainer.py` — `TestReturnValueHead` -> `TestActionConditionedValueHead`
-- `tests/test_value_head_q.py` — T24-T37 (14 tests), all fail with NIE
-
-### Test Results: 14 tests, all ERROR (NotImplementedError — expected)
-- Design doc at docs/action_conditioned_value_head.md
+## Prior Scaffolding (see scaffolding-history.md for details)
+- RL Self-Play Fine-Tuner (2026-03-13) — 27 pass
+- Dual-Direction RSCE Loss (2026-03-11) — 25 pass, 5 fail (expected NIE)
+- RSCE V4 Batched Pipeline (2026-03-11) — 15 pass
+- RSCE Trainer v3 (2026-03-11) — 15 skipped
+- Composite Reward Redesign (2026-03-10) — 10+5 NIE stubs, 6 config pass
+- AWBC Loss Redesign (2026-03-10) — 16 NIE stubs
+- RL HDF5 Pipeline (2026-03-09) — 39 pass
+- ReturnValueHead / ActionConditionedValueHead (2026-03-09) — value head stubs
+- Phase 2 Self-Play RL (2026-03-08) — 15 tests

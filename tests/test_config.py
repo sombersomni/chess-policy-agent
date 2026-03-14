@@ -105,7 +105,6 @@ class TestTrainerConfig(unittest.TestCase):
 
     def test_tc12c_invalid_fractions_raise(self) -> None:
         """TC12c: TrainerConfig raises when warmup_fraction >= decay_start_fraction."""
-        from chess_sim.config import TrainerConfig
         with self.assertRaises(ValueError):
             TrainerConfig(warmup_fraction=0.5, decay_start_fraction=0.3)
 

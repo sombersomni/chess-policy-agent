@@ -16,8 +16,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import torch
-
 from chess_sim.config import AimConfig, load_v2_config
 from chess_sim.tracking.aim_tracker import AimTracker
 from chess_sim.tracking.noop_tracker import NoOpTracker

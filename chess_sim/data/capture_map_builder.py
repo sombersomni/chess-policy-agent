@@ -15,6 +15,8 @@ Example:
 from __future__ import annotations
 
 import chess
+import torch
+from torch import Tensor
 
 
 def build(
@@ -50,3 +52,32 @@ def build(
         if attackers:
             result[sq] = 1
     return result
+
+
+def compute_from_board_tensor(board: Tensor) -> Tensor:
+    """Derive capture map per batch from board tensor.
+
+    Marks every opponent-occupied square as a capture target.
+    Approximation: ignores actual attack legality; correct for
+    the vast majority of real positions.
+
+    Args:
+        board: Float tensor [B, 65, 3]. Channel 0 = piece type
+            (0=empty, 1-7=pieces), channel 1 = color
+            (0=empty, 1=player, 2=opponent). Index 0 is CLS.
+
+    Returns:
+        Float tensor [B, 64] — 1.0 where an opponent piece sits.
+
+    Example:
+        >>> import torch
+        >>> b = torch.zeros(2, 65, 3)
+        >>> b[0, 5, 0] = 2.0  # pawn at slot 5
+        >>> b[0, 5, 1] = 2.0  # opponent
+        >>> compute_from_board_tensor(b)[0, 4]
+        tensor(1.)
+    """
+    # piece type 1=EMPTY, >1 means actual piece; color 2=opponent
+    piece_types = board[:, 1:, 0]  # [B, 64]
+    colors = board[:, 1:, 1]       # [B, 64]
+    return ((piece_types > 1) & (colors == 2)).float()

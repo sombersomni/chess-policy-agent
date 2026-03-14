@@ -12,6 +12,7 @@ HDF5 schema (datasets, all N-length along axis 0):
     ply_idx:      int16   (N,)       — 0-indexed ply within game
     outcome:      int8    (N,)       — +1 / 0 / -1
     legal_mask:   bool    (N, 1971)  — true legal moves per position
+    src_square:   int8    (N,)       — from-square of played move (0-63)
 """
 from __future__ import annotations
 
@@ -28,12 +29,6 @@ import torch
 from torch import Tensor
 
 from chess_sim.config import PGNRLConfig
-from chess_sim.data.capture_map_builder import (
-    build as build_capture_map,
-)
-from chess_sim.data.move_category_builder import (
-    build as build_move_category,
-)
 from chess_sim.data.move_tokenizer import MoveTokenizer
 from chess_sim.training.pgn_replayer import PGNReplayer
 from chess_sim.types import RLRewardRow
@@ -49,15 +44,10 @@ _DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
     "ply_idx": ("int16", ()),
     "outcome": ("int8", ()),
     "legal_mask": ("bool", (1971,)),
+    "src_square": ("int8", ()),
 }
 
-_SCHEMA_VERSION: int = 4  # bump when HDF5 schema changes
-
-# Aux head datasets: only created when use_aux_heads=True
-_AUX_DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
-    "capture_map": ("uint8", (64,)),
-    "move_category": ("uint8", ()),
-}
+_SCHEMA_VERSION: int = 5  # bump when HDF5 schema changes
 
 
 def _stream_pgn(
@@ -136,11 +126,12 @@ def _encode_board(
 
 
 class PGNRewardPreprocessor:
-    """Offline preprocessor: PGN -> HDF5 with pre-normalized RSCE multipliers.
+    """Offline preprocessor: PGN -> HDF5 for batched CE training.
 
     Streams games from a PGN file, replays each via PGNReplayer,
-    computes rewards via PGNRLRewardComputer, normalizes per-game
-    multipliers offline, and writes to HDF5.
+    and writes board state + outcome + src_square to HDF5.
+    Auxiliary reward signals (capture map, move category) are
+    computed per-batch during training from the stored board tensor.
 
     Example:
         >>> pp = PGNRewardPreprocessor(cfg)
@@ -155,9 +146,7 @@ class PGNRewardPreprocessor:
         """Initialize with config and optional device.
 
         Args:
-            cfg: PGNRLConfig containing rl hyperparameters
-                (lambda_outcome, lambda_material, rsce_r_ref,
-                draw_reward_norm, rsbc_normalize_per_game).
+            cfg: PGNRLConfig containing rl hyperparameters.
             device: Torch device string for board encoding.
 
         Example:
@@ -179,7 +168,7 @@ class PGNRewardPreprocessor:
         Checks cache validity first; skips regeneration if HDF5
         attributes match current config. Writes chunked gzip HDF5
         with datasets: board, color_tokens, target_move,
-        game_id, ply_idx, outcome, legal_mask.
+        game_id, ply_idx, outcome, legal_mask, src_square.
 
         Args:
             pgn_path: Path to .pgn or .pgn.zst file.
@@ -207,19 +196,13 @@ class PGNRewardPreprocessor:
         chunk_size = rl.hdf5_chunk_size
 
         hdf5_path.parent.mkdir(parents=True, exist_ok=True)
-        use_aux = rl.use_aux_heads
 
         rows: list[RLRewardRow] = []
-        aux_capture: list[list[int]] = []
-        aux_category: list[int] = []
         cursor = 0
 
         with h5py.File(hdf5_path, "w") as hf:
             # Create resizable datasets
-            all_ds = dict(_DATASETS)
-            if use_aux:
-                all_ds.update(_AUX_DATASETS)
-            for name, (dtype, shape) in all_ds.items():
+            for name, (dtype, shape) in _DATASETS.items():
                 full_shape = (0,) + shape
                 max_shape = (None,) + shape
                 chunk_shape = (chunk_size,) + shape
@@ -243,19 +226,7 @@ class PGNRewardPreprocessor:
 
                 plies = self._replayer.replay(game)
 
-                # Build board states for aux labels
-                boards: list[chess.Board] | None = None
-                if use_aux:
-                    boards = self._replay_boards(game)
-
                 if train_color != "both":
-                    if boards is not None:
-                        boards = [
-                            b
-                            for b, p in zip(boards, plies)
-                            if p.is_white_ply
-                            == (train_color == "white")
-                        ]
                     plies = [
                         p for p in plies
                         if p.is_white_ply
@@ -300,6 +271,12 @@ class PGNRewardPreprocessor:
                         )
                     )
 
+                    src_sq = np.int8(
+                        chess.Move.from_uci(
+                            ply.move_uci
+                        ).from_square
+                    )
+
                     rows.append(RLRewardRow(
                         board=board_enc.numpy(),
                         color_tokens=ct_np,
@@ -308,43 +285,19 @@ class PGNRewardPreprocessor:
                         ply_idx=ply_i,
                         outcome=outcome,
                         legal_mask=legal_mask_t.numpy(),
+                        src_square=int(src_sq),
                     ))
-
-                    if use_aux and boards is not None:
-                        brd = boards[ply_i]
-                        aux_capture.append(
-                            build_capture_map(
-                                brd, brd.turn
-                            )
-                        )
-                        aux_category.append(
-                            build_move_category(
-                                ply.move_uci, brd
-                            )
-                        )
 
                     if len(rows) >= chunk_size:
                         cursor = self._write_batch(
-                            hf, rows, cursor,
-                            aux_capture if use_aux
-                            else None,
-                            aux_category if use_aux
-                            else None,
+                            hf, rows, cursor
                         )
                         rows.clear()
-                        aux_capture.clear()
-                        aux_category.clear()
 
             # Flush remaining rows
             if rows:
-                cursor = self._write_batch(
-                    hf, rows, cursor,
-                    aux_capture if use_aux else None,
-                    aux_category if use_aux else None,
-                )
+                cursor = self._write_batch(hf, rows, cursor)
                 rows.clear()
-                aux_capture.clear()
-                aux_category.clear()
 
             # Store config attributes for cache validation
             checksum = self._compute_checksum(
@@ -366,41 +319,31 @@ class PGNRewardPreprocessor:
         hf: h5py.File,
         rows: list[RLRewardRow],
         cursor: int,
-        capture_maps: list[list[int]] | None = None,
-        categories: list[int] | None = None,
     ) -> int:
         """Write a batch of RLRewardRow to open HDF5 file.
 
-        Resizes datasets and copies row data in bulk. When aux
-        labels are provided, also writes capture_map and
-        move_category datasets.
+        Resizes datasets and copies row data in bulk.
 
         Args:
             hf: Open h5py.File in write mode.
             rows: List of RLRewardRow to write.
             cursor: Current write position in the dataset.
-            capture_maps: Optional list of 64-int capture maps.
-            categories: Optional list of move category ints.
 
         Returns:
             New cursor position after writing.
         """
         n = len(rows)
         new_size = cursor + n
-        has_aux = capture_maps is not None
 
-        ds_names = list(_DATASETS)
-        if has_aux:
-            ds_names += list(_AUX_DATASETS)
-        for name in ds_names:
+        for name in _DATASETS:
             hf[name].resize(new_size, axis=0)
 
-        boards = np.stack([r.board for r in rows])
-        hf["board"][cursor:new_size] = boards
-
-        ct = np.stack([r.color_tokens for r in rows])
-        hf["color_tokens"][cursor:new_size] = ct
-
+        hf["board"][cursor:new_size] = np.stack(
+            [r.board for r in rows]
+        )
+        hf["color_tokens"][cursor:new_size] = np.stack(
+            [r.color_tokens for r in rows]
+        )
         hf["target_move"][cursor:new_size] = np.array(
             [r.target_move for r in rows], dtype=np.int32
         )
@@ -416,36 +359,11 @@ class PGNRewardPreprocessor:
         hf["legal_mask"][cursor:new_size] = np.stack(
             [r.legal_mask for r in rows]
         )
-
-        if has_aux and capture_maps and categories is not None:
-            hf["capture_map"][cursor:new_size] = np.array(
-                capture_maps, dtype=np.uint8
-            )
-            hf["move_category"][cursor:new_size] = np.array(
-                categories, dtype=np.uint8
-            )
+        hf["src_square"][cursor:new_size] = np.array(
+            [r.src_square for r in rows], dtype=np.int8
+        )
 
         return new_size
-
-    @staticmethod
-    def _replay_boards(
-        game: chess.pgn.Game,
-    ) -> list[chess.Board]:
-        """Replay game moves, returning board BEFORE each push.
-
-        Args:
-            game: Parsed PGN game.
-
-        Returns:
-            List of board copies, one per ply, captured
-            before the move is applied.
-        """
-        board = game.board()
-        boards: list[chess.Board] = []
-        for move in game.mainline_moves():
-            boards.append(board.copy())
-            board.push(move)
-        return boards
 
     def _is_cache_valid(
         self,
@@ -454,11 +372,6 @@ class PGNRewardPreprocessor:
         max_games: int,
     ) -> bool:
         """Check HDF5 attrs vs current config for cache hit.
-
-        Reads stored attributes (pgn_checksum, max_games,
-        lambda_outcome, lambda_material, rsce_r_ref,
-        draw_reward_norm, rsbc_normalize_per_game) and compares
-        against current config values.
 
         Args:
             hdf5_path: Path to existing HDF5 file.
@@ -504,10 +417,6 @@ class PGNRewardPreprocessor:
         max_games: int,
     ) -> str:
         """First-1MB + file-size checksum, like shard cache.
-
-        Reads the first 1 MB of the PGN file, appends the file
-        size and max_games as strings, and returns a hex SHA-256
-        digest.
 
         Args:
             pgn_path: Path to PGN file.

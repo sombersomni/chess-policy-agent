@@ -69,6 +69,115 @@ class TestEmbeddingLayerShape(unittest.TestCase):
             out_forward = self.layer.forward(bt, ct, at)
         self.assertTrue(torch.allclose(out_embed, out_forward))
 
+    def test_src_tokens_none_matches_zero(self) -> None:
+        """T04: src_tokens=None produces same output as src_tokens=zeros."""
+        bt, ct, at = self._make_tokens()
+        src_zeros = torch.zeros(self.batch_size, dtype=torch.long)
+        with torch.no_grad():
+            out_none = self.layer.embed(bt, ct, at, src_tokens=None)
+            out_zero = self.layer.embed(bt, ct, at, src_tokens=src_zeros)
+        self.assertTrue(torch.allclose(out_none, out_zero))
+
+    def test_nonzero_src_changes_output(self) -> None:
+        """T04: Non-zero src_tokens changes output after training src_square_emb."""
+        bt, ct, at = self._make_tokens()
+        src_zeros = torch.zeros(self.batch_size, dtype=torch.long)
+        src_nonzero = torch.ones(self.batch_size, dtype=torch.long) * 5
+
+        # Re-initialize src_square_emb to non-zero so conditioning fires.
+        layer = EmbeddingLayer()
+        layer.eval()
+        with torch.no_grad():
+            torch.nn.init.normal_(layer.src_square_emb.weight)
+            out_zero = layer.embed(bt, ct, at, src_tokens=src_zeros)
+            out_nonzero = layer.embed(bt, ct, at, src_tokens=src_nonzero)
+        self.assertFalse(torch.allclose(out_zero, out_nonzero))
+
+    def test_src_square_emb_zero_init(self) -> None:
+        """T04: src_square_emb starts as all zeros (no-op at init)."""
+        layer = EmbeddingLayer()
+        self.assertTrue(
+            torch.all(layer.src_square_emb.weight == 0).item()
+        )
+
+    def test_piece_type_cond_emb_zero_init(self) -> None:
+        """T04: piece_type_cond_emb starts as all zeros (no-op at init)."""
+        layer = EmbeddingLayer()
+        self.assertTrue(
+            torch.all(layer.piece_type_cond_emb.weight == 0).item()
+        )
+
+    def test_piece_type_tokens_none_matches_zero(self) -> None:
+        """T04: piece_type_tokens=None produces same output as zeros."""
+        bt, ct, at = self._make_tokens()
+        pt_zeros = torch.zeros(self.batch_size, dtype=torch.long)
+        with torch.no_grad():
+            out_none = self.layer.embed(bt, ct, at, piece_type_tokens=None)
+            out_zero = self.layer.embed(bt, ct, at, piece_type_tokens=pt_zeros)
+        self.assertTrue(torch.allclose(out_none, out_zero))
+
+    def test_nonzero_piece_type_changes_output(self) -> None:
+        """T04: Non-zero piece_type_tokens changes output after init."""
+        bt, ct, at = self._make_tokens()
+        pt_zeros = torch.zeros(self.batch_size, dtype=torch.long)
+        pt_nonzero = torch.full(
+            (self.batch_size,), 5, dtype=torch.long  # ROOK
+        )
+        layer = EmbeddingLayer()
+        layer.eval()
+        with torch.no_grad():
+            torch.nn.init.normal_(layer.piece_type_cond_emb.weight)
+            out_zero = layer.embed(bt, ct, at, piece_type_tokens=pt_zeros)
+            out_nonzero = layer.embed(bt, ct, at, piece_type_tokens=pt_nonzero)
+        self.assertFalse(torch.allclose(out_zero, out_nonzero))
+
+    def test_piece_type_broadcast_across_positions(self) -> None:
+        """T04: piece_type_tokens is broadcast — all 65 positions get same signal."""
+        bt, ct, at = self._make_tokens()
+        layer = EmbeddingLayer()
+        layer.eval()
+        with torch.no_grad():
+            torch.nn.init.normal_(layer.piece_type_cond_emb.weight)
+        pt = torch.tensor([3], dtype=torch.long)  # B=1, KNIGHT
+        bt1, ct1, at1 = bt[:1], ct[:1], at[:1]
+        with torch.no_grad():
+            out_pt = layer.piece_type_cond_emb(pt)  # [1, d_model]
+            out_with = layer.embed(bt1, ct1, at1, piece_type_tokens=pt)
+            out_without = layer.embed(bt1, ct1, at1, piece_type_tokens=None)
+        diff = out_with - out_without
+        self.assertEqual(out_pt.shape, (1, D_MODEL))
+        self.assertFalse(torch.all(out_pt == 0).item())
+        self.assertFalse(torch.all(diff == 0).item())
+
+    def test_src_broadcast_same_across_positions(self) -> None:
+        """T04: src_tokens is broadcast — all 65 positions get the same src signal."""
+        bt, ct, at = self._make_tokens()
+        layer = EmbeddingLayer()
+        layer.eval()
+        # Set src_square_emb to non-zero so the signal is visible.
+        with torch.no_grad():
+            torch.nn.init.normal_(layer.src_square_emb.weight)
+        src = torch.tensor([3], dtype=torch.long)  # B=1
+
+        bt1 = bt[:1]
+        ct1 = ct[:1]
+        at1 = at[:1]
+
+        with torch.no_grad():
+            out_src = layer.src_square_emb(src)  # [1, d_model]
+            out_embed = layer.embed(bt1, ct1, at1, src_tokens=src)
+            # Embed without src to get the "base" output per-position
+            out_no_src = layer.embed(bt1, ct1, at1, src_tokens=None)
+
+        # Difference should be the same src embedding broadcast across positions.
+        diff = out_embed - out_no_src  # [1, 65, d_model]
+        # After LayerNorm, the constant broadcast gets folded in uniformly;
+        # verify the raw src signal has shape (1, d_model) and is non-zero.
+        self.assertEqual(out_src.shape, (1, D_MODEL))
+        self.assertFalse(torch.all(out_src == 0).item())
+        # The diff tensor should be non-zero (src had an effect).
+        self.assertFalse(torch.all(diff == 0).item())
+
 
 if __name__ == "__main__":
     unittest.main()

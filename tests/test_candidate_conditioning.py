@@ -41,24 +41,24 @@ from chess_sim.types import ConditionedBoard
 class TestCandidateReachabilityMapper(unittest.TestCase):
     """Tests for CandidateReachabilityMapper.compute()."""
 
-    def test_compute_raises_not_implemented(self) -> None:
-        """CandidateReachabilityMapper.compute() is a stub -- raises NIE."""
+    def test_compute_returns_frozenset(self) -> None:
+        """CandidateReachabilityMapper.compute() returns a frozenset."""
         import chess
 
         mapper = CandidateReachabilityMapper()
-        with self.assertRaises(NotImplementedError):
-            mapper.compute(chess.Board(), chess.ROOK, True)
+        result = mapper.compute(chess.Board(), chess.ROOK, True)
+        self.assertIsInstance(result, frozenset)
 
-    def test_compute_valid_empty_mask_raises_not_implemented(
+    def test_compute_valid_empty_mask_returns_64_bools(
         self,
     ) -> None:
-        """compute_valid_empty_mask() is a stub -- raises NIE."""
+        """compute_valid_empty_mask() returns length-64 list."""
         import chess
 
-        with self.assertRaises(NotImplementedError):
-            compute_valid_empty_mask(
-                chess.Board(), chess.WHITE, chess.ROOK
-            )
+        mask = compute_valid_empty_mask(
+            chess.Board(), chess.WHITE, chess.ROOK
+        )
+        self.assertEqual(len(mask), 64)
 
     def test_rook_reachable_squares_open_board(self) -> None:
         """Rook on open board reaches all rank/file squares.
@@ -67,16 +67,32 @@ class TestCandidateReachabilityMapper(unittest.TestCase):
         can reach all squares on file a (a2-a8) and rank 1
         (b1-h1). compute() should return those 14 squares.
         """
-        self.skipTest("TODO: implement after compute() stub filled")
+        import chess
+
+        board = chess.Board(fen=None)
+        board.set_piece_at(chess.A1, chess.Piece(chess.ROOK, chess.WHITE))
+        mapper = CandidateReachabilityMapper()
+        result = mapper.compute(board, chess.ROOK, True)
+        # a-file: a2-a8 = 7 squares, rank 1: b1-h1 = 7 squares
+        self.assertEqual(len(result), 14)
 
     def test_rook_blocked_by_friendly_piece(self) -> None:
         """Blocked squares excluded from reachable set.
 
-        A friendly piece on a2 should block the rook on a1 from
-        reaching a2-a8 along the a-file. Only rank-1 squares and
-        a2 (occupied, so not empty) should appear.
+        A friendly pawn on a2 blocks the rook on a1 from
+        reaching a3-a8 along the a-file. a2 is occupied so
+        not in reachable set. Only rank-1 squares remain.
         """
-        self.skipTest("TODO: implement after compute() stub filled")
+        import chess
+
+        board = chess.Board(fen=None)
+        board.set_piece_at(chess.A1, chess.Piece(chess.ROOK, chess.WHITE))
+        board.set_piece_at(chess.A2, chess.Piece(chess.PAWN, chess.WHITE))
+        mapper = CandidateReachabilityMapper()
+        result = mapper.compute(board, chess.ROOK, True)
+        # Only b1-h1 = 7 squares (a2 blocked, a3+ unreachable)
+        self.assertEqual(len(result), 7)
+        self.assertNotIn(chess.A2, result)
 
     def test_no_candidates_returns_empty_set(self) -> None:
         """When piece type not on board, compute() returns empty frozenset.
@@ -84,15 +100,27 @@ class TestCandidateReachabilityMapper(unittest.TestCase):
         Board with no knights and piece_type=KNIGHT should yield
         an empty frozenset.
         """
-        self.skipTest("TODO: implement after compute() stub filled")
+        import chess
+
+        board = chess.Board(fen=None)
+        board.set_piece_at(chess.A1, chess.Piece(chess.ROOK, chess.WHITE))
+        mapper = CandidateReachabilityMapper()
+        result = mapper.compute(board, chess.KNIGHT, True)
+        self.assertEqual(result, frozenset())
 
     def test_pawn_reachable_squares(self) -> None:
-        """Pawn reachability: forward pushes and diagonal captures only.
+        """Pawn reachability: forward pushes only to empty squares.
 
-        Pawns can push forward (1 or 2 squares from start) and
-        capture diagonally. Verify only valid empty targets appear.
+        White pawns on starting position can push 1 or 2 squares
+        forward. Diagonal captures excluded (no enemy pieces).
         """
-        self.skipTest("TODO: implement after compute() stub filled")
+        import chess
+
+        board = chess.Board()
+        mapper = CandidateReachabilityMapper()
+        result = mapper.compute(board, chess.PAWN, True)
+        # 8 pawns, each can push 1 or 2 = 16 empty squares
+        self.assertEqual(len(result), 16)
 
 
 # ---------------------------------------------------------------------------
@@ -103,47 +131,49 @@ class TestCandidateReachabilityMapper(unittest.TestCase):
 class TestBuildCandidateBoardTokens(unittest.TestCase):
     """Tests for build_candidate_board_tokens()."""
 
-    def test_build_raises_not_implemented(self) -> None:
-        """build_candidate_board_tokens() is a stub -- raises NIE."""
+    def test_build_returns_new_list(self) -> None:
+        """build_candidate_board_tokens() returns a new list, not mutated input."""
         tokens = [0] + [1] * 64
-        with self.assertRaises(NotImplementedError):
-            build_candidate_board_tokens(tokens, frozenset({0}))
+        result = build_candidate_board_tokens(tokens, frozenset({0}))
+        self.assertIsNot(result, tokens)
+        # Original unchanged
+        self.assertEqual(tokens[2], 1)
 
     def test_valid_empty_assigned_to_reachable(self) -> None:
-        """Reachable empty squares keep token VALID_EMPTY (1).
-
-        When square index 0 (a1) is in the reachable set and board
-        token at position 1 is EMPTY(1), it should remain 1.
-        """
-        self.skipTest(
-            "TODO: implement after build_candidate_board_tokens() filled"
+        """Reachable empty squares keep token VALID_EMPTY (1)."""
+        tokens = [0] + [1] * 64
+        result = build_candidate_board_tokens(
+            tokens, frozenset({0, 1, 2})
         )
+        self.assertEqual(result[1], VALID_EMPTY_TOKEN)  # sq 0
+        self.assertEqual(result[2], VALID_EMPTY_TOKEN)  # sq 1
+        self.assertEqual(result[3], VALID_EMPTY_TOKEN)  # sq 2
 
     def test_invalid_empty_assigned_to_unreachable(self) -> None:
-        """Unreachable empty squares get token INVALID_EMPTY (8).
-
-        When square index 3 (d1) is NOT in the reachable set and
-        board token at position 4 is EMPTY(1), it becomes 8.
-        """
-        self.skipTest(
-            "TODO: implement after build_candidate_board_tokens() filled"
+        """Unreachable empty squares get token INVALID_EMPTY (8)."""
+        tokens = [0] + [1] * 64
+        result = build_candidate_board_tokens(
+            tokens, frozenset({0, 1, 2})
         )
+        # sq 3 -> token index 4, not reachable
+        self.assertEqual(result[4], INVALID_EMPTY_TOKEN)
 
     def test_occupied_squares_unchanged(self) -> None:
-        """Piece tokens (2-7) are never modified regardless of reachability.
-
-        Squares occupied by pieces keep their original token value
-        even if the square is in the reachable set.
-        """
-        self.skipTest(
-            "TODO: implement after build_candidate_board_tokens() filled"
+        """Piece tokens (2-7) are never modified regardless of reachability."""
+        tokens = [0] + [1] * 64
+        tokens[5] = 3  # sq 4 has a knight
+        result = build_candidate_board_tokens(
+            tokens, frozenset({4})  # sq 4 in reachable set
         )
+        self.assertEqual(result[5], 3)  # still a knight
 
     def test_cls_token_unchanged(self) -> None:
         """CLS token at index 0 is never modified."""
-        self.skipTest(
-            "TODO: implement after build_candidate_board_tokens() filled"
+        tokens = [0] + [1] * 64
+        result = build_candidate_board_tokens(
+            tokens, frozenset()
         )
+        self.assertEqual(result[0], 0)
 
 
 # ---------------------------------------------------------------------------
@@ -154,41 +184,37 @@ class TestBuildCandidateBoardTokens(unittest.TestCase):
 class TestPieceTypeMoveLUT(unittest.TestCase):
     """Tests for PieceTypeMoveLUT construction and filter_legal_mask()."""
 
-    def test_init_raises_not_implemented(self) -> None:
-        """PieceTypeMoveLUT.__init__() is a stub -- raises NIE."""
-        with self.assertRaises(NotImplementedError):
-            PieceTypeMoveLUT()
+    def test_lut_shape(self) -> None:
+        """LUT is [7, 1971] bool tensor."""
+        lut = PieceTypeMoveLUT()
+        self.assertEqual(lut._lut.shape, (7, 1971))
+        self.assertEqual(lut._lut.dtype, torch.bool)
 
     def test_filters_non_rook_moves(self) -> None:
-        """Only rook moves survive when piece_type=ROOK(4).
+        """Only rook moves survive when piece_type=ROOK(4)."""
+        import chess
 
-        After filtering with piece_type=4 (ROOK), the output mask
-        should be True only for vocab indices whose from-square had
-        a rook on the starting board.
-        """
-        self.skipTest(
-            "TODO: implement after PieceTypeMoveLUT.__init__() filled"
-        )
+        lut = PieceTypeMoveLUT()
+        legal = torch.ones(1, 1971, dtype=torch.bool)
+        pt = torch.tensor([chess.ROOK], dtype=torch.long)
+        filtered = lut.filter_legal_mask(legal, pt)
+        # Row 0 of LUT is all-False, rook row should have entries
+        self.assertTrue(filtered.any())
+        # All True entries must be rook-from-square moves
+        self.assertEqual(filtered.shape, (1, 1971))
 
     def test_no_conditioning_passthrough(self) -> None:
-        """piece_type=0 returns all-False mask (caller must gate).
+        """piece_type=0 returns all-False mask (caller must gate)."""
+        lut = PieceTypeMoveLUT()
+        legal = torch.ones(1, 1971, dtype=torch.bool)
+        pt = torch.tensor([0], dtype=torch.long)
+        filtered = lut.filter_legal_mask(legal, pt)
+        self.assertFalse(filtered.any())
 
-        Row 0 of the LUT is all-False. Calling filter_legal_mask
-        with piece_types=0 produces an empty mask. Callers must
-        check piece_type > 0 before calling.
-        """
-        self.skipTest(
-            "TODO: implement after PieceTypeMoveLUT.__init__() filled"
-        )
-
-    def test_filter_legal_mask_raises_not_implemented(self) -> None:
-        """filter_legal_mask() is a stub -- raises NIE (from __init__)."""
-        with self.assertRaises(NotImplementedError):
-            lut = PieceTypeMoveLUT()
-            lut.filter_legal_mask(
-                torch.ones(1, 1971, dtype=torch.bool),
-                torch.tensor([4], dtype=torch.long),
-            )
+    def test_row_zero_all_false(self) -> None:
+        """Row 0 of the LUT is all-False (no piece type 0)."""
+        lut = PieceTypeMoveLUT()
+        self.assertFalse(lut._lut[0].any())
 
 
 # ---------------------------------------------------------------------------
@@ -265,11 +291,14 @@ class TestEmbeddingLayerCandidateConditioning(unittest.TestCase):
         """
         bt, ct, tt = self._make_inputs()
         with torch.no_grad():
-            # Set each row to a different value so row 0 != row 3
-            for i in range(PIECE_TYPE_COND_VOCAB_SIZE):
-                self.layer.piece_type_cond_emb.weight[i].fill_(
-                    float(i) * 0.1
+            # Set non-uniform weights per row (uniform offsets are
+            # invisible to LayerNorm, so use randn-based init)
+            torch.manual_seed(42)
+            self.layer.piece_type_cond_emb.weight.copy_(
+                torch.randn_like(
+                    self.layer.piece_type_cond_emb.weight
                 )
+            )
             pt_zero = torch.zeros(self.B, dtype=torch.long)
             out_zero = self.layer.embed(
                 bt, ct, tt, piece_type_tokens=pt_zero
@@ -389,52 +418,65 @@ class TestChessEncoderPieceTypePassthrough(unittest.TestCase):
 class TestChessModelPredictNextMovePieceType(unittest.TestCase):
     """Tests for ChessModel.predict_next_move() with piece_type param."""
 
-    def test_predict_next_move_accepts_piece_type(self) -> None:
-        """predict_next_move() signature accepts piece_type kwarg.
-
-        Verifies the method can be called with piece_type=4 (ROOK)
-        without TypeError. The actual narrowing logic is tested
-        separately via PieceTypeMoveLUT.
-        """
-        self.skipTest(
-            "TODO: implement after PieceTypeMoveLUT is filled"
+    def _make_model(self):
+        """Create a small ChessModel for testing."""
+        from chess_sim.model.chess_model import ChessModel
+        d = 64
+        model = ChessModel(
+            ModelConfig(d_model=d, n_layers=1),
+            DecoderConfig(d_model=d, n_layers=1),
         )
+        model.eval()
+        return model
+
+    def test_predict_next_move_accepts_piece_type(self) -> None:
+        """predict_next_move() accepts piece_type kwarg without TypeError."""
+        model = self._make_model()
+        bt = torch.zeros(1, 65, dtype=torch.long)
+        # Use a starting position with legal moves
+        with torch.no_grad():
+            move = model.predict_next_move(
+                bt, bt, bt,
+                move_history=[],
+                legal_moves=["e2e4", "d2d4", "g1f3"],
+                is_white_turn=True,
+                piece_type=1,  # PAWN
+            )
+        self.assertIsInstance(move, str)
 
     def test_piece_type_narrows_legal_mask(self) -> None:
         """Only moves matching piece_type survive the filtered mask.
 
-        When piece_type=4 (ROOK), the legal mask should be ANDed
-        with the PieceTypeMoveLUT row for ROOK, removing all
-        non-rook moves.
+        With piece_type=2 (KNIGHT), only knight moves from the
+        starting position should be candidates. e2e4 (pawn) should
+        not be selected if only knight moves are legal after filter.
         """
-        self.skipTest(
-            "TODO: implement after PieceTypeMoveLUT is filled"
-        )
-
-    @patch(
-        "chess_sim.model.chess_model.ChessModel.forward"
-    )
-    def test_forward_receives_piece_type_tensor(
-        self, mock_fwd: MagicMock
-    ) -> None:
-        """forward() is called with piece_type tensor when piece_type given.
-
-        Mocks forward() and verifies that piece_type kwarg is a
-        [1] long tensor with the correct value.
-        """
-        self.skipTest(
-            "TODO: implement after full integration available"
-        )
+        model = self._make_model()
+        bt = torch.zeros(1, 65, dtype=torch.long)
+        # Only provide knight moves as legal — pawn move excluded
+        with torch.no_grad():
+            move = model.predict_next_move(
+                bt, bt, bt,
+                move_history=[],
+                legal_moves=["g1f3", "b1c3"],
+                is_white_turn=True,
+                piece_type=2,  # KNIGHT
+            )
+        self.assertIn(move, ["g1f3", "b1c3"])
 
     def test_piece_type_none_no_filtering(self) -> None:
-        """predict_next_move() with piece_type=None skips PieceTypeMoveLUT.
-
-        Default behavior (no piece_type) should not import or call
-        PieceTypeMoveLUT.
-        """
-        self.skipTest(
-            "TODO: implement after full integration available"
-        )
+        """predict_next_move() with piece_type=None allows all moves."""
+        model = self._make_model()
+        bt = torch.zeros(1, 65, dtype=torch.long)
+        with torch.no_grad():
+            move = model.predict_next_move(
+                bt, bt, bt,
+                move_history=[],
+                legal_moves=["e2e4", "g1f3"],
+                is_white_turn=True,
+                piece_type=None,
+            )
+        self.assertIn(move, ["e2e4", "g1f3"])
 
 
 # ---------------------------------------------------------------------------

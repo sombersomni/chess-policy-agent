@@ -62,7 +62,9 @@ class CandidateReachabilityMapper:
             >>> mapper.compute(chess.Board(), chess.KNIGHT, True)
             frozenset(...)
         """
-        raise NotImplementedError("To be implemented")
+        turn = chess.WHITE if is_white else chess.BLACK
+        mask = compute_valid_empty_mask(board, turn, piece_type)
+        return frozenset(i for i, v in enumerate(mask) if v)
 
 
 def compute_valid_empty_mask(
@@ -96,7 +98,20 @@ def compute_valid_empty_mask(
         >>> len(mask)
         64
     """
-    raise NotImplementedError("To be implemented")
+    reachable = [False] * 64
+    for move in board.pseudo_legal_moves:
+        src_piece = board.piece_at(move.from_square)
+        if src_piece is None:
+            continue
+        if src_piece.piece_type != piece_type:
+            continue
+        if src_piece.color != turn:
+            continue
+        # Only empty destination squares
+        if board.piece_at(move.to_square) is not None:
+            continue
+        reachable[move.to_square] = True
+    return reachable
 
 
 def build_candidate_board_tokens(
@@ -130,4 +145,12 @@ def build_candidate_board_tokens(
         >>> result[4]  # square d1 (idx 3) unreachable
         8
     """
-    raise NotImplementedError("To be implemented")
+    result = list(board_tokens)
+    for sq_idx in range(64):
+        tok_pos = sq_idx + 1  # offset by CLS at index 0
+        if (
+            result[tok_pos] == VALID_EMPTY_TOKEN
+            and sq_idx not in reachable_squares
+        ):
+            result[tok_pos] = INVALID_EMPTY_TOKEN
+    return result

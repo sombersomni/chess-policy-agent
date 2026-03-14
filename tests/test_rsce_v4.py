@@ -93,6 +93,11 @@ def _write_synthetic_hdf5(
         legal_mask[:, 3:20] = True
         hf.create_dataset("legal_mask", data=legal_mask)
 
+        src_sq = np.random.randint(
+            0, 64, (n_rows,), dtype=np.int8
+        )
+        hf.create_dataset("src_square", data=src_sq)
+
 
 def _make_minimal_pgn(path: Path) -> None:
     """Write a tiny PGN file with 3 short games."""
@@ -116,6 +121,7 @@ def _make_cfg(**rl_overrides: object) -> PGNRLConfig:
         "val_split_fraction": 0.1,
         "hdf5_chunk_size": 64,
         "use_structural_mask": False,
+        "use_aux_heads": False,
         "warmup_fraction": 0.05,
         "decay_start_fraction": 0.5,
         "epochs": 1,
@@ -175,7 +181,7 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
     def test_tc03_generate_creates_correct_datasets(
         self,
     ) -> None:
-        """generate() creates HDF5 with all 9 required datasets."""
+        """generate() creates HDF5 with all 8 required datasets."""
         with tempfile.TemporaryDirectory() as td:
             pgn_path = Path(td) / "games.pgn"
             _make_minimal_pgn(pgn_path)
@@ -196,6 +202,7 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
                 "ply_idx",
                 "outcome",
                 "legal_mask",
+                "src_square",
             }
             with h5py.File(hdf5_path, "r") as hf:
                 self.assertEqual(
@@ -308,7 +315,7 @@ class TestChessRLDataset(unittest.TestCase):
     def test_tc08_getitem_shapes_and_types(
         self,
     ) -> None:
-        """__getitem__ returns correct 8-tuple shapes."""
+        """__getitem__ returns correct 7-tuple shapes."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
@@ -321,9 +328,10 @@ class TestChessRLDataset(unittest.TestCase):
             )
             try:
                 (
-                    board, tgt, ct, outcome, legal_mask,
-                    capture_map, move_cat, ply_idx,
+                    board, tgt, ct, outcome,
+                    legal_mask, src_square, ply_idx,
                 ) = ds[0]
+                self.assertEqual(len(ds[0]), 7)
                 self.assertEqual(board.shape, (65, 3))
                 self.assertEqual(
                     board.dtype, torch.float32
@@ -341,11 +349,9 @@ class TestChessRLDataset(unittest.TestCase):
                 self.assertEqual(
                     legal_mask.dtype, torch.bool
                 )
-                # Aux fields: zeros when HDF5 lacks them
-                self.assertEqual(
-                    capture_map.shape, (64,)
-                )
-                self.assertIsInstance(move_cat, int)
+                self.assertIsInstance(src_square, int)
+                self.assertGreaterEqual(src_square, 0)
+                self.assertLess(src_square, 64)
                 self.assertIsInstance(ply_idx, int)
             finally:
                 ds.close()
@@ -418,9 +424,10 @@ class TestPGNRLTrainerV4(unittest.TestCase):
 
         legal_mask = torch.zeros(B, 1971, dtype=torch.bool)
         legal_mask[:, 3:20] = True  # ensure targets reachable
+        ply_idx = torch.randint(0, 40, (B,))
 
         result = trainer._train_step(
-            board, targets, ct, legal_mask
+            board, targets, legal_mask, ply_idx=ply_idx
         )
         self.assertIn("loss", result)
         self.assertTrue(

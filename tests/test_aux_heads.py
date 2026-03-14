@@ -3,9 +3,11 @@
 T1-T3: AuxiliaryHeads module (shapes, losses, detach)
 T4-T5: compute_phase_labels
 T6-T8: Trainer integration (train_step with aux, epoch keys, eval)
-T9: Preprocessor with aux fields in HDF5
-T10: ChessRLDataset loads aux fields from HDF5
-T11: Backward compat — no aux heads when use_aux_heads=False
+T9: ChessRLDataset returns src_square field
+T10: Missing src_square in HDF5 raises KeyError
+T11: use_aux_heads=False: no aux keys in metrics
+T12: Preprocessor writes src_square, not capture_map/move_category
+T13: Both preprocessor modes omit capture_map and move_category
 """
 from __future__ import annotations
 
@@ -65,9 +67,9 @@ def _write_synthetic_hdf5(
     path: Path,
     n_rows: int = 200,
     n_games: int = 10,
-    with_aux: bool = False,
+    with_src_square: bool = True,  # False only used by T10 to test KeyError
 ) -> None:
-    """Write a minimal HDF5 matching the v4 schema."""
+    """Write a minimal HDF5 matching the v5 schema."""
     with h5py.File(path, "w") as hf:
         ch0 = np.random.randint(0, 8, (n_rows, 65))
         ch1 = np.random.randint(0, 3, (n_rows, 65))
@@ -121,17 +123,11 @@ def _write_synthetic_hdf5(
         legal_mask[:, 3:20] = True
         hf.create_dataset("legal_mask", data=legal_mask)
 
-        if with_aux:
-            cap = np.random.randint(
-                0, 2, (n_rows, 64), dtype=np.uint8
+        if with_src_square:
+            src_sq = np.random.randint(
+                0, 64, (n_rows,), dtype=np.int8
             )
-            hf.create_dataset("capture_map", data=cap)
-            mcat = np.random.randint(
-                0, 7, (n_rows,), dtype=np.uint8
-            )
-            hf.create_dataset(
-                "move_category", data=mcat
-            )
+            hf.create_dataset("src_square", data=src_sq)
 
 
 class TestAuxiliaryHeads(unittest.TestCase):
@@ -189,7 +185,6 @@ class TestAuxiliaryHeads(unittest.TestCase):
         # CLS should NOT have gradient (detached)
         self.assertIsNone(cls.grad)
         # Square emb SHOULD have gradient (capture head)
-        # We need a separate backward for capture_loss
         sq.grad = None
         out2 = heads(sq, cls, cap_gt, cat_gt, ph_gt)
         out2.capture_loss.backward()
@@ -203,11 +198,7 @@ class TestComputePhaseLabels(unittest.TestCase):
         """Ply < 20 -> Opening(0)."""
         B = 4
         ply_idx = torch.tensor([0, 5, 10, 19])
-        # Full material board
         board = torch.zeros(B, 65, 3)
-        # Set non-pawn pieces on squares 1-64
-        # Knight=3, Bishop=4, Rook=5, Queen=6 on a few
-        # Total non-pawn: 2*3+2*3+2*5+9 = 28 per side
         for sq in [1, 2]:  # knight
             board[:, sq + 1, 0] = 3
         for sq in [3, 4]:  # bishop
@@ -227,8 +218,6 @@ class TestComputePhaseLabels(unittest.TestCase):
         """Low non-pawn material -> Endgame(1)."""
         B = 2
         ply_idx = torch.tensor([30, 50])
-        # Board with only pawns (piece type 2) and kings (7)
-        # Total non-pawn material = 0
         board = torch.zeros(B, 65, 3)
         board[:, 1:9, 0] = 2  # pawns
         board[:, 9, 0] = 7    # king
@@ -245,12 +234,10 @@ class TestComputePhaseLabels(unittest.TestCase):
         B = 1
         ply_idx = torch.tensor([25])
         board = torch.zeros(B, 65, 3)
-        # Add lots of pieces: 4 rooks (20), 2 queens (18)
         for sq in range(1, 5):
-            board[:, sq, 0] = 5  # rook = 5 value each
+            board[:, sq, 0] = 5  # rook
         board[:, 5, 0] = 6  # queen
         board[:, 6, 0] = 6  # queen
-        # Total: 4*5 + 2*9 = 38 > 15 -> not endgame
 
         labels = compute_phase_labels(ply_idx, board)
         self.assertEqual(labels[0].item(), 2)
@@ -268,7 +255,9 @@ class TestTrainerAuxIntegration(unittest.TestCase):
             cfg, device="cpu", total_steps=100
         )
         B = 4
-        ch0 = torch.randint(0, 8, (B, 65)).float()
+        # piece type: 1=empty, 2=pawn, 3=knight...
+        ch0 = torch.randint(1, 8, (B, 65)).float()
+        # color: 0=empty, 1=player, 2=opponent
         ch1 = torch.randint(0, 3, (B, 65)).float()
         ch2 = torch.randint(0, 5, (B, 65)).float()
         board = torch.stack([ch0, ch1, ch2], dim=-1)
@@ -278,13 +267,12 @@ class TestTrainerAuxIntegration(unittest.TestCase):
             B, 1971, dtype=torch.bool
         )
         legal_mask[:, 3:20] = True
-        capture_map = torch.zeros(B, 64)
-        move_cat = torch.randint(0, 7, (B,))
+        src_square = torch.randint(0, 64, (B,))
         ply_idx = torch.randint(0, 40, (B,))
 
         result = trainer._train_step(
-            board, targets, ct, legal_mask,
-            capture_map, move_cat, ply_idx,
+            board, targets, legal_mask,
+            src_square, ply_idx,
         )
         self.assertIn("capture_loss", result)
         self.assertIn("category_loss", result)
@@ -306,7 +294,6 @@ class TestTrainerAuxIntegration(unittest.TestCase):
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
                 path, n_rows=20, n_games=2,
-                with_aux=True,
             )
             ds = ChessRLDataset(
                 path, val_split_fraction=0.1,
@@ -330,7 +317,6 @@ class TestTrainerAuxIntegration(unittest.TestCase):
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
                 path, n_rows=20, n_games=2,
-                with_aux=True,
             )
             ds = ChessRLDataset(
                 path, val_split_fraction=0.5,
@@ -345,50 +331,42 @@ class TestTrainerAuxIntegration(unittest.TestCase):
             finally:
                 ds.close()
 
-    def test_t9_dataset_loads_aux_from_hdf5(self) -> None:
-        """ChessRLDataset detects and loads aux fields."""
+    def test_t9_dataset_returns_src_square(self) -> None:
+        """ChessRLDataset returns src_square in 7-tuple."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
                 path, n_rows=20, n_games=2,
-                with_aux=True,
+                with_src_square=True,
             )
             ds = ChessRLDataset(
                 path, val_split_fraction=0.1,
                 split="train",
             )
-            self.assertTrue(ds.has_aux)
             sample = ds[0]
-            # 8-tuple: board, tgt, ct, out, mask,
-            #          capture_map, move_cat, ply_idx
-            self.assertEqual(len(sample), 8)
-            capture_map = sample[5]
-            self.assertEqual(capture_map.shape, (64,))
+            self.assertEqual(len(sample), 7)
+            # src_square is element 5 in the 7-tuple
+            src_sq = sample[5]
+            self.assertIsInstance(src_sq, int)
+            self.assertGreaterEqual(src_sq, 0)
+            self.assertLess(src_sq, 64)
             ds.close()
 
-    def test_t10_dataset_without_aux_returns_zeros(
+    def test_t10_dataset_without_src_square_raises(
         self,
     ) -> None:
-        """Dataset without aux fields returns zero defaults."""
+        """HDF5 missing src_square raises KeyError at load time."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
                 path, n_rows=20, n_games=2,
-                with_aux=False,
+                with_src_square=False,
             )
-            ds = ChessRLDataset(
-                path, val_split_fraction=0.1,
-                split="train",
-            )
-            self.assertFalse(ds.has_aux)
-            sample = ds[0]
-            capture_map = sample[5]
-            self.assertEqual(capture_map.shape, (64,))
-            self.assertEqual(
-                capture_map.sum().item(), 0.0
-            )
-            self.assertEqual(sample[6], 0)  # move_cat
-            ds.close()
+            with self.assertRaises(KeyError):
+                ChessRLDataset(
+                    path, val_split_fraction=0.1,
+                    split="train",
+                )
 
     def test_t11_no_aux_heads_backward_compat(
         self,
@@ -423,10 +401,10 @@ class TestTrainerAuxIntegration(unittest.TestCase):
             finally:
                 ds.close()
 
-    def test_t12_preprocessor_writes_aux_datasets(
+    def test_t12_preprocessor_writes_src_square(
         self,
     ) -> None:
-        """PGNRewardPreprocessor writes aux datasets."""
+        """PGNRewardPreprocessor writes src_square, not aux."""
         from chess_sim.data.pgn_reward_preprocessor import (  # noqa: E501
             PGNRewardPreprocessor,
         )
@@ -446,48 +424,55 @@ class TestTrainerAuxIntegration(unittest.TestCase):
             )
 
             with h5py.File(hdf5_path, "r") as hf:
-                self.assertIn("capture_map", hf)
-                self.assertIn("move_category", hf)
+                self.assertIn("src_square", hf)
+                self.assertNotIn("capture_map", hf)
+                self.assertNotIn("move_category", hf)
                 n = hf["board"].shape[0]
                 self.assertEqual(
-                    hf["capture_map"].shape, (n, 64)
+                    hf["src_square"].shape, (n,)
                 )
-                self.assertEqual(
-                    hf["move_category"].shape, (n,)
-                )
-                # Check values are valid
-                cap = hf["capture_map"][:]
+                src_vals = hf["src_square"][:]
                 self.assertTrue(
-                    np.all((cap == 0) | (cap == 1))
+                    np.all(src_vals >= 0)
                 )
-                cats = hf["move_category"][:]
-                self.assertTrue(np.all(cats <= 6))
+                self.assertTrue(
+                    np.all(src_vals < 64)
+                )
 
-    def test_t13_preprocessor_no_aux_without_flag(
+    def test_t13_preprocessor_no_aux_in_either_mode(
         self,
     ) -> None:
-        """No aux datasets when use_aux_heads=False."""
+        """Both use_aux=True/False omit capture_map and move_category."""
         from chess_sim.data.pgn_reward_preprocessor import (  # noqa: E501
             PGNRewardPreprocessor,
         )
 
-        cfg = _make_cfg(use_aux=False)
-        pp = PGNRewardPreprocessor(cfg)
-        with tempfile.TemporaryDirectory() as td:
-            pgn_path = Path(td) / "games.pgn"
-            pgn_path.write_text(
-                '[Event "T"]\n[Result "1-0"]\n\n'
-                "1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 "
-                "4. Qxf7# 1-0\n\n"
-            )
-            hdf5_path = Path(td) / "out.h5"
-            pp.generate(
-                pgn_path, hdf5_path, max_games=1
-            )
+        for use_aux in (True, False):
+            cfg = _make_cfg(use_aux=use_aux)
+            pp = PGNRewardPreprocessor(cfg)
+            with tempfile.TemporaryDirectory() as td:
+                pgn_path = Path(td) / "games.pgn"
+                pgn_path.write_text(
+                    '[Event "T"]\n[Result "1-0"]\n\n'
+                    "1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 "
+                    "4. Qxf7# 1-0\n\n"
+                )
+                hdf5_path = Path(td) / "out.h5"
+                pp.generate(
+                    pgn_path, hdf5_path, max_games=1
+                )
 
-            with h5py.File(hdf5_path, "r") as hf:
-                self.assertNotIn("capture_map", hf)
-                self.assertNotIn("move_category", hf)
+                with h5py.File(hdf5_path, "r") as hf:
+                    self.assertNotIn(
+                        "capture_map", hf,
+                        f"capture_map present when "
+                        f"use_aux={use_aux}",
+                    )
+                    self.assertNotIn(
+                        "move_category", hf,
+                        f"move_category present when "
+                        f"use_aux={use_aux}",
+                    )
 
 
 if __name__ == "__main__":

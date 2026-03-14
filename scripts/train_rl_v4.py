@@ -90,11 +90,20 @@ def _run_training_loop(
                 all_metrics, epoch, lr_main
             )
 
+            aux_str = ""
+            if "capture_loss" in metrics:
+                aux_str = (
+                    " | cap=%.4f cat=%.4f ph=%.4f" % (
+                        metrics["capture_loss"],
+                        metrics["category_loss"],
+                        metrics["phase_loss"],
+                    )
+                )
             logger.info(
                 "Epoch %02d: loss=%.4f train_acc=%.4f "
                 "| val_loss=%.4f val_acc=%.4f "
                 "| n_samples=%d n_games=%d "
-                "lr=%.2e",
+                "lr=%.2e%s",
                 epoch,
                 metrics["total_loss"],
                 metrics["train_accuracy"],
@@ -103,6 +112,7 @@ def _run_training_loop(
                 metrics["n_samples"],
                 metrics["n_games"],
                 lr_main,
+                aux_str,
             )
 
             if ckpt_path is not None:

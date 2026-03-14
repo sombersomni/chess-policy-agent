@@ -45,9 +45,10 @@ _DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
     "outcome": ("int8", ()),
     "legal_mask": ("bool", (1971,)),
     "src_square": ("int8", ()),
+    "capture_map": ("bool", (64,)),
 }
 
-_SCHEMA_VERSION: int = 5  # bump when HDF5 schema changes
+_SCHEMA_VERSION: int = 7  # bump when HDF5 schema changes
 
 
 def _stream_pgn(
@@ -286,6 +287,9 @@ class PGNRewardPreprocessor:
                         outcome=outcome,
                         legal_mask=legal_mask_t.numpy(),
                         src_square=int(src_sq),
+                        capture_map=np.array(
+                            ply.capture_map, dtype=bool
+                        ),
                     ))
 
                     if len(rows) >= chunk_size:
@@ -361,6 +365,9 @@ class PGNRewardPreprocessor:
         )
         hf["src_square"][cursor:new_size] = np.array(
             [r.src_square for r in rows], dtype=np.int8
+        )
+        hf["capture_map"][cursor:new_size] = np.stack(
+            [r.capture_map for r in rows]
         )
 
         return new_size

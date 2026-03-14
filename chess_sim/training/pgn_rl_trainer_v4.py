@@ -22,9 +22,6 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 from chess_sim.config import PGNRLConfig
-from chess_sim.data.capture_map_builder import (
-    compute_from_board_tensor as compute_capture_map,
-)
 from chess_sim.data.move_category_builder import (
     batch_build as batch_compute_category,
 )
@@ -338,17 +335,18 @@ class PGNRLTrainerV4:
             (
                 board, targets, _ct, _outcomes,
                 legal_mask, src_square, ply_idx,
+                capture_map,
             ) = batch
-            board, targets, legal_mask, src_square, ply_idx = (
+            board, targets, legal_mask, src_square, ply_idx, capture_map = (
                 self._move_batch_to_device(
                     board, targets, legal_mask,
-                    src_square, ply_idx,
+                    src_square, ply_idx, capture_map,
                 )
             )
 
             step_result = self._train_step(
                 board, targets, legal_mask,
-                src_square, ply_idx,
+                src_square, ply_idx, capture_map,
             )
             batch_n = int(step_result["n_total"])
             total_loss += float(step_result["loss"]) * batch_n
@@ -444,11 +442,12 @@ class PGNRLTrainerV4:
             (
                 board, targets, _ct, outcomes,
                 legal_mask, src_square, ply_idx,
+                capture_map,
             ) = batch
-            board, targets, legal_mask, src_square, ply_idx = (
+            board, targets, legal_mask, src_square, ply_idx, capture_map = (
                 self._move_batch_to_device(
                     board, targets, legal_mask,
-                    src_square, ply_idx,
+                    src_square, ply_idx, capture_map,
                 )
             )
 
@@ -469,7 +468,8 @@ class PGNRLTrainerV4:
 
             if self._aux_heads is not None:
                 aux_out = self._compute_aux_losses(
-                    enc_out, targets, board, ply_idx
+                    enc_out, targets, board, ply_idx,
+                    capture_map,
                 )
                 for k in _AUX_LOSS_KEYS:
                     aux_accum[k] += (
@@ -609,7 +609,8 @@ class PGNRLTrainerV4:
         legal_mask: Tensor,
         src_square: Tensor,
         ply_idx: Tensor,
-    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+        capture_map: Tensor,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         """Move primary training tensors to the configured device.
 
         Outcomes tensor is intentionally excluded so callers keep
@@ -621,10 +622,11 @@ class PGNRLTrainerV4:
             legal_mask: Bool tensor [B, 1971].
             src_square: Long tensor [B].
             ply_idx: Long tensor [B].
+            capture_map: Bool tensor [B, 64].
 
         Returns:
-            Tuple (board, targets, legal_mask, src_square, ply_idx)
-            on self._device.
+            Tuple (board, targets, legal_mask, src_square,
+            ply_idx, capture_map) on self._device.
         """
         return (
             board.to(self._device),
@@ -632,6 +634,7 @@ class PGNRLTrainerV4:
             legal_mask.to(self._device),
             src_square.to(self._device, dtype=torch.long),
             ply_idx.to(self._device, dtype=torch.long),
+            capture_map.to(self._device),
         )
 
     def _forward(
@@ -718,6 +721,7 @@ class PGNRLTrainerV4:
         targets: Tensor,
         board: Tensor,
         ply_idx: Tensor,
+        capture_map: Tensor,
     ) -> AuxLossOutput:
         """Compute auxiliary head losses from encoder outputs.
 
@@ -729,18 +733,19 @@ class PGNRLTrainerV4:
             targets: Long tensor [B] of vocab indices.
             board: Float tensor [B, 65, 3] on device.
             ply_idx: Long tensor [B] of ply indices.
+            capture_map: Bool tensor [B, 64] — precomputed
+                legal capture targets from python-chess.
 
         Returns:
             AuxLossOutput with scalar losses for each head.
         """
         assert self._aux_heads is not None  # guarded by callers
-        cap_map = compute_capture_map(board)
         move_cat = batch_compute_category(targets, board)
         phase_gt = compute_phase_labels(ply_idx, board)
         return self._aux_heads(
             enc_out.square_embeddings,
             enc_out.cls_embedding,
-            cap_map,
+            capture_map.float(),
             move_cat,
             phase_gt,
         )
@@ -752,13 +757,13 @@ class PGNRLTrainerV4:
         legal_mask: Tensor,
         src_square: Tensor | None = None,
         ply_idx: Tensor | None = None,
+        capture_map: Tensor | None = None,
     ) -> dict[str, float | int]:
         """Single minibatch forward + backward with plain CE.
 
-        When aux heads are enabled, auxiliary targets are computed
-        per-batch from the board tensor. When src conditioning is on,
-        the encoder is conditioned on the from-square and the legal
-        mask is narrowed to moves from that square.
+        When aux heads are enabled, ply_idx and capture_map are
+        required. capture_map must be the precomputed legal capture
+        targets from HDF5 (not the approximate tensor version).
 
         Args:
             board: Float tensor [B, 65, 3].
@@ -767,6 +772,8 @@ class PGNRLTrainerV4:
             src_square: Optional long tensor [B] (0-based 0-63).
             ply_idx: Optional long tensor [B]. Required when
                 use_aux_heads is True.
+            capture_map: Optional bool tensor [B, 64]. Required
+                when use_aux_heads is True.
 
         Returns:
             Dict with keys: loss, n_correct, n_total,
@@ -788,15 +795,16 @@ class PGNRLTrainerV4:
             label_smoothing=self._cfg.rl.label_smoothing,
         )
 
-        # Aux losses — computed per-batch from board tensor
+        # Aux losses — use precomputed capture_map from HDF5
         result_extra: dict[str, float | int] = {}
         if self._aux_heads is not None:
-            if ply_idx is None:
+            if ply_idx is None or capture_map is None:
                 raise ValueError(
-                    "ply_idx required when use_aux_heads=True"
+                    "ply_idx and capture_map required "
+                    "when use_aux_heads=True"
                 )
             aux_out = self._compute_aux_losses(
-                enc_out, targets, board, ply_idx
+                enc_out, targets, board, ply_idx, capture_map,
             )
             rl = self._cfg.rl
             aux_loss = (

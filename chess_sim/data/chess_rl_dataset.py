@@ -122,6 +122,7 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
 
             self._ply_idx: np.ndarray = hf["ply_idx"][idx]
             self._src_square: np.ndarray = hf["src_square"][idx]
+            self._capture_map: np.ndarray = hf["capture_map"][idx]
 
             logger.info(
                 "Loaded %s split: %d rows, "
@@ -146,7 +147,7 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
     def __getitem__(
         self, idx: int,
     ) -> tuple[Any, ...]:
-        """Return one sample as a 7-tuple.
+        """Return one sample as an 8-tuple.
 
         Args:
             idx: Index into this split (0-based).
@@ -160,12 +161,13 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
                 legal_mask: bool tensor [1971]
                 src_square: int (0-63, from-square of move)
                 ply_idx: int
+                capture_map: bool tensor [64]
 
         Raises:
             IndexError: If idx is out of range.
 
         Example:
-            >>> board, tgt, ct, out, mask, src, ply = ds[0]
+            >>> board, tgt, ct, out, mask, src, ply, cap = ds[0]
             >>> mask.shape
             torch.Size([1971])
         """
@@ -188,10 +190,14 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
         )
         src_square = int(self._src_square[idx])
         ply_idx = int(self._ply_idx[idx])
+        capture_map = torch.tensor(
+            self._capture_map[idx], dtype=torch.bool,
+        )
 
         return (
             board, target_move, color_tokens,
             outcome, legal_mask, src_square, ply_idx,
+            capture_map,
         )
 
     @property

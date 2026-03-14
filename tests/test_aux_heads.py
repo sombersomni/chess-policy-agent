@@ -6,8 +6,8 @@ T6-T8: Trainer integration (train_step with aux, epoch keys, eval)
 T9: ChessRLDataset returns src_square field
 T10: Missing src_square in HDF5 raises KeyError
 T11: use_aux_heads=False: no aux keys in metrics
-T12: Preprocessor writes src_square, not capture_map/move_category
-T13: Both preprocessor modes omit capture_map and move_category
+T12: Preprocessor writes src_square and capture_map, not move_category
+T13: capture_map written in both use_aux modes; move_category never written
 """
 from __future__ import annotations
 
@@ -129,6 +129,10 @@ def _write_synthetic_hdf5(
             )
             hf.create_dataset("src_square", data=src_sq)
 
+        cap_map = np.zeros((n_rows, 64), dtype=bool)
+        cap_map[:, ::8] = True
+        hf.create_dataset("capture_map", data=cap_map)
+
 
 class TestAuxiliaryHeads(unittest.TestCase):
     """Tests for the AuxiliaryHeads nn.Module."""
@@ -168,8 +172,8 @@ class TestAuxiliaryHeads(unittest.TestCase):
             )
             self.assertGreaterEqual(val, 0.0)
 
-    def test_t3_cls_detached_no_grad_flow(self) -> None:
-        """CLS heads do not propagate grads into cls_emb."""
+    def test_t3_cls_grad_flows(self) -> None:
+        """CLS heads propagate grads into cls_emb (no detach)."""
         heads = AuxiliaryHeads(d_model=16)
         B = 2
         sq = torch.randn(B, 64, 16, requires_grad=True)
@@ -179,11 +183,11 @@ class TestAuxiliaryHeads(unittest.TestCase):
         ph_gt = torch.zeros(B, dtype=torch.long)
 
         out = heads(sq, cls, cap_gt, cat_gt, ph_gt)
-        # Only category + phase depend on cls (detached)
+        # Category + phase flow through cls (not detached)
         total = out.category_loss + out.phase_loss
         total.backward()
-        # CLS should NOT have gradient (detached)
-        self.assertIsNone(cls.grad)
+        # CLS SHOULD have gradient
+        self.assertIsNotNone(cls.grad)
         # Square emb SHOULD have gradient (capture head)
         sq.grad = None
         out2 = heads(sq, cls, cap_gt, cat_gt, ph_gt)
@@ -269,10 +273,11 @@ class TestTrainerAuxIntegration(unittest.TestCase):
         legal_mask[:, 3:20] = True
         src_square = torch.randint(0, 64, (B,))
         ply_idx = torch.randint(0, 40, (B,))
+        capture_map = torch.zeros(B, 64, dtype=torch.bool)
 
         result = trainer._train_step(
             board, targets, legal_mask,
-            src_square, ply_idx,
+            src_square, ply_idx, capture_map,
         )
         self.assertIn("capture_loss", result)
         self.assertIn("category_loss", result)
@@ -331,8 +336,10 @@ class TestTrainerAuxIntegration(unittest.TestCase):
             finally:
                 ds.close()
 
-    def test_t9_dataset_returns_src_square(self) -> None:
-        """ChessRLDataset returns src_square in 7-tuple."""
+    def test_t9_dataset_returns_src_square_and_capture_map(
+        self,
+    ) -> None:
+        """ChessRLDataset returns src_square and capture_map in 8-tuple."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
@@ -344,12 +351,15 @@ class TestTrainerAuxIntegration(unittest.TestCase):
                 split="train",
             )
             sample = ds[0]
-            self.assertEqual(len(sample), 7)
-            # src_square is element 5 in the 7-tuple
+            self.assertEqual(len(sample), 8)
+            # src_square is element 5, capture_map is element 7
             src_sq = sample[5]
+            cap_map = sample[7]
             self.assertIsInstance(src_sq, int)
             self.assertGreaterEqual(src_sq, 0)
             self.assertLess(src_sq, 64)
+            self.assertEqual(cap_map.shape, torch.Size([64]))
+            self.assertEqual(cap_map.dtype, torch.bool)
             ds.close()
 
     def test_t10_dataset_without_src_square_raises(
@@ -401,10 +411,10 @@ class TestTrainerAuxIntegration(unittest.TestCase):
             finally:
                 ds.close()
 
-    def test_t12_preprocessor_writes_src_square(
+    def test_t12_preprocessor_writes_src_square_and_capture_map(
         self,
     ) -> None:
-        """PGNRewardPreprocessor writes src_square, not aux."""
+        """PGNRewardPreprocessor writes src_square and capture_map."""
         from chess_sim.data.pgn_reward_preprocessor import (  # noqa: E501
             PGNRewardPreprocessor,
         )
@@ -425,11 +435,14 @@ class TestTrainerAuxIntegration(unittest.TestCase):
 
             with h5py.File(hdf5_path, "r") as hf:
                 self.assertIn("src_square", hf)
-                self.assertNotIn("capture_map", hf)
+                self.assertIn("capture_map", hf)
                 self.assertNotIn("move_category", hf)
                 n = hf["board"].shape[0]
                 self.assertEqual(
                     hf["src_square"].shape, (n,)
+                )
+                self.assertEqual(
+                    hf["capture_map"].shape, (n, 64)
                 )
                 src_vals = hf["src_square"][:]
                 self.assertTrue(
@@ -439,10 +452,10 @@ class TestTrainerAuxIntegration(unittest.TestCase):
                     np.all(src_vals < 64)
                 )
 
-    def test_t13_preprocessor_no_aux_in_either_mode(
+    def test_t13_preprocessor_capture_map_both_modes(
         self,
     ) -> None:
-        """Both use_aux=True/False omit capture_map and move_category."""
+        """capture_map always written; move_category never written."""
         from chess_sim.data.pgn_reward_preprocessor import (  # noqa: E501
             PGNRewardPreprocessor,
         )
@@ -463,9 +476,9 @@ class TestTrainerAuxIntegration(unittest.TestCase):
                 )
 
                 with h5py.File(hdf5_path, "r") as hf:
-                    self.assertNotIn(
+                    self.assertIn(
                         "capture_map", hf,
-                        f"capture_map present when "
+                        f"capture_map missing when "
                         f"use_aux={use_aux}",
                     )
                     self.assertNotIn(

@@ -20,10 +20,10 @@ from chess_sim.types import AuxLossOutput
 class AuxiliaryHeads(nn.Module):
     """Training-time auxiliary heads for encoder supervision.
 
-    The capture head receives un-detached square embeddings so
-    gradients flow into the encoder. The CLS-based heads
-    (category, phase) receive detached CLS embeddings by default.
-    This can be changed for ablation by removing the detach call.
+    All three heads flow gradients into the encoder: capture head
+    via square embeddings, category and phase heads via CLS
+    embedding (no detach). This maximises encoder signal from all
+    aux tasks.
 
     Example:
         >>> heads = AuxiliaryHeads(d_model=128)
@@ -59,7 +59,8 @@ class AuxiliaryHeads(nn.Module):
         Args:
             square_emb: [B, 64, D] — NOT detached, grads
                 flow into encoder via capture head.
-            cls_emb: [B, D] — detached before CLS heads.
+            cls_emb: [B, D] — NOT detached, grads flow into
+                encoder via category and phase heads.
             capture_gt: [B, 64] float32 binary ground truth.
             category_gt: [B] long, values 0-6.
             phase_gt: [B] long, values 0-2.
@@ -80,19 +81,17 @@ class AuxiliaryHeads(nn.Module):
             cap_logits, capture_gt
         )
 
-        # CLS heads use detached embeddings by default.
-        # Ablation: remove .detach() to let aux gradients
-        # flow through CLS into the encoder backbone.
-        cls_detached = cls_emb.detach()
+        # CLS heads receive un-detached embeddings; grads
+        # flow into the encoder via category and phase heads.
 
         # Move category head: [B, 7] -> CE
-        cat_logits = self.move_category_head(cls_detached)
+        cat_logits = self.move_category_head(cls_emb)
         category_loss = F.cross_entropy(
             cat_logits, category_gt
         )
 
         # Phase head: [B, 3] -> CE
-        phase_logits = self.phase_head(cls_detached)
+        phase_logits = self.phase_head(cls_emb)
         phase_loss = F.cross_entropy(
             phase_logits, phase_gt
         )

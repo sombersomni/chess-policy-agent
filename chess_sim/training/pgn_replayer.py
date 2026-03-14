@@ -12,6 +12,7 @@ import chess
 import chess.pgn
 import torch
 
+from chess_sim.data.capture_map_builder import build as build_capture_map
 from chess_sim.data.move_tokenizer import MoveTokenizer
 from chess_sim.data.tokenizer import BoardTokenizer
 from chess_sim.types import OfflinePlyTuple
@@ -159,8 +160,9 @@ class PGNReplayer:
             prefix = self._move_tok.tokenize_game(prior_ucis)
             prefix = prefix[:-1]  # drop EOS
 
-            # Capture legal moves BEFORE push
+            # Capture legal moves and capture map BEFORE push
             legal_ucis = [m.uci() for m in board.legal_moves]
+            cap_map = build_capture_map(board, side)
 
             board.push(move)
 
@@ -175,6 +177,7 @@ class PGNReplayer:
                 is_draw_ply=is_draw,
                 material_delta=delta,
                 legal_move_ucis=legal_ucis,
+                capture_map=cap_map,
             ))
             move_history.append(move)
 

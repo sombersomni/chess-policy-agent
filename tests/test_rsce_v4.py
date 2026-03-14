@@ -26,6 +26,7 @@ from chess_sim.data.chess_rl_dataset import ChessRLDataset
 from chess_sim.data.pgn_reward_preprocessor import (
     PGNRewardPreprocessor,
 )
+from chess_sim.data.src_move_lut import SrcMoveLUT
 
 
 def _write_synthetic_hdf5(
@@ -48,12 +49,6 @@ def _write_synthetic_hdf5(
             0, 3, (n_rows, 65), dtype=np.int8
         )
         hf.create_dataset("color_tokens", data=ct)
-
-        # Keep targets within legal range [3, 19] to match legal_mask
-        tm = np.random.randint(
-            3, 20, (n_rows,), dtype=np.int32
-        )
-        hf.create_dataset("target_move", data=tm)
 
         # Assign game_ids evenly across rows
         game_ids = np.repeat(
@@ -86,17 +81,26 @@ def _write_synthetic_hdf5(
         ).astype(np.int8)
         hf.create_dataset("outcome", data=outcome)
 
-        legal_mask = np.zeros(
-            (n_rows, 1971), dtype=bool
-        )
-        # Mark a few tokens legal so targets are reachable
-        legal_mask[:, 3:20] = True
-        hf.create_dataset("legal_mask", data=legal_mask)
-
+        # Build consistent (src_square, legal_mask, target_move) so that
+        # after SrcMoveLUT.filter_legal_mask the target is always reachable.
+        lut_np = SrcMoveLUT(device="cpu")._lut.numpy()  # [64, 1971]
         src_sq = np.random.randint(
             0, 64, (n_rows,), dtype=np.int8
         )
+        legal_mask = np.array(
+            [lut_np[int(sq)] for sq in src_sq], dtype=bool
+        )
+        # Target = first legal move from each row's src_square.
+        tm = np.array(
+            [int(np.where(lut_np[int(sq)])[0][0]) for sq in src_sq],
+            dtype=np.int32,
+        )
+        hf.create_dataset("target_move", data=tm)
+        hf.create_dataset("legal_mask", data=legal_mask)
         hf.create_dataset("src_square", data=src_sq)
+
+        capture_map = np.zeros((n_rows, 64), dtype=bool)
+        hf.create_dataset("capture_map", data=capture_map)
 
 
 def _make_minimal_pgn(path: Path) -> None:
@@ -203,6 +207,7 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
                 "outcome",
                 "legal_mask",
                 "src_square",
+                "capture_map",
             }
             with h5py.File(hdf5_path, "r") as hf:
                 self.assertEqual(
@@ -330,8 +335,9 @@ class TestChessRLDataset(unittest.TestCase):
                 (
                     board, tgt, ct, outcome,
                     legal_mask, src_square, ply_idx,
+                    capture_map,
                 ) = ds[0]
-                self.assertEqual(len(ds[0]), 7)
+                self.assertEqual(len(ds[0]), 8)
                 self.assertEqual(board.shape, (65, 3))
                 self.assertEqual(
                     board.dtype, torch.float32
@@ -353,6 +359,12 @@ class TestChessRLDataset(unittest.TestCase):
                 self.assertGreaterEqual(src_square, 0)
                 self.assertLess(src_square, 64)
                 self.assertIsInstance(ply_idx, int)
+                self.assertEqual(
+                    capture_map.shape, (64,)
+                )
+                self.assertEqual(
+                    capture_map.dtype, torch.bool
+                )
             finally:
                 ds.close()
 
@@ -418,9 +430,6 @@ class TestPGNRLTrainerV4(unittest.TestCase):
         )
         # Keep targets within legal range [3, 19] so CE is finite
         targets = torch.randint(3, 20, (B,))
-        ct = torch.randint(
-            0, 3, (B, 65), dtype=torch.long
-        )
 
         legal_mask = torch.zeros(B, 1971, dtype=torch.bool)
         legal_mask[:, 3:20] = True  # ensure targets reachable

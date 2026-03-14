@@ -93,6 +93,7 @@ class OfflinePlyTuple(NamedTuple):
     is_draw_ply: bool          # True for all plies in a drawn game
     material_delta: float      # net material gain since last ply
     legal_move_ucis: list[str]  # all legal UCI moves before push
+    capture_map: list[int]     # 64-elem: 1 if sq is legally capturable
 
 
 class RLRewardRow(NamedTuple):
@@ -110,6 +111,7 @@ class RLRewardRow(NamedTuple):
         outcome: +1 / 0 / -1 from side-to-move perspective.
         legal_mask: (1971,) bool array — true legal moves.
         src_square: 0-indexed from-square of the played move (0-63).
+        capture_map: (64,) bool array — legally capturable squares.
 
     Example:
         >>> row = RLRewardRow(
@@ -118,6 +120,7 @@ class RLRewardRow(NamedTuple):
         ...     42, 0, 0, 1,
         ...     np.zeros(1971, dtype=bool),
         ...     12,
+        ...     np.zeros(64, dtype=bool),
         ... )
         >>> row.target_move
         42
@@ -131,6 +134,7 @@ class RLRewardRow(NamedTuple):
     outcome: int               # +1 / 0 / -1
     legal_mask: np.ndarray     # (1971,) bool — true legal moves
     src_square: int            # 0-63, from-square of the played move
+    capture_map: np.ndarray    # (64,) bool — legally capturable squares
 
 
 class PlyRecord(NamedTuple):

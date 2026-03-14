@@ -64,7 +64,7 @@ class ChessModel(nn.Module):
     move tokens.
 
     Internal structure:
-      encoder: ChessEncoder — board tokens -> [B, 65, d_model] memory
+      encoder: ChessEncoder — board tokens -> [B, 1, d_model] CLS memory
       decoder: MoveDecoder  — move tokens + memory -> [B, T, V] logits
 
     Example:
@@ -165,14 +165,8 @@ class ChessModel(nn.Module):
             trajectory_tokens, src_square,
             piece_type,
         )
-        # memory: [B, 65, d_model] — CLS + 64 squares
-        memory = torch.cat(
-            [
-                enc_out.cls_embedding.unsqueeze(1),
-                enc_out.square_embeddings,
-            ],
-            dim=1,
-        )
+        # memory: [B, 1, d_model] — CLS only; avoids square-embedding noise
+        memory = enc_out.cls_embedding.unsqueeze(1)
         return self.decoder.decode(
             move_tokens, memory, move_pad_mask, move_colors,
         ).logits

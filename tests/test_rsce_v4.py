@@ -1,7 +1,7 @@
 """Tests for V4 batched training pipeline.
 
-TC01-TC05: PGNRewardPreprocessor (checksum, generate, cache)
-TC06-TC10: ChessRLDataset (len, getitem, splits, multipliers)
+TC01-TC04: PGNRewardPreprocessor (checksum, generate, cache)
+TC06-TC09: ChessRLDataset (len, getitem, splits)
 TC11-TC13: PGNRLTrainerV4 (train_step, train_epoch, evaluate)
 TC14:      Checkpoint round-trip
 TC15:      In-memory HDF5 loading
@@ -32,9 +32,8 @@ def _write_synthetic_hdf5(
     path: Path,
     n_rows: int = 200,
     n_games: int = 10,
-    multipliers: np.ndarray | None = None,
 ) -> None:
-    """Write a minimal HDF5 matching the RSCE v4 schema."""
+    """Write a minimal HDF5 matching the v4 schema."""
     with h5py.File(path, "w") as hf:
         # Channels: piece[0-7], color[0-2], traj[0-4]
         ch0 = np.random.randint(0, 8, (n_rows, 65))
@@ -55,12 +54,6 @@ def _write_synthetic_hdf5(
             3, 20, (n_rows,), dtype=np.int32
         )
         hf.create_dataset("target_move", data=tm)
-
-        if multipliers is None:
-            multipliers = np.ones(
-                n_rows, dtype=np.float32
-            )
-        hf.create_dataset("multiplier", data=multipliers)
 
         # Assign game_ids evenly across rows
         game_ids = np.repeat(
@@ -92,12 +85,6 @@ def _write_synthetic_hdf5(
             [-1, 0, 1], size=n_rows
         ).astype(np.int8)
         hf.create_dataset("outcome", data=outcome)
-
-        # loss_mode: +1 for winners/draws, -1 for losers
-        loss_mode = np.where(
-            outcome >= 0, 1, -1
-        ).astype(np.int8)
-        hf.create_dataset("loss_mode", data=loss_mode)
 
         legal_mask = np.zeros(
             (n_rows, 1971), dtype=bool
@@ -132,7 +119,6 @@ def _make_cfg(**rl_overrides: object) -> PGNRLConfig:
         "warmup_fraction": 0.05,
         "decay_start_fraction": 0.5,
         "epochs": 1,
-        "balance_outcomes": False,
     }
     defaults.update(rl_overrides)
     return PGNRLConfig(
@@ -206,11 +192,9 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
                 "board",
                 "color_tokens",
                 "target_move",
-                "multiplier",
                 "game_id",
                 "ply_idx",
                 "outcome",
-                "loss_mode",
                 "legal_mask",
             }
             with h5py.File(hdf5_path, "r") as hf:
@@ -247,27 +231,25 @@ class TestPGNRewardPreprocessor(unittest.TestCase):
             mtime2 = hdf5_path.stat().st_mtime
             self.assertEqual(mtime1, mtime2)
 
-    def test_tc05_cache_invalid_on_config_change(
+    def test_tc05_cache_invalid_on_max_games_change(
         self,
     ) -> None:
-        """_is_cache_valid returns False when config differs."""
+        """_is_cache_valid returns False when max_games differs."""
         with tempfile.TemporaryDirectory() as td:
             pgn_path = Path(td) / "games.pgn"
             _make_minimal_pgn(pgn_path)
             hdf5_path = Path(td) / "out.h5"
 
-            cfg1 = _make_cfg(lambda_outcome=1.0)
-            pp1 = PGNRewardPreprocessor(cfg1)
-            pp1.generate(
+            cfg = _make_cfg()
+            pp = PGNRewardPreprocessor(cfg)
+            pp.generate(
                 pgn_path, hdf5_path, max_games=3
             )
 
-            # Change lambda_outcome
-            cfg2 = _make_cfg(lambda_outcome=2.0)
-            pp2 = PGNRewardPreprocessor(cfg2)
+            # Different max_games means different checksum
             self.assertFalse(
-                pp2._is_cache_valid(
-                    hdf5_path, pgn_path, 3
+                pp._is_cache_valid(
+                    hdf5_path, pgn_path, 2
                 )
             )
 
@@ -326,7 +308,7 @@ class TestChessRLDataset(unittest.TestCase):
     def test_tc08_getitem_shapes_and_types(
         self,
     ) -> None:
-        """__getitem__ returns correct 7-tuple shapes."""
+        """__getitem__ returns correct 5-tuple shapes."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
@@ -339,23 +321,19 @@ class TestChessRLDataset(unittest.TestCase):
             )
             try:
                 (
-                    board, tgt, mult,
-                    ct, outcome, loss_mode, legal_mask,
+                    board, tgt, ct, outcome, legal_mask,
                 ) = ds[0]
                 self.assertEqual(board.shape, (65, 3))
                 self.assertEqual(
                     board.dtype, torch.float32
                 )
                 self.assertIsInstance(tgt, int)
-                self.assertIsInstance(mult, float)
                 self.assertEqual(ct.shape, (65,))
                 self.assertEqual(
                     ct.dtype, torch.int64
                 )
                 self.assertIsInstance(outcome, int)
                 self.assertIn(outcome, (-1, 0, 1))
-                self.assertIsInstance(loss_mode, int)
-                self.assertIn(loss_mode, (-1, +1))
                 self.assertEqual(
                     legal_mask.shape, (1971,)
                 )
@@ -395,51 +373,6 @@ class TestChessRLDataset(unittest.TestCase):
             finally:
                 train_ds.close()
                 val_ds.close()
-
-    def test_tc10_multipliers_positive_mean_one(
-        self,
-    ) -> None:
-        """Multipliers from generate() are positive, mean~1."""
-        with tempfile.TemporaryDirectory() as td:
-            pgn_path = Path(td) / "games.pgn"
-            _make_minimal_pgn(pgn_path)
-            hdf5_path = Path(td) / "out.h5"
-
-            cfg = _make_cfg(
-                rsbc_normalize_per_game=True,
-            )
-            pp = PGNRewardPreprocessor(cfg)
-            pp.generate(
-                pgn_path, hdf5_path, max_games=3
-            )
-
-            with h5py.File(hdf5_path, "r") as hf:
-                multipliers = hf["multiplier"][:]
-                game_ids = hf["game_id"][:]
-
-                # All multipliers must be positive
-                self.assertTrue(
-                    (multipliers > 0).all(),
-                    "All multipliers must be positive",
-                )
-
-                # Per-game mean should be ~1.0
-                for gid in np.unique(game_ids):
-                    mask = game_ids == gid
-                    game_mult = multipliers[mask]
-                    mean_val = float(
-                        game_mult.mean()
-                    )
-                    self.assertAlmostEqual(
-                        mean_val,
-                        1.0,
-                        places=4,
-                        msg=(
-                            f"game {gid}: mean "
-                            f"multiplier = {mean_val}"
-                            ", expected ~1.0"
-                        ),
-                    )
 
 
 class TestPGNRLTrainerV4(unittest.TestCase):

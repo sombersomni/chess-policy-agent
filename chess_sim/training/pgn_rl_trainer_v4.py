@@ -191,8 +191,7 @@ class PGNRLTrainerV4:
         total_samples = 0
 
         for (
-            board, targets, _multipliers,
-            ct, _outcomes, _loss_modes, legal_mask,
+            board, targets, ct, _outcomes, legal_mask,
         ) in dl:
             board = board.to(self._device)
             targets = targets.to(
@@ -274,8 +273,7 @@ class PGNRLTrainerV4:
         }
 
         for (
-            board, targets, _mult,
-            ct, outcomes, _loss_modes, legal_mask,
+            board, targets, ct, outcomes, legal_mask,
         ) in dl:
             board = board.to(self._device)
             targets = targets.to(

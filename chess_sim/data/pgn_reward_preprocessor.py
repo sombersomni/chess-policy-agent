@@ -1,26 +1,23 @@
-"""PGNRewardPreprocessor: offline HDF5 generation for batched RSCE training.
+"""PGNRewardPreprocessor: offline HDF5 generation for batched CE training.
 
-Streams a PGN file, replays each game via PGNReplayer, computes
-per-ply composite rewards via PGNRLRewardComputer, applies per-game
-normalization (m_hat = m * N / sum(m)), encodes the board state,
-and writes all rows to a chunked gzip-compressed HDF5 file.
+Streams a PGN file, replays each game via PGNReplayer, encodes the
+board state, and writes all rows to a chunked gzip-compressed HDF5
+file.
 
 HDF5 schema (datasets, all N-length along axis 0):
     board:        float32 (N, 65, 3) — board/color/traj channels
     color_tokens: int8    (N, 65)    — for structural mask building
     target_move:  int32   (N,)       — vocab index
-    multiplier:   float32 (N,)       — pre-normalized m_hat per ply
     game_id:      int32   (N,)       — source game index
     ply_idx:      int16   (N,)       — 0-indexed ply within game
     outcome:      int8    (N,)       — +1 / 0 / -1
-    loss_mode:    int8    (N,)       — +1 imitation / -1 repulsion
+    legal_mask:   bool    (N, 1971)  — true legal moves per position
 """
 from __future__ import annotations
 
 import hashlib
 import io
 import logging
-import math
 from pathlib import Path
 
 import chess
@@ -33,9 +30,6 @@ from torch import Tensor
 from chess_sim.config import PGNRLConfig
 from chess_sim.data.move_tokenizer import MoveTokenizer
 from chess_sim.training.pgn_replayer import PGNReplayer
-from chess_sim.training.pgn_rl_reward_computer import (
-    PGNRLRewardComputer,
-)
 from chess_sim.types import RLRewardRow
 
 logger = logging.getLogger(__name__)
@@ -45,15 +39,13 @@ _DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
     "board": ("float32", (65, 3)),
     "color_tokens": ("int8", (65,)),
     "target_move": ("int32", ()),
-    "multiplier": ("float32", ()),
     "game_id": ("int32", ()),
     "ply_idx": ("int16", ()),
     "outcome": ("int8", ()),
-    "loss_mode": ("int8", ()),
     "legal_mask": ("bool", (1971,)),
 }
 
-_SCHEMA_VERSION: int = 2  # bump when HDF5 schema changes
+_SCHEMA_VERSION: int = 3  # bump when HDF5 schema changes
 
 
 def _stream_pgn(
@@ -162,7 +154,6 @@ class PGNRewardPreprocessor:
         self._cfg = cfg
         self._device = device
         self._replayer = PGNReplayer()
-        self._reward_fn = PGNRLRewardComputer()
         self._move_tok = MoveTokenizer()
 
     def generate(
@@ -171,12 +162,12 @@ class PGNRewardPreprocessor:
         hdf5_path: Path,
         max_games: int = 0,
     ) -> Path:
-        """Stream PGN, compute rewards, write HDF5. Returns path.
+        """Stream PGN, replay games, write HDF5. Returns path.
 
         Checks cache validity first; skips regeneration if HDF5
         attributes match current config. Writes chunked gzip HDF5
         with datasets: board, color_tokens, target_move,
-        multiplier, game_id, ply_idx, outcome.
+        game_id, ply_idx, outcome, legal_mask.
 
         Args:
             pgn_path: Path to .pgn or .pgn.zst file.
@@ -200,7 +191,7 @@ class PGNRewardPreprocessor:
 
         games = _stream_pgn(pgn_path, max_games)
         rl = self._cfg.rl
-        train_white = rl.train_color == "white"
+        train_color = rl.train_color
         chunk_size = rl.hdf5_chunk_size
 
         hdf5_path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,36 +224,15 @@ class PGNRewardPreprocessor:
                     continue
 
                 plies = self._replayer.replay(game)
-                plies = [
-                    p for p in plies
-                    if p.is_white_ply == train_white
-                ]
+                if train_color != "both":
+                    plies = [
+                        p for p in plies
+                        if p.is_white_ply == (train_color == "white")
+                    ]
                 if not plies:
                     continue
                 if len(plies) > rl.max_plies_per_game:
                     continue
-
-                rewards = self._reward_fn.compute(
-                    plies, rl
-                )
-
-                # RSCE multipliers: m = exp(+(R - r_ref))
-                m = torch.exp(
-                    rewards - rl.rsce_r_ref
-                )
-                # loss_mode: +1 imitation, -1 repulsion
-                loss_mode_vals = torch.where(
-                    rewards >= rl.rsce_r_ref,
-                    torch.ones_like(
-                        rewards, dtype=torch.int8
-                    ),
-                    -torch.ones_like(
-                        rewards, dtype=torch.int8
-                    ),
-                )
-                if rl.rsbc_normalize_per_game:
-                    n = m.size(0)
-                    m = m * n / m.sum().clamp(min=1e-8)
 
                 for ply_i, ply in enumerate(plies):
                     try:
@@ -293,10 +263,6 @@ class PGNRewardPreprocessor:
                         .astype(np.int8)
                     )
 
-                    _loss_mode = int(
-                        loss_mode_vals[ply_i]
-                    )
-
                     legal_mask_t = (
                         self._move_tok.build_legal_mask(
                             ply.legal_move_ucis
@@ -307,8 +273,6 @@ class PGNRewardPreprocessor:
                         board=board_enc.numpy(),
                         color_tokens=ct_np,
                         target_move=target_idx,
-                        multiplier=float(m[ply_i]),
-                        loss_mode=_loss_mode,
                         game_id=game_idx,
                         ply_idx=ply_i,
                         outcome=outcome,
@@ -335,20 +299,6 @@ class PGNRewardPreprocessor:
             hf.attrs["checksum"] = checksum
             hf.attrs["schema_version"] = _SCHEMA_VERSION
             hf.attrs["max_games"] = max_games
-            hf.attrs["lambda_outcome"] = rl.lambda_outcome
-            hf.attrs["lambda_material"] = (
-                rl.lambda_material
-            )
-            hf.attrs["rsce_r_ref"] = rl.rsce_r_ref
-            hf.attrs["draw_reward_norm"] = (
-                rl.draw_reward_norm
-            )
-            hf.attrs["rsbc_normalize_per_game"] = (
-                rl.rsbc_normalize_per_game
-            )
-            hf.attrs["rsce_repulsion_weight"] = (
-                rl.rsce_repulsion_weight
-            )
 
         logger.info(
             "HDF5 generated: %s (%d rows)",
@@ -390,9 +340,6 @@ class PGNRewardPreprocessor:
         hf["target_move"][cursor:new_size] = np.array(
             [r.target_move for r in rows], dtype=np.int32
         )
-        hf["multiplier"][cursor:new_size] = np.array(
-            [r.multiplier for r in rows], dtype=np.float32
-        )
         hf["game_id"][cursor:new_size] = np.array(
             [r.game_id for r in rows], dtype=np.int32
         )
@@ -401,9 +348,6 @@ class PGNRewardPreprocessor:
         )
         hf["outcome"][cursor:new_size] = np.array(
             [r.outcome for r in rows], dtype=np.int8
-        )
-        hf["loss_mode"][cursor:new_size] = np.array(
-            [r.loss_mode for r in rows], dtype=np.int8
         )
         hf["legal_mask"][cursor:new_size] = np.stack(
             [r.legal_mask for r in rows]
@@ -454,54 +398,9 @@ class PGNRewardPreprocessor:
                 ):
                     return False
 
-                rl = self._cfg.rl
-                checks = [
-                    (
-                        hf.attrs.get("max_games"),
-                        max_games,
-                    ),
-                    (
-                        hf.attrs.get("lambda_outcome"),
-                        rl.lambda_outcome,
-                    ),
-                    (
-                        hf.attrs.get("lambda_material"),
-                        rl.lambda_material,
-                    ),
-                    (
-                        hf.attrs.get("rsce_r_ref"),
-                        rl.rsce_r_ref,
-                    ),
-                    (
-                        hf.attrs.get("draw_reward_norm"),
-                        rl.draw_reward_norm,
-                    ),
-                    (
-                        hf.attrs.get(
-                            "rsbc_normalize_per_game"
-                        ),
-                        rl.rsbc_normalize_per_game,
-                    ),
-                    (
-                        hf.attrs.get(
-                            "rsce_repulsion_weight"
-                        ),
-                        rl.rsce_repulsion_weight,
-                    ),
-                ]
-                for stored, expected_val in checks:
-                    if stored is None:
-                        return False
-                    # Float comparison with tolerance
-                    if isinstance(expected_val, float):
-                        if not math.isclose(
-                            float(stored),
-                            expected_val,
-                            rel_tol=1e-9,
-                        ):
-                            return False
-                    elif stored != expected_val:
-                        return False
+                stored_max = hf.attrs.get("max_games")
+                if stored_max is None or stored_max != max_games:
+                    return False
 
                 return True
         except (OSError, KeyError):

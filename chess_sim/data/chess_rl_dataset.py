@@ -1,8 +1,8 @@
-"""ChessRLDataset: PyTorch Dataset wrapping a preprocessed RSCE HDF5 file.
+"""ChessRLDataset: PyTorch Dataset wrapping a preprocessed HDF5 file.
 
-Returns 7-tuple per sample:
-    (board [65,3], target_move, multiplier, color_tokens [65],
-     outcome, loss_mode, legal_mask [1971])
+Returns 5-tuple per sample:
+    (board [65,3], target_move, color_tokens [65],
+     outcome, legal_mask [1971])
 Supports train/val splitting by game_id: the last
 val_split_fraction of unique game_ids form the val set.
 
@@ -25,13 +25,13 @@ logger = logging.getLogger(__name__)
 
 
 class ChessRLDataset(Dataset):  # type: ignore[type-arg]
-    """Dataset over a preprocessed RSCE HDF5 file.
+    """Dataset over a preprocessed HDF5 file.
 
     Loads all data into memory at init for fast __getitem__.
 
     Example:
         >>> ds = ChessRLDataset(Path("data.h5"), split="train")
-        >>> board, tgt, mult, ct, outcome, lm, mask = ds[0]
+        >>> board, tgt, ct, outcome, mask = ds[0]
         >>> board.shape
         torch.Size([65, 3])
     """
@@ -113,10 +113,8 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
             )
             self._board = hf["board"][idx]
             self._target_move = hf["target_move"][idx]
-            self._multiplier = hf["multiplier"][idx]
             self._color_tokens = hf["color_tokens"][idx]
             self._outcome = hf["outcome"][idx]
-            self._loss_mode = hf["loss_mode"][idx]
             self._legal_mask = hf["legal_mask"][idx]
             logger.info(
                 "Loaded %s split: %d rows, "
@@ -140,8 +138,8 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
 
     def __getitem__(
         self, idx: int,
-    ) -> tuple[Tensor, int, float, Tensor, int, int, Tensor]:
-        """Return one sample as a 7-tuple from in-memory arrays.
+    ) -> tuple[Tensor, int, Tensor, int, Tensor]:
+        """Return one sample as a 5-tuple from in-memory arrays.
 
         Args:
             idx: Index into this split (0-based).
@@ -150,17 +148,15 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
             Tuple of:
                 board: float32 tensor [65, 3]
                 target_move: int (vocab index)
-                multiplier: float (pre-normalized m_hat)
                 color_tokens: long tensor [65]
                 outcome: int (+1 winner, 0 draw, -1 loser)
-                loss_mode: int (+1 imitation, -1 repulsion)
                 legal_mask: bool tensor [1971]
 
         Raises:
             IndexError: If idx is out of range.
 
         Example:
-            >>> board, tgt, mult, ct, out, lm, mask = ds[0]
+            >>> board, tgt, ct, out, mask = ds[0]
             >>> mask.shape
             torch.Size([1971])
         """
@@ -174,19 +170,17 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
             self._board[idx], dtype=torch.float32,
         )
         target_move = int(self._target_move[idx])
-        multiplier = float(self._multiplier[idx])
         color_tokens = torch.tensor(
             self._color_tokens[idx], dtype=torch.long,
         )
         outcome = int(self._outcome[idx])
-        loss_mode = int(self._loss_mode[idx])
         legal_mask = torch.tensor(
             self._legal_mask[idx], dtype=torch.bool,
         )
 
         return (
-            board, target_move, multiplier,
-            color_tokens, outcome, loss_mode, legal_mask,
+            board, target_move, color_tokens,
+            outcome, legal_mask,
         )
 
     @property

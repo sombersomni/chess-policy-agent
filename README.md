@@ -18,7 +18,7 @@ Two training paths are supported:
 | Path | Script | Loss | Data |
 |------|--------|------|------|
 | **Supervised Learning (SL)** | `scripts/train_v2.py` | Cross-entropy with teacher forcing | PGN / HDF5 |
-| **Offline RL** | `scripts/train_rl.py` | RSBC + value loss | PGN master games |
+| **Offline RL** | `scripts/train_rl_v4.py` | Cross-entropy | PGN master games (HDF5) |
 
 **Current best checkpoint:** `chess_v2_1k.pt` -- $d_\text{model}=128$, 94.9% validation accuracy, 2.8M parameters.
 
@@ -103,59 +103,41 @@ python -m scripts.train_real --pgn data/games.pgn --epochs 10 --checkpoint check
 
 ## Training: Offline RL
 
-The offline RL path fine-tunes a pretrained checkpoint on PGN master games using **Result-Scaled Behavioral Cloning (RSBC)** combined with a learned **action-conditioned value head**.
-
-### Reward Function
-
-Each ply $t$ receives a composite reward:
-
-$$R(t) = \lambda_{\text{outcome}} \cdot \text{sign}(t) + \lambda_{\text{material}} \cdot \Delta_{\text{material}}(t)$$
-
-where:
-
-| Symbol | Definition | Default |
-|--------|-----------|---------|
-| $\text{sign}(t)$ | $+1$ (winner ply), $-1$ (loser ply), or $d$ (draw ply) | -- |
-| $d$ | `draw_reward_norm` | 0.5 |
-| $\lambda_{\text{outcome}}$ | Outcome signal weight | 1.0 |
-| $\lambda_{\text{material}}$ | Material delta weight | 0.1 |
-| $\Delta_{\text{material}}(t)$ | Piece-value change at ply $t$ (player perspective) | -- |
+The offline RL path trains on master PGN games preprocessed into HDF5. The pipeline uses **plain cross-entropy** -- the same loss as the SL path -- applied to all plies (winner, loser, and draw alike). Game outcome labels are stored in the HDF5 file and used for stratified evaluation metrics, but do **not** influence the training loss.
 
 ### Loss Function
 
-The total training loss combines outcome-weighted behavioral cloning with a value regression term:
+$$\mathcal{L}_{\text{CE}} = -\frac{1}{N}\sum_{i=1}^{N} \log p_\theta\!\big(m_i \mid \mathbf{s}_i\big)$$
 
-$$\mathcal{L} = \lambda_{\text{rsbc}} \cdot \mathcal{L}_{\text{RSBC}} + \lambda_{\text{value}} \cdot \mathcal{L}_{\text{value}}$$
+where $m_i$ is the ground-truth move and $\mathbf{s}_i$ is the encoder memory for board state $i$. Optional label smoothing ($\epsilon$) can be applied via `label_smoothing` in the config.
 
-**RSBC loss** applies per-ply CE weighted by game outcome:
+### HDF5 Dataset
 
-$$\mathcal{L}_{\text{RSBC}} = \frac{1}{N}\sum_{i=1}^{N} w_i \cdot \text{CE}\!\big(\hat{\mathbf{y}}_i,\, m_i\big)$$
+The `PGNRewardPreprocessor` replays PGN games, encodes each ply, and writes an HDF5 file. The `ChessRLDataset` loads this file and yields 5-tuples per sample.
 
-| Ply type | Weight $w_i$ |
-|----------|-------------|
-| Winner | 1.0 |
-| Draw | `draw_reward_norm` (0.5) |
-| Loser | `loser_ply_weight` (0.1) |
-
-**Value loss** trains a Q-head to predict discounted returns:
-
-$$\mathcal{L}_{\text{value}} = \text{MSE}\!\big(Q_\phi(\mathbf{z}_{\text{cls}}, \mathbf{e}_a),\; R(t)\big)$$
-
-where $\mathbf{z}_{\text{cls}}$ is the encoder CLS embedding and $\mathbf{e}_a$ is the action (move token) embedding.
+| Dataset | Shape | Dtype | Description |
+|---------|-------|-------|-------------|
+| `board` | `[N, 65, 3]` | `float32` | Board + color + trajectory tokens |
+| `color_tokens` | `[N, 65]` | `uint8` | Piece ownership per square |
+| `target_move` | `[N]` | `int64` | Ground-truth move vocab index |
+| `game_id` | `[N]` | `uint32` | Parent game index |
+| `ply_idx` | `[N]` | `uint16` | 0-indexed ply within the game |
+| `outcome` | `[N]` | `int8` | +1 win / 0 draw / -1 loss (eval only) |
+| `legal_mask` | `[N, 1971]` | `bool` | Legal move mask for structural masking |
 
 ### Running RL Training
 
 ```bash
 source .venv/bin/activate
-python -m scripts.train_rl --config configs/train_rl.yaml
+python -m scripts.train_rl_v4 --config configs/train_rl_v4_100k.yaml
 ```
 
-### RL Configuration (`configs/train_rl.yaml`)
+### RL Configuration (`configs/train_rl_v4_100k.yaml`)
 
 ```yaml
 data:
   pgn:       data/lichess_db_standard_rated_2013-01.pgn.zst
-  max_games: 1000
+  max_games: 100000
 
 model:
   d_model: 128
@@ -171,17 +153,24 @@ decoder:
   move_vocab_size: 1971
 
 rl:
-  learning_rate:    0.0001
-  epochs:           20
-  lambda_rsbc:      1.0
-  lambda_value:     1.0
-  lambda_outcome:   1.0
-  lambda_material:  0.1
-  draw_reward_norm: 0.5
-  loser_ply_weight: 0.1
-  balance_outcomes: true
-  train_color:      white
-  checkpoint:       checkpoints/chess_rl.pt
+  learning_rate:        0.0001
+  weight_decay:         0.01
+  warmup_fraction:      0.05
+  decay_start_fraction: 0.65
+  min_lr:               0.00001
+  gradient_clip:        1.0
+  epochs:               40
+  checkpoint:           checkpoints/chess_rl_v4_100k_both.pt
+  resume:               ""
+  label_smoothing:      0.0
+  train_color:          both
+  use_structural_mask:  true
+  max_plies_per_game:   150
+  hdf5_path:            data/chess_rl_v4_100k_both.h5
+  batch_size:           512
+  num_workers:          4
+  val_split_fraction:   0.1
+  hdf5_chunk_size:      1024
 ```
 
 ### LR Schedule
@@ -195,8 +184,6 @@ $$\text{lr}(t) = \begin{cases}
 \end{cases}$$
 
 where $t_{\text{warmup}} = \lfloor \texttt{warmup\_fraction} \cdot t_{\text{total}} \rfloor$ and $t_{\text{decay}} = \lfloor \texttt{decay\_start\_fraction} \cdot t_{\text{total}} \rfloor$.
-
-The value head receives a separate learning rate: $\text{lr}_{\text{value}} = \text{lr}_{\max} \times \texttt{value\_lr\_multiplier}$ (default 5x).
 
 ---
 
@@ -600,15 +587,13 @@ chess-sim/
 │   └── training/
 │       ├── trainer.py         # SL Trainer (AdamW + cosine LR)
 │       ├── loss.py            # LossComputer (CE x2)
-│       ├── pgn_rl_trainer.py  # PGNRLTrainer (offline RL)
-│       ├── pgn_replayer.py    # PGN game -> OfflinePlyTuple list
-│       ├── pgn_rl_reward_computer.py  # Composite reward R(t)
-│       └── training_utils.py  # Shared training utilities
+│       ├── pgn_rl_trainer_v4.py  # V4 offline RL trainer (CE loss)
+│       └── pgn_replayer.py       # PGN game -> OfflinePlyTuple list
 ├── scripts/
 │   ├── preprocess.py          # PGN -> HDF5 (run once)
 │   ├── train_v2.py            # V2 SL training
 │   ├── train_real.py          # V1 SL training
-│   ├── train_rl.py            # Offline RL training
+│   ├── train_rl_v4.py         # V4 offline RL training
 │   ├── evaluate.py            # Per-move evaluation
 │   ├── simulate.py            # Terminal simulation
 │   └── gui/                   # Tkinter game viewer

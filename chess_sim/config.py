@@ -456,26 +456,10 @@ class RLConfig:
     skip_draws: bool = False
     checkpoint: str = ""
     resume: str = ""
-    lambda_outcome: float = 1.0
-    lambda_material: float = 0.1
-    draw_reward_norm: float = 0.5
-    lambda_ce: float = 0.0  # deprecated: use lambda_awbc
-    lambda_value: float = 1.0
-    lambda_awbc: float = 0.0  # deprecated: use lambda_rsbc
-    lambda_rsbc: float = 1.0
-    rsbc_normalize_per_game: bool = True
-    lambda_entropy: float = 0.0
-    awbc_eps: float = 1e-8
     label_smoothing: float = 0.0
     train_color: str = "both"
-    value_lr_multiplier: float = 5.0
-    balance_outcomes: bool = True
-    loser_ply_weight: float = 0.1
     use_structural_mask: bool = False
     max_plies_per_game: int = 150
-    rsce_r_ref: float = 0.0
-    rsce_repulsion_weight: float = 1.0
-    rsce_repulsion_warmup: float = 0.0
     hdf5_path: str = ""
     batch_size: int = 512
     num_workers: int = 4
@@ -493,50 +477,6 @@ class RLConfig:
             raise ValueError(
                 "train_color must be 'white', 'black', or 'both'"
                 f", got '{self.train_color}'"
-            )
-        if self.lambda_outcome < 0:
-            raise ValueError(
-                "lambda_outcome must be >= 0, "
-                f"got {self.lambda_outcome}"
-            )
-        if self.lambda_material < 0:
-            raise ValueError(
-                "lambda_material must be >= 0, "
-                f"got {self.lambda_material}"
-            )
-        if not (-1.0 <= self.draw_reward_norm <= 1.0):
-            raise ValueError(
-                "draw_reward_norm must be in [-1, 1], "
-                f"got {self.draw_reward_norm}"
-            )
-        if self.lambda_ce < 0:
-            raise ValueError(
-                f"lambda_ce must be >= 0, got {self.lambda_ce}"
-            )
-        if self.lambda_value < 0:
-            raise ValueError(
-                f"lambda_value must be >= 0, "
-                f"got {self.lambda_value}"
-            )
-        if self.lambda_awbc < 0:
-            raise ValueError(
-                "lambda_awbc must be >= 0, "
-                f"got {self.lambda_awbc}"
-            )
-        if self.lambda_rsbc < 0:
-            raise ValueError(
-                "lambda_rsbc must be >= 0, "
-                f"got {self.lambda_rsbc}"
-            )
-        if self.lambda_entropy < 0:
-            raise ValueError(
-                "lambda_entropy must be >= 0, "
-                f"got {self.lambda_entropy}"
-            )
-        if self.awbc_eps <= 0:
-            raise ValueError(
-                "awbc_eps must be > 0, "
-                f"got {self.awbc_eps}"
             )
         if self.warmup_fraction >= self.decay_start_fraction:
             raise ValueError(
@@ -562,17 +502,6 @@ class RLConfig:
             raise ValueError(
                 "hdf5_chunk_size must be >= 1, "
                 f"got {self.hdf5_chunk_size}"
-            )
-        if self.rsce_repulsion_weight < 0:
-            raise ValueError(
-                "rsce_repulsion_weight must be >= 0, "
-                f"got {self.rsce_repulsion_weight}"
-            )
-        if not (0.0 <= self.rsce_repulsion_warmup < 1.0):
-            raise ValueError(
-                "rsce_repulsion_warmup must be in "
-                "[0, 1), got "
-                f"{self.rsce_repulsion_warmup}"
             )
 
 

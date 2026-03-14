@@ -26,25 +26,13 @@ rl:
   min_lr:               0.00001
   gradient_clip:        1.0
   epochs:               40
-  checkpoint:           checkpoints/chess_rl_v4_100k.pt
+  checkpoint:           checkpoints/chess_rl_v4_100k_both.pt
   resume:               ""
-  lambda_outcome:       1.0
-  lambda_material:      0.1
-  draw_reward_norm:     0.5
-  lambda_ce:            0.0
-  lambda_awbc:              0.0
-  lambda_rsbc:              1.0
-  lambda_entropy:           0.0
-  awbc_eps:             1.0e-8
-  label_smoothing:          0.0
-  rsbc_normalize_per_game:  true
-  train_color:          white
-  balance_outcomes:     true
-  loser_ply_weight:     0.1
+  label_smoothing:      0.0
+  train_color:          both
   use_structural_mask:  true
   max_plies_per_game:   150
-  rsce_r_ref:           0.0
-  hdf5_path:            data/chess_rl_v4_100k.h5
+  hdf5_path:            data/chess_rl_v4_100k_both.h5
   batch_size:           512
   num_workers:          4
   val_split_fraction:   0.1
@@ -52,6 +40,6 @@ rl:
 
 aim:
   enabled:           true
-  experiment_name:   chess_rl_v4_100k_40ep
+  experiment_name:   chess_rl_v4_100k_both_40ep
   repo:              .aim
   log_every_n_steps: 10

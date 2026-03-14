@@ -26,6 +26,25 @@ class TokenizedBoard(NamedTuple):
     color_tokens: list[int]
 
 
+class ConditionedBoard(NamedTuple):
+    """Output of tokenize_with_piece_cond().
+
+    Contains board tokens with VALID_EMPTY/INVALID_EMPTY split
+    based on piece-type reachability, plus the conditioning signal.
+
+    Attributes:
+        board_tokens: Length-65 list. Index 0=CLS(0). Indices 1-64:
+                      piece types 0-7 for occupied; VALID_EMPTY(1) or
+                      INVALID_EMPTY(8) for empty squares.
+        color_tokens: Length-65 list (unchanged semantics).
+        piece_type_idx: int 1-7 (chess.PieceType), the conditioning signal.
+    """
+
+    board_tokens: list[int]
+    color_tokens: list[int]
+    piece_type_idx: int
+
+
 class EncoderOutput(NamedTuple):
     """Output of ChessEncoder.encode().
 
@@ -90,6 +109,7 @@ class RLRewardRow(NamedTuple):
         ply_idx: 0-indexed ply within game.
         outcome: +1 / 0 / -1 from side-to-move perspective.
         legal_mask: (1971,) bool array — true legal moves.
+        src_square: 0-indexed from-square of the played move (0-63).
 
     Example:
         >>> row = RLRewardRow(
@@ -97,6 +117,7 @@ class RLRewardRow(NamedTuple):
         ...     np.zeros(65, dtype=np.int8),
         ...     42, 0, 0, 1,
         ...     np.zeros(1971, dtype=bool),
+        ...     12,
         ... )
         >>> row.target_move
         42
@@ -109,6 +130,7 @@ class RLRewardRow(NamedTuple):
     ply_idx: int
     outcome: int               # +1 / 0 / -1
     legal_mask: np.ndarray     # (1971,) bool — true legal moves
+    src_square: int            # 0-63, from-square of the played move
 
 
 class PlyRecord(NamedTuple):

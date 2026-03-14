@@ -49,6 +49,8 @@ class ModelConfig:
     n_layers: int = 6
     dim_feedforward: int = 1024
     dropout: float = 0.1
+    use_src_conditioning: bool = False
+    use_candidate_conditioning: bool = False
 
 
 @dataclass

@@ -131,6 +131,8 @@ class ChessModel(nn.Module):
         move_tokens: Tensor,
         move_pad_mask: Tensor | None = None,
         move_colors: Tensor | None = None,
+        src_square: Tensor | None = None,
+        piece_type: Tensor | None = None,
     ) -> Tensor:
         """Full forward pass: encode board state, then decode move sequence.
 
@@ -143,6 +145,12 @@ class ChessModel(nn.Module):
             move_colors: Optional LongTensor [B, T]. Turn ownership per
                 decoder position: 0=SOS/special, 1=player, 2=opponent.
                 Defaults to all zeros (all special) when None.
+            src_square: Optional LongTensor [B]. Selected from-square index
+                (0=no conditioning, 1-64=square). Passed to the encoder as
+                a broadcast conditioning signal for piece-conditioned encoding.
+            piece_type: Optional LongTensor [B]. Piece type conditioning
+                (0=no cond, 1-7=piece type). Passed to the encoder as a
+                broadcast signal for candidate-piece-conditioned encoding.
 
         Returns:
             FloatTensor [B, T, MOVE_VOCAB_SIZE] of raw move logits.
@@ -153,7 +161,9 @@ class ChessModel(nn.Module):
             torch.Size([4, 20, 1971])
         """
         enc_out = self.encoder.encode(
-            board_tokens, color_tokens, trajectory_tokens,
+            board_tokens, color_tokens,
+            trajectory_tokens, src_square,
+            piece_type,
         )
         # memory: [B, 65, d_model] — CLS + 64 squares
         memory = torch.cat(
@@ -177,6 +187,8 @@ class ChessModel(nn.Module):
         is_white_turn: bool = True,
         temperature: float = 1.0,
         tokenizer: MoveTokenizer | None = None,
+        src_square: int | None = None,
+        piece_type: int | None = None,
     ) -> str:
         """Predict the next move given current board and move history.
 
@@ -184,6 +196,11 @@ class ChessModel(nn.Module):
         through the decoder with turn color annotations, applies
         legal-move masking and temperature scaling, then samples a move.
         Restores the model's training mode after inference.
+
+        When src_square is provided, the encoder is conditioned on that
+        piece selection, enabling hierarchical two-stage generation:
+        (1) select which piece to move, (2) call this method with that
+        src_square to predict the destination.
 
         Args:
             board_tokens: LongTensor [1, 65]. Single board state.
@@ -196,6 +213,13 @@ class ChessModel(nn.Module):
             temperature: Softmax temperature for sampling. Default 1.0.
             tokenizer: Optional pre-built MoveTokenizer. Reuse across calls
                 to avoid re-loading the vocabulary on every inference step.
+            src_square: Optional int (0-63). When provided, conditions the
+                encoder on this piece selection and restricts the legal mask
+                to only moves originating from this square.
+            piece_type: Optional int (1-6, chess.PieceType). When provided,
+                conditions the encoder via piece_type_cond_emb and restricts
+                the legal mask to only moves by pieces of that type via
+                PieceTypeMoveLUT.
 
         Returns:
             UCI move string sampled from the model's distribution.
@@ -235,6 +259,24 @@ class ChessModel(nn.Module):
             board_tokens.device,
         )
 
+        # src conditioning: convert 0-based square to 1-based vocab index
+        src_tensor: Tensor | None = None
+        if src_square is not None:
+            src_tensor = torch.tensor(
+                [src_square + 1],
+                dtype=torch.long,
+                device=board_tokens.device,
+            )
+
+        # piece_type conditioning: pass through as [1] tensor
+        pt_tensor: Tensor | None = None
+        if piece_type is not None:
+            pt_tensor = torch.tensor(
+                [piece_type],
+                dtype=torch.long,
+                device=board_tokens.device,
+            )
+
         was_training = self.training
         self.eval()
         try:
@@ -243,6 +285,8 @@ class ChessModel(nn.Module):
                     board_tokens, color_tokens,
                     trajectory_tokens, move_tokens,
                     move_colors=move_colors,
+                    src_square=src_tensor,
+                    piece_type=pt_tensor,
                 )
         finally:
             self.train(was_training)
@@ -251,6 +295,37 @@ class ChessModel(nn.Module):
         legal_mask = tok.build_legal_mask(
             legal_moves
         ).to(next_logits.device)
+
+        # Optionally narrow to moves from the selected src square
+        if src_square is not None:
+            from chess_sim.data.src_move_lut import SrcMoveLUT
+            lut = SrcMoveLUT(device=next_logits.device)
+            src_sq_t = torch.tensor(
+                [src_square], dtype=torch.long,
+                device=next_logits.device,
+            )
+            src_mask = lut.filter_legal_mask(
+                legal_mask.unsqueeze(0), src_sq_t
+            ).squeeze(0)
+            legal_mask = src_mask
+
+        # Optionally narrow to moves by the selected piece type
+        if piece_type is not None:
+            from chess_sim.data.piece_type_move_lut import (
+                PieceTypeMoveLUT,
+            )
+            pt_lut = PieceTypeMoveLUT(
+                device=next_logits.device
+            )
+            pt_t = torch.tensor(
+                [piece_type], dtype=torch.long,
+                device=next_logits.device,
+            )
+            pt_mask = pt_lut.filter_legal_mask(
+                legal_mask.unsqueeze(0), pt_t
+            ).squeeze(0)
+            legal_mask = pt_mask
+
         next_logits[~legal_mask] = _ILLEGAL_LOGIT_FILL
         probs = torch.softmax(next_logits / temperature, dim=-1)
         idx = torch.multinomial(probs, num_samples=1).item()

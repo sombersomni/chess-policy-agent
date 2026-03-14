@@ -79,20 +79,26 @@ class ChessEncoder(nn.Module):
         board_tokens: Tensor,
         color_tokens: Tensor,
         trajectory_tokens: Tensor,
+        src_tokens: Tensor | None = None,
+        piece_type_tokens: Tensor | None = None,
     ) -> EncoderOutput:
         """Encode a batch of board states into CLS and per-square embeddings.
 
-        Calls EmbeddingLayer with all four streams, passes through
+        Calls EmbeddingLayer with all six streams, passes through
         TransformerEncoder, then splits: index 0 -> cls, 1:65 -> squares.
 
         Args:
             board_tokens: torch.long [B, 65]. Piece-type indices.
             color_tokens: torch.long [B, 65]. Color indices.
             trajectory_tokens: torch.long [B, 65]. Activity scores 0-8.
+            src_tokens: torch.long [B]. Selected from-square index
+                (0=no conditioning, 1-64=square). Defaults to zeros.
+            piece_type_tokens: torch.long [B]. Piece type conditioning
+                (0=no cond, 1-7=piece type). Defaults to zeros (no-op).
 
         Returns:
-            EncoderOutput(cls_embedding=[B, 256],
-                          square_embeddings=[B, 64, 256]).
+            EncoderOutput(cls_embedding=[B, d_model],
+                          square_embeddings=[B, 64, d_model]).
 
         Example:
             >>> out = enc.encode(bt, ct, at)
@@ -100,7 +106,9 @@ class ChessEncoder(nn.Module):
             torch.Size([4, 64, 256])
         """
         x = self.embedding(
-            board_tokens, color_tokens, trajectory_tokens
+            board_tokens, color_tokens,
+            trajectory_tokens, src_tokens,
+            piece_type_tokens,
         )
         encoded = self.transformer(x)
         return EncoderOutput(
@@ -113,6 +121,8 @@ class ChessEncoder(nn.Module):
         board_tokens: Tensor,
         color_tokens: Tensor,
         trajectory_tokens: Tensor,
+        src_tokens: Tensor | None = None,
+        piece_type_tokens: Tensor | None = None,
     ) -> EncoderOutput:
         """nn.Module forward -- delegates to encode().
 
@@ -120,10 +130,14 @@ class ChessEncoder(nn.Module):
             board_tokens: torch.long [B, 65].
             color_tokens: torch.long [B, 65].
             trajectory_tokens: torch.long [B, 65].
+            src_tokens: torch.long [B]. Defaults to zeros.
+            piece_type_tokens: torch.long [B]. Defaults to zeros.
 
         Returns:
             EncoderOutput namedtuple.
         """
         return self.encode(
-            board_tokens, color_tokens, trajectory_tokens
+            board_tokens, color_tokens,
+            trajectory_tokens, src_tokens,
+            piece_type_tokens,
         )

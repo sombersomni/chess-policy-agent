@@ -1,6 +1,6 @@
 # chess-sim
 
-**An encoder-decoder transformer for chess move prediction, trained via supervised learning on PGN master games and fine-tuned with offline reinforcement learning.**
+**An encoder-decoder transformer for chess move prediction, trained with offline reinforcement learning on PGN master games.**
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 ![PyTorch](https://img.shields.io/badge/pytorch-2.x-ee4c2c)
@@ -13,14 +13,7 @@
 
 chess-sim treats chess move generation as sequence-to-sequence translation. A 6-layer transformer encoder reads the board state as a 65-token sequence (CLS + 64 squares across three parallel embedding streams), producing a $65 \times d$ memory tensor. A 4-layer autoregressive decoder cross-attends to that memory and generates moves token-by-token from a 1971-token vocabulary.
 
-Two training paths are supported:
-
-| Path | Script | Loss | Data |
-|------|--------|------|------|
-| **Supervised Learning (SL)** | `scripts/train_v2.py` | Cross-entropy with teacher forcing | PGN / HDF5 |
-| **Offline RL** | `scripts/train_rl_v4.py` | Cross-entropy | PGN master games (HDF5) |
-
-**Current best checkpoint:** `chess_v2_1k.pt` -- $d_\text{model}=128$, 94.9% validation accuracy, 2.8M parameters.
+Training uses offline RL via `scripts/train_rl_v4.py`, which applies cross-entropy loss on PGN master games preprocessed into HDF5.
 
 ---
 
@@ -67,7 +60,7 @@ where $b_i$, $c_i$, $t_i$ are the piece, color, and trajectory token at position
 | Encoder | 128 | 8 | 6 | 512 | 0.1 |
 | Decoder | 128 | 8 | 4 | 512 | 0.1 |
 
-> **Note:** The default `ModelConfig` specifies $d_\text{model}=256$, but the current best checkpoint uses $d_\text{model}=128$ (3.6x fewer parameters with only 0.7% accuracy loss vs. 256).
+> **Note:** The default `ModelConfig` specifies $d_\text{model}=256$, but the current configs use $d_\text{model}=128$.
 
 **Move vocabulary:** 1971 tokens covering all legal UCI move strings (including promotions).
 
@@ -101,40 +94,9 @@ $$\mathcal{L} = \mathcal{L}_{\text{CE}} + \lambda_{\text{cap}}\,\mathcal{L}_{\te
 
 ---
 
-## Training: Supervised Learning
-
-The SL path trains the decoder with teacher forcing, minimizing cross-entropy between predicted and actual moves:
-
-$$\mathcal{L}_{\text{CE}} = -\frac{1}{T}\sum_{t=1}^{T} \log p_\theta\!\big(m_t \mid m_{<t},\, \mathbf{s}\big)$$
-
-where $m_t$ is the ground-truth move at ply $t$, $m_{<t}$ is the move prefix, and $\mathbf{s}$ is the encoder memory from the board state.
-
-Optional label smoothing ($\epsilon$) redistributes probability mass to non-target tokens, reducing overfitting on small datasets.
-
-```bash
-source .venv/bin/activate
-
-# Train from HDF5 (recommended -- preprocessed data, fast I/O)
-python -m scripts.train_v2 --config configs/train_v2_10k.yaml --hdf5 data/processed/chess_dataset.h5
-
-# Train from raw PGN (on-the-fly tokenization)
-python -m scripts.train_real --pgn data/games.pgn --epochs 10 --checkpoint checkpoints/run_01.pt
-```
-
-### Checkpoint Results
-
-| Checkpoint | Data | $d_\text{model}$ | Epochs | Val Loss | Val Acc |  Params |
-|---|---|---|---|---|---|---|
-| `chess_v2_1k.pt` | 1k games | 128 | 20 | 0.229 | **94.9%** |  2.8M |
-| `chess_v2_10k.pt` | 10k games | 128 | 20 | 2.606* | 62.4% |  2.8M |
-
-*\*Val loss inflated by `label_smoothing=0.1` -- not directly comparable to unsmoothed runs.*
-
----
-
 ## Training: Offline RL
 
-The offline RL path trains on master PGN games preprocessed into HDF5. The pipeline uses **plain cross-entropy** -- the same loss as the SL path -- applied to all plies (winner, loser, and draw alike). Game outcome labels are stored in the HDF5 file and used for stratified evaluation metrics, but do **not** influence the training loss. When `use_aux_heads` is enabled, three auxiliary losses (capture target, move category, game phase) are added to the main CE loss to provide denser encoder supervision (see [Auxiliary Heads](#auxiliary-heads)).
+The offline RL path trains on master PGN games preprocessed into HDF5. The pipeline uses **plain cross-entropy** applied to all plies (winner, loser, and draw alike). Game outcome labels are stored in the HDF5 file and used for stratified evaluation metrics, but do **not** influence the training loss. When `use_aux_heads` is enabled, three auxiliary losses (capture target, move category, game phase) are added to the main CE loss to provide denser encoder supervision (see [Auxiliary Heads](#auxiliary-heads)).
 
 ### Loss Function
 
@@ -241,7 +203,7 @@ where $t_{\text{warmup}} = \lfloor \texttt{warmup\_fraction} \cdot t_{\text{tota
 
 ```bash
 python -m scripts.evaluate \
-    --checkpoint checkpoints/chess_v2_1k.pt \
+    --checkpoint checkpoints/chess_rl_v4.pt \
     --pgn data/games.pgn \
     --game-index 0 \
     --top-n 3
@@ -391,7 +353,7 @@ python -m scripts.simulate --mode pgn \
 # Agent prediction mode
 python -m scripts.simulate --mode agent \
     --pgn data/lichess_db_standard_rated_2013-01.pgn.zst \
-    --checkpoint checkpoints/chess_v2_1k.pt \
+    --checkpoint checkpoints/chess_rl_v4.pt \
     --tick-rate 1.0 --top-n 3
 ```
 
@@ -419,7 +381,7 @@ Step through a game visually: animated board on the left, per-ply metrics (loss,
 source .venv/bin/activate
 python -m scripts.gui.viewer \
     --pgn data/games.pgn \
-    --checkpoint checkpoints/chess_v2_1k.pt \
+    --checkpoint checkpoints/chess_rl_v4.pt \
     --game-index 0
 ```
 
@@ -651,8 +613,6 @@ chess-sim/
 │       └── pgn_replayer.py       # PGN game -> OfflinePlyTuple list
 ├── scripts/
 │   ├── preprocess.py          # PGN -> HDF5 (run once)
-│   ├── train_v2.py            # V2 SL training
-│   ├── train_real.py          # V1 SL training
 │   ├── train_rl_v4.py         # V4 offline RL training
 │   ├── evaluate.py            # Per-move evaluation
 │   ├── simulate.py            # Terminal simulation

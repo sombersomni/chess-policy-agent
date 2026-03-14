@@ -22,11 +22,11 @@ rl:
   learning_rate:        0.0001
   weight_decay:         0.01
   warmup_fraction:      0.05
-  decay_start_fraction: 0.65
+  decay_start_fraction: 0.50
   min_lr:               0.00001
   gradient_clip:        1.0
-  epochs:               40
-  checkpoint:           checkpoints/chess_rl_v4_100k_both.pt
+  epochs:               100
+  checkpoint:           checkpoints/chess_rl_v4_100k_100ep.pt
   resume:               ""
   label_smoothing:      0.0
   train_color:          both
@@ -40,6 +40,6 @@ rl:
 
 aim:
   enabled:           true
-  experiment_name:   chess_rl_v4_100k_both_40ep
+  experiment_name:   chess_rl_v4_100k_100ep
   repo:              .aim
   log_every_n_steps: 10

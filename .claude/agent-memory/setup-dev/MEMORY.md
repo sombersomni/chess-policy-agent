@@ -14,6 +14,21 @@ See [scaffolding-history.md](scaffolding-history.md) for all prior scaffolding d
 
 ---
 
+## Scaffolding Completed: RL Self-Play Fine-Tuner (2026-03-13)
+
+### Changes
+- `chess_sim/config.py` — `FinetuneConfig` (15 fields, full validation) + `FinetuneRLConfig` root + `load_finetune_rl_config()` loader
+- `chess_sim/types.py` — `PlyRecord` (6 fields: board/color/traj tokens, move_token, log_prob, is_white_ply) + `GameRecord` (4 fields: plies, outcome, n_ply, termination)
+- `chess_sim/training/rl_finetune_trainer.py` — NEW: `RunningMeanBaseline` (working Welford impl), `play_game()`, `_log_prob_of_move()`, `compute_returns()` stubs (NIE), `RLFinetuneTrainer` class with `__init__`, `policy`, `train`, `save/load_checkpoint`, `_play_games`, `_gradient_step`, `_update_shadow` stubs (all NIE)
+- `configs/finetune_rl.yaml` — full config matching design doc
+- `scripts/finetune_rl.py` — CLI entry point with `_build_parser`, `_setup_reproducibility`, `main` (NIE)
+- `tests/test_rl_finetune_trainer.py` — 27 tests: TC01-TC09 pass (config validation + baseline), TC10-TC20 pass (assert NIE from stubs)
+
+### Test Results: 27 pass, 0 fail
+- Design doc at `docs/design_rl_finetune.md`
+
+---
+
 ## Scaffolding Completed: Dual-Direction RSCE Loss (2026-03-11)
 
 ### Changes

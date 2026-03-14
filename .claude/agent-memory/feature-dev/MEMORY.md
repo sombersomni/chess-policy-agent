@@ -156,3 +156,16 @@
 - Types: `RLRewardRow` in `chess_sim/types.py`
 - Tests: `tests/test_rsce_v4.py` — TC01-TC15 (15 tests)
 - Key gotcha: synthetic HDF5 board must use valid indices (0-7, 0-2, 0-4), not random floats
+
+## RL Self-Play Fine-Tuner
+- `chess_sim/training/rl_finetune_trainer.py`: RLFinetuneTrainer + play_game + compute_returns + _log_prob_of_move
+  - Three model copies: _policy (trained), _ref (frozen KL anchor), _shadow (EMA opponent)
+  - REINFORCE with RunningMeanBaseline + KL divergence penalty
+  - Policy plays White, shadow plays Black; terminal-only rewards
+  - compute_returns: G_t = gamma^(T-1-t) * outcome (last ply = gamma^0)
+  - _log_prob_of_move: SOS-only prefix, legal mask, log_softmax
+- `scripts/finetune_rl.py`: CLI entry point, follows train_rl_v4.py pattern
+- Config: `FinetuneConfig`, `FinetuneRLConfig`, `load_finetune_rl_config` in `chess_sim/config.py`
+- Types: `PlyRecord`, `GameRecord` in `chess_sim/types.py`
+- Tests: `tests/test_rl_finetune_trainer.py` — 27 tests (TC01-TC20)
+- `_compute_trajectory_tokens` imported from `chess_sim/env/agent_adapter.py`

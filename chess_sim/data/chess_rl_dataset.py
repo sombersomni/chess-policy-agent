@@ -1,10 +1,13 @@
 """ChessRLDataset: PyTorch Dataset wrapping a preprocessed HDF5 file.
 
-Returns 5-tuple per sample:
+Returns an 8-tuple per sample:
     (board [65,3], target_move, color_tokens [65],
-     outcome, legal_mask [1971])
-Supports train/val splitting by game_id: the last
-val_split_fraction of unique game_ids form the val set.
+     outcome, legal_mask [1971],
+     capture_map [64], move_category, ply_idx)
+
+Aux fields (capture_map, move_category) are auto-detected from
+the HDF5 file. When absent, zeros are returned for backward
+compatibility. ply_idx is always available (used for phase label).
 
 All HDF5 data is loaded into memory at init time for zero-I/O
 __getitem__ access. The HDF5 file is closed immediately after
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import h5py
 import numpy as np
@@ -23,6 +27,12 @@ from torch.utils.data import Dataset
 
 logger = logging.getLogger(__name__)
 
+# Return type: 8-tuple
+_SampleTuple = tuple[
+    Tensor, int, Tensor, int, Tensor,
+    Tensor, int, int,
+]
+
 
 class ChessRLDataset(Dataset):  # type: ignore[type-arg]
     """Dataset over a preprocessed HDF5 file.
@@ -31,8 +41,8 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
 
     Example:
         >>> ds = ChessRLDataset(Path("data.h5"), split="train")
-        >>> board, tgt, ct, outcome, mask = ds[0]
-        >>> board.shape
+        >>> sample = ds[0]
+        >>> sample[0].shape  # board
         torch.Size([65, 3])
     """
 
@@ -104,7 +114,6 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
                 np.int64
             )
 
-            # Load all fields into memory (fancy index)
             idx = self._indices
             n = len(idx)
             logger.info(
@@ -116,6 +125,34 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
             self._color_tokens = hf["color_tokens"][idx]
             self._outcome = hf["outcome"][idx]
             self._legal_mask = hf["legal_mask"][idx]
+
+            # ply_idx: needed for phase label computation
+            if "ply_idx" in hf:
+                self._ply_idx: np.ndarray = (
+                    hf["ply_idx"][idx]
+                )
+            else:
+                self._ply_idx = np.zeros(
+                    n, dtype=np.int16
+                )
+
+            # Aux fields: auto-detect from HDF5 presence
+            self._has_aux = "capture_map" in hf
+            if self._has_aux:
+                self._capture_map: np.ndarray | None = (
+                    hf["capture_map"][idx]
+                )
+                self._move_category: np.ndarray | None = (
+                    hf["move_category"][idx]
+                )
+                logger.info(
+                    "Aux fields loaded: capture_map, "
+                    "move_category"
+                )
+            else:
+                self._capture_map = None
+                self._move_category = None
+
             logger.info(
                 "Loaded %s split: %d rows, "
                 "board=%.1f MB, legal_mask=%.1f MB",
@@ -123,6 +160,15 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
                 self._board.nbytes / 1e6,
                 self._legal_mask.nbytes / 1e6,
             )
+
+    @property
+    def has_aux(self) -> bool:
+        """Whether aux fields (capture_map, move_category) exist.
+
+        Returns:
+            True if HDF5 contained aux datasets.
+        """
+        return self._has_aux
 
     def __len__(self) -> int:
         """Return number of samples in this split.
@@ -138,8 +184,11 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
 
     def __getitem__(
         self, idx: int,
-    ) -> tuple[Tensor, int, Tensor, int, Tensor]:
-        """Return one sample as a 5-tuple from in-memory arrays.
+    ) -> tuple[Any, ...]:
+        """Return one sample as an 8-tuple.
+
+        The first 5 elements match the legacy 5-tuple format.
+        Elements 5-7 are aux fields (zeros when unavailable).
 
         Args:
             idx: Index into this split (0-based).
@@ -151,12 +200,15 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
                 color_tokens: long tensor [65]
                 outcome: int (+1 winner, 0 draw, -1 loser)
                 legal_mask: bool tensor [1971]
+                capture_map: float32 tensor [64]
+                move_category: int (0-6)
+                ply_idx: int
 
         Raises:
             IndexError: If idx is out of range.
 
         Example:
-            >>> board, tgt, ct, out, mask = ds[0]
+            >>> board, tgt, ct, out, mask, *_ = ds[0]
             >>> mask.shape
             torch.Size([1971])
         """
@@ -178,9 +230,27 @@ class ChessRLDataset(Dataset):  # type: ignore[type-arg]
             self._legal_mask[idx], dtype=torch.bool,
         )
 
+        # Aux fields: zeros when HDF5 lacks them
+        if self._has_aux and self._capture_map is not None:
+            capture_map = torch.tensor(
+                self._capture_map[idx],
+                dtype=torch.float32,
+            )
+            move_category = int(
+                self._move_category[idx]  # type: ignore
+            )
+        else:
+            capture_map = torch.zeros(
+                64, dtype=torch.float32
+            )
+            move_category = 0
+
+        ply_idx = int(self._ply_idx[idx])
+
         return (
             board, target_move, color_tokens,
             outcome, legal_mask,
+            capture_map, move_category, ply_idx,
         )
 
     @property

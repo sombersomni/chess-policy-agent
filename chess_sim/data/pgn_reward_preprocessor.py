@@ -28,6 +28,12 @@ import torch
 from torch import Tensor
 
 from chess_sim.config import PGNRLConfig
+from chess_sim.data.capture_map_builder import (
+    build as build_capture_map,
+)
+from chess_sim.data.move_category_builder import (
+    build as build_move_category,
+)
 from chess_sim.data.move_tokenizer import MoveTokenizer
 from chess_sim.training.pgn_replayer import PGNReplayer
 from chess_sim.types import RLRewardRow
@@ -45,7 +51,13 @@ _DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
     "legal_mask": ("bool", (1971,)),
 }
 
-_SCHEMA_VERSION: int = 3  # bump when HDF5 schema changes
+_SCHEMA_VERSION: int = 4  # bump when HDF5 schema changes
+
+# Aux head datasets: only created when use_aux_heads=True
+_AUX_DATASETS: dict[str, tuple[str, tuple[int, ...]]] = {
+    "capture_map": ("uint8", (64,)),
+    "move_category": ("uint8", ()),
+}
 
 
 def _stream_pgn(
@@ -195,13 +207,19 @@ class PGNRewardPreprocessor:
         chunk_size = rl.hdf5_chunk_size
 
         hdf5_path.parent.mkdir(parents=True, exist_ok=True)
+        use_aux = rl.use_aux_heads
 
         rows: list[RLRewardRow] = []
+        aux_capture: list[list[int]] = []
+        aux_category: list[int] = []
         cursor = 0
 
         with h5py.File(hdf5_path, "w") as hf:
             # Create resizable datasets
-            for name, (dtype, shape) in _DATASETS.items():
+            all_ds = dict(_DATASETS)
+            if use_aux:
+                all_ds.update(_AUX_DATASETS)
+            for name, (dtype, shape) in all_ds.items():
                 full_shape = (0,) + shape
                 max_shape = (None,) + shape
                 chunk_shape = (chunk_size,) + shape
@@ -224,10 +242,24 @@ class PGNRewardPreprocessor:
                     continue
 
                 plies = self._replayer.replay(game)
+
+                # Build board states for aux labels
+                boards: list[chess.Board] | None = None
+                if use_aux:
+                    boards = self._replay_boards(game)
+
                 if train_color != "both":
+                    if boards is not None:
+                        boards = [
+                            b
+                            for b, p in zip(boards, plies)
+                            if p.is_white_ply
+                            == (train_color == "white")
+                        ]
                     plies = [
                         p for p in plies
-                        if p.is_white_ply == (train_color == "white")
+                        if p.is_white_ply
+                        == (train_color == "white")
                     ]
                 if not plies:
                     continue
@@ -250,7 +282,6 @@ class PGNRewardPreprocessor:
                         ply.traj_tokens,
                     )
 
-                    # Outcome from side-to-move perspective
                     if ply.is_draw_ply:
                         outcome = 0
                     elif ply.is_winner_ply:
@@ -279,18 +310,41 @@ class PGNRewardPreprocessor:
                         legal_mask=legal_mask_t.numpy(),
                     ))
 
+                    if use_aux and boards is not None:
+                        brd = boards[ply_i]
+                        aux_capture.append(
+                            build_capture_map(
+                                brd, brd.turn
+                            )
+                        )
+                        aux_category.append(
+                            build_move_category(
+                                ply.move_uci, brd
+                            )
+                        )
+
                     if len(rows) >= chunk_size:
                         cursor = self._write_batch(
-                            hf, rows, cursor
+                            hf, rows, cursor,
+                            aux_capture if use_aux
+                            else None,
+                            aux_category if use_aux
+                            else None,
                         )
                         rows.clear()
+                        aux_capture.clear()
+                        aux_category.clear()
 
             # Flush remaining rows
             if rows:
                 cursor = self._write_batch(
-                    hf, rows, cursor
+                    hf, rows, cursor,
+                    aux_capture if use_aux else None,
+                    aux_category if use_aux else None,
                 )
                 rows.clear()
+                aux_capture.clear()
+                aux_category.clear()
 
             # Store config attributes for cache validation
             checksum = self._compute_checksum(
@@ -312,23 +366,33 @@ class PGNRewardPreprocessor:
         hf: h5py.File,
         rows: list[RLRewardRow],
         cursor: int,
+        capture_maps: list[list[int]] | None = None,
+        categories: list[int] | None = None,
     ) -> int:
         """Write a batch of RLRewardRow to open HDF5 file.
 
-        Resizes datasets and copies row data in bulk.
+        Resizes datasets and copies row data in bulk. When aux
+        labels are provided, also writes capture_map and
+        move_category datasets.
 
         Args:
             hf: Open h5py.File in write mode.
             rows: List of RLRewardRow to write.
             cursor: Current write position in the dataset.
+            capture_maps: Optional list of 64-int capture maps.
+            categories: Optional list of move category ints.
 
         Returns:
             New cursor position after writing.
         """
         n = len(rows)
         new_size = cursor + n
+        has_aux = capture_maps is not None
 
-        for name in _DATASETS:
+        ds_names = list(_DATASETS)
+        if has_aux:
+            ds_names += list(_AUX_DATASETS)
+        for name in ds_names:
             hf[name].resize(new_size, axis=0)
 
         boards = np.stack([r.board for r in rows])
@@ -353,7 +417,35 @@ class PGNRewardPreprocessor:
             [r.legal_mask for r in rows]
         )
 
+        if has_aux and capture_maps and categories is not None:
+            hf["capture_map"][cursor:new_size] = np.array(
+                capture_maps, dtype=np.uint8
+            )
+            hf["move_category"][cursor:new_size] = np.array(
+                categories, dtype=np.uint8
+            )
+
         return new_size
+
+    @staticmethod
+    def _replay_boards(
+        game: chess.pgn.Game,
+    ) -> list[chess.Board]:
+        """Replay game moves, returning board BEFORE each push.
+
+        Args:
+            game: Parsed PGN game.
+
+        Returns:
+            List of board copies, one per ply, captured
+            before the move is applied.
+        """
+        board = game.board()
+        boards: list[chess.Board] = []
+        for move in game.mainline_moves():
+            boards.append(board.copy())
+            board.push(move)
+        return boards
 
     def _is_cache_valid(
         self,

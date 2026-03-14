@@ -139,6 +139,20 @@ class PlyRecord(NamedTuple):
     is_white_ply: bool
 
 
+class AuxLossOutput(NamedTuple):
+    """Per-head auxiliary losses for joint encoder training.
+
+    Attributes:
+        capture_loss: BCE loss on per-square capture map.
+        category_loss: CE loss on 7-class move category.
+        phase_loss: CE loss on 3-class game phase.
+    """
+
+    capture_loss: Tensor
+    category_loss: Tensor
+    phase_loss: Tensor
+
+
 class GameRecord(NamedTuple):
     """Completed self-play game result for the gradient step.
 

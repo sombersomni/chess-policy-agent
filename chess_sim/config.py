@@ -465,6 +465,10 @@ class RLConfig:
     num_workers: int = 4
     val_split_fraction: float = 0.1
     hdf5_chunk_size: int = 1024
+    use_aux_heads: bool = False
+    lambda_capture: float = 0.5
+    lambda_category: float = 0.2
+    lambda_phase: float = 0.05
 
     def __post_init__(self) -> None:
         """Validate RL hyperparameter ranges."""

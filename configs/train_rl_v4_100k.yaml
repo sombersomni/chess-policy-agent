@@ -37,6 +37,10 @@ rl:
   num_workers:          4
   val_split_fraction:   0.1
   hdf5_chunk_size:      1024
+  use_aux_heads:        true
+  lambda_capture:       0.5
+  lambda_category:      0.2
+  lambda_phase:         0.05
 
 aim:
   enabled:           true

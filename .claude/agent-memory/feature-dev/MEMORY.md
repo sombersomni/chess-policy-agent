@@ -157,6 +157,18 @@
 - Tests: `tests/test_rsce_v4.py` — TC01-TC15 (15 tests)
 - Key gotcha: synthetic HDF5 board must use valid indices (0-7, 0-2, 0-4), not random floats
 
+## Phase 1 Auxiliary Heads
+- `chess_sim/data/capture_map_builder.py`: pure python-chess, `build(board, turn) -> list[int]` (64 binary)
+- `chess_sim/data/move_category_builder.py`: pure python-chess, `build(uci, board) -> int` (0-6: QUIET, CAPTURE_PAWN/MINOR/ROOK/QUEEN, CASTLE, PROMOTION)
+- `chess_sim/model/auxiliary_heads.py`: `AuxiliaryHeads(nn.Module)` — capture_target_head(D,1), move_category_head(D,7), phase_head(D,3)
+  - CLS heads use `cls_emb.detach()` by default (ablation: remove detach for gradient flow)
+  - Returns `AuxLossOutput` namedtuple (capture_loss, category_loss, phase_loss)
+- `compute_phase_labels(ply_idx, board)` in `pgn_rl_trainer_v4.py`: Opening(0) ply<20, Endgame(1) material<=15, Midgame(2) otherwise
+- Config: `RLConfig` gains `use_aux_heads=False`, `lambda_capture=0.5`, `lambda_category=0.2`, `lambda_phase=0.05`
+- `ChessRLDataset.__getitem__` returns 8-tuple (was 5): adds capture_map, move_category, ply_idx
+- `PGNRewardPreprocessor` writes `capture_map(N,64)` and `move_category(N)` when `use_aux_heads=True`
+- Tests: `tests/data/test_capture_map_builder.py` (7), `tests/data/test_move_category_builder.py` (9), `tests/test_aux_heads.py` (14)
+
 ## RL Self-Play Fine-Tuner
 - `chess_sim/training/rl_finetune_trainer.py`: RLFinetuneTrainer + play_game + compute_returns + _log_prob_of_move
   - Three model copies: _policy (trained), _ref (frozen KL anchor), _shadow (EMA opponent)

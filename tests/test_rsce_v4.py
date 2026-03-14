@@ -308,7 +308,7 @@ class TestChessRLDataset(unittest.TestCase):
     def test_tc08_getitem_shapes_and_types(
         self,
     ) -> None:
-        """__getitem__ returns correct 5-tuple shapes."""
+        """__getitem__ returns correct 8-tuple shapes."""
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "data.h5"
             _write_synthetic_hdf5(
@@ -322,6 +322,7 @@ class TestChessRLDataset(unittest.TestCase):
             try:
                 (
                     board, tgt, ct, outcome, legal_mask,
+                    capture_map, move_cat, ply_idx,
                 ) = ds[0]
                 self.assertEqual(board.shape, (65, 3))
                 self.assertEqual(
@@ -340,6 +341,12 @@ class TestChessRLDataset(unittest.TestCase):
                 self.assertEqual(
                     legal_mask.dtype, torch.bool
                 )
+                # Aux fields: zeros when HDF5 lacks them
+                self.assertEqual(
+                    capture_map.shape, (64,)
+                )
+                self.assertIsInstance(move_cat, int)
+                self.assertIsInstance(ply_idx, int)
             finally:
                 ds.close()
 
